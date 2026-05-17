@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+	<title>IPTV Ultra - webOS Player</title>
+	<link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+	<div class="app">
+		<!-- Start Page -->
+		<div id="startPage" class="start-page">
+			<div class="start-card">
+				<div class="start-title">📺 IPTV Ultra</div>
+				<div class="start-subtitle">Load your IPTV playlist to get started</div>
+				<div id="startStatusBar" class="start-status-bar">
+					<div class="start-status-message" id="startStatusMessage"><span>✨ Ready to load playlists</span>
+					</div>
+					<div id="progressBarContainer" class="progress-bar-container" style="display: none;">
+						<div id="progressBar" class="progress-bar"></div>
+					</div>
+				</div>
+				<div class="saved-sources">
+					<div class="saved-header"><span>📋 SAVED PLAYLISTS</span><button id="clearAllBtn"
+							class="clear-all-btn" tabindex="0">Clear All</button></div>
+					<div class="saved-list" id="savedSourcesList">
+						<div class="empty-saved">No saved playlists yet. Add one below!</div>
+					</div>
+				</div>
+				<div class="add-source">
+					<div class="add-header">➕ ADD NEW PLAYLIST</div>
+					<div class="add-input-group"><input type="text" id="newM3uUrl" class="add-input"
+							placeholder="M3U URL (required)" tabindex="0"></div>
+					<div class="add-input-group"><input type="text" id="newM3uName" class="name-input"
+							placeholder="Name (optional)" tabindex="0"><button id="saveNewBtn" class="save-source-btn"
+							tabindex="0">Save Playlist</button></div>
+				</div>
+				<div class="start-buttons"><button id="loadSelectedBtn" class="start-btn primary" disabled
+						tabindex="0">▶ Load Selected</button><button id="startDemoBtn" class="start-btn secondary"
+						tabindex="0">🎬 Try Demo</button></div>
+			</div>
+		</div>
+
+		<!-- Confirmation Dialog -->
+		<div id="confirmDialog" class="confirm-dialog hidden">
+			<div class="confirm-card">
+				<div class="confirm-title">⚠️ Clear All Playlists</div>
+				<div class="confirm-message">Are you sure you want to clear all saved playlists?</div>
+				<div class="confirm-buttons"><button id="confirmYes" class="confirm-btn yes">Yes, Clear
+						All</button><button id="confirmNo" class="confirm-btn no">Cancel</button></div>
+			</div>
+		</div>
+
+		<!-- Main App -->
+		<div id="mainApp" style="display: none; flex-direction: column; height: 100%;">
+			<div class="header" id="mainHeader">
+				<div class="title-row"><span class="title">📺 IPTV Ultra</span>
+					<div class="header-right"><span id="statusArea" class="status">✨ Ready</span><button
+							id="homePageBtn" class="home-btn">⚙️ Settings</button></div>
+				</div>
+			</div>
+			<div class="main-content">
+				<div class="groups-column" id="groupsColumn">
+					<div class="groups-header"><span>📁 Groups</span><button id="toggleGroupsBtn"
+							class="toggle-groups-btn">◀ Hide</button></div>
+					<div class="groups-list" id="groupsList"></div>
+				</div>
+				<div class="channels-column">
+					<div class="channels-header"><span>📡 Channels</span><button id="showGroupsBtn"
+							class="show-groups-btn">▶ Groups</button></div>
+					<div class="search-container">
+						<div class="search-input-wrapper"><span class="search-icon">🔍</span><input type="text"
+								id="searchInput" class="search-input" placeholder="Search channels and groups..."></div>
+						<button id="clearSearchBtn" class="clear-search-btn">✕ Clear</button>
+					</div>
+					<div class="channel-count" id="channelCount"></div>
+					<div id="channelList" class="channel-list"></div>
+				</div>
+				<div class="video-area" id="videoArea">
+					<video id="videoPlayer" controls autoplay playsinline crossorigin="anonymous"></video>
+					<div id="pipGrid"></div>
+					<div id="loadingOverlay" class="loading-overlay hidden">
+						<div class="loading-spinner"></div>
+						<div class="loading-text">Loading playlist...</div>
+					</div>
+					<div class="video-controls-top" id="topControls">
+						<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
+						<button id="reloadBtn" class="top-control-btn">🔄 Reload</button>
+						<button id="pipBtn" class="top-control-btn">🖼️ PiP Mode</button>
+						<button id="pipFullscreenBtn" class="top-control-btn pip-fs-btn" style="display:none;">⛶
+							Fullscreen</button>
+					</div>
+					<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
+					<div id="channelInfoTag" class="channel-info-tag"></div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script src="script.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,8 @@
+# webOS build artifacts
+*.ipk
+
+# SDK tooling
+sdk/
+
+# Claude Code local settings
+.claude/

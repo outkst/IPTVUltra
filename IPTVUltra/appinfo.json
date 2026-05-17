@@ -1,0 +1,31 @@
+{
+  "id": "com.outkst.iptvultra",
+  "version": "2.3.0",
+  "vendor": "outkst",
+  "type": "web",
+  "main": "index.html",
+  "title": "IPTV Ultra",
+  "appDescription": "Play IPTV channels from M3U playlists",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "splashBackground": "splash-screen.png",
+  "splashColor": "#f3b0a0",
+  "bgColor": "#f3b0a0",
+  "resolution": "1920x1080",
+  "handlesRelaunch": false,
+  "transparent": false,
+  "disableBackHistoryAPI": false,
+  "noSplashOnLaunch": false,
+  "fullscreen": true,
+  "supportTouchMode": false,
+  "allowGlobalLogin": false,
+  "supportPreroll": false,
+  "useNativeVideoPlayer": true,
+  "requiredPermissions": [
+    "INTERNET",
+    "DATABASE_STORAGE"
+  ],
+  "trustedDomains": [
+    "*"
+  ]
+}
