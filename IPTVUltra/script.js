@@ -9,10 +9,6 @@ let groupsList = [];
 let groupsColumnVisible = true;
 let isLoading = false;
 let currentSearchQuery = '';
-// PiP state
-let pipActive = false;
-let pipStreams = [];
-let nextPipId = 1;
 
 // DOM elements
 const videoPlayer = document.getElementById('videoPlayer');
@@ -397,25 +393,19 @@ function renderChannelList() {
     renderVisible();
 }
 
-// ----- Video Control & PiP -----
+// ----- Video Control -----
 function selectChannel(index) {
     if (!channels[index]) return;
-    if (pipActive) {
-        const already = pipStreams.some(s => s.channelIndex === index);
-        if (already) { updateStartStatus('Already playing in PiP', true); return; }
-        addStreamToPip(index, false);
-    } else {
-        currentChannelIndex = index;
-        const ch = channels[index];
-        videoPlayer.pause();
-        videoPlayer.src = ch.url;
-        videoPlayer.load();
-        videoPlayer.play().catch(e => console.log);
-        channelInfoTag.innerText = `📺 ${ch.name}`;
-        statusArea.innerText = `▶️ ${ch.name}`;
-        renderChannelList();
-        showTopControls();
-    }
+    currentChannelIndex = index;
+    const ch = channels[index];
+    videoPlayer.pause();
+    videoPlayer.src = ch.url;
+    videoPlayer.load();
+    videoPlayer.play().catch(e => console.log);
+    channelInfoTag.innerText = `📺 ${ch.name}`;
+    statusArea.innerText = `▶️ ${ch.name}`;
+    renderChannelList();
+    showTopControls();
 }
 
 function showTopControls() {
@@ -444,7 +434,6 @@ function showStreamInfo() {
 }
 
 function reloadStream() {
-    if (pipActive) { updateStartStatus('Reload not supported in PiP mode', true); return; }
     if (currentChannelIndex < 0) return;
     const url = channels[currentChannelIndex].url;
     const wasPlaying = !videoPlayer.paused;
@@ -458,7 +447,6 @@ function reloadStream() {
 }
 
 function goToHomeScreen() {
-    if (pipActive) togglePipMode();
     videoPlayer.pause();
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
@@ -478,111 +466,6 @@ function toggleGroupsColumn() {
     showGroupsBtn.style.display = groupsColumnVisible ? 'none' : 'block';
 }
 
-// ----- PiP Functions -----
-function togglePipMode() {
-    pipActive = !pipActive;
-    const mainVideo = document.getElementById('videoPlayer');
-    const pipGrid = document.getElementById('pipGrid');
-    if (pipActive) {
-        videoArea.classList.add('pip-mode');
-        mainVideo.style.display = 'none';
-        pipGrid.style.display = 'grid';
-        if (currentChannelIndex !== -1) {
-            addStreamToPip(currentChannelIndex, true);
-        }
-        renderPipGrid();
-    } else {
-        for (let s of pipStreams) {
-            if (s.video) { s.video.pause(); s.video.src = ''; }
-        }
-        pipStreams = [];
-        pipGrid.innerHTML = '';
-        pipGrid.style.display = 'none';
-        videoArea.classList.remove('pip-mode');
-        mainVideo.style.display = 'block';
-        if (currentChannelIndex !== -1) selectChannel(currentChannelIndex);
-    }
-}
-
-function addStreamToPip(channelIndex, isMain = false) {
-    if (!pipActive) return;
-    if (pipStreams.length >= 4 && !isMain) {
-        updateStartStatus('Maximum 4 streams allowed', true);
-        return;
-    }
-    const channel = channels[channelIndex];
-    if (!channel || !channel.url) return;
-    const container = document.createElement('div');
-    container.className = 'pip-video-container';
-    const video = document.createElement('video');
-    video.controls = true;
-    video.autoplay = true;
-    video.playsinline = true;
-    video.src = channel.url;
-    video.load();
-    video.play().catch(e => console.log);
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'pip-remove-btn';
-    removeBtn.innerHTML = '✕';
-    removeBtn.onclick = (e) => {
-        e.stopPropagation();
-        removeStreamFromPip(container);
-    };
-    container.appendChild(video);
-    container.appendChild(removeBtn);
-    const streamObj = { id: nextPipId++, channelIndex: channelIndex, container: container, video: video };
-    if (isMain) pipStreams.unshift(streamObj);
-    else pipStreams.push(streamObj);
-    renderPipGrid();
-}
-
-function removeStreamFromPip(container) {
-    const index = pipStreams.findIndex(s => s.container === container);
-    if (index !== -1) {
-        pipStreams[index].video.pause();
-        pipStreams[index].video.src = '';
-        pipStreams.splice(index, 1);
-        renderPipGrid();
-    }
-}
-
-function renderPipGrid() {
-    const pipGrid = document.getElementById('pipGrid');
-
-    // Remove only empty placeholder cells — never detach playing video containers
-    Array.from(pipGrid.children)
-        .filter(child => !pipStreams.some(s => s.container === child))
-        .forEach(child => child.remove());
-
-    // Append any new stream containers not yet in the grid
-    pipStreams.forEach(s => {
-        if (!pipGrid.contains(s.container)) {
-            pipGrid.appendChild(s.container);
-        }
-    });
-
-    // Fill remaining slots with empty placeholder cells
-    for (let i = pipGrid.children.length; i < 4; i++) {
-        const emptyCell = document.createElement('div');
-        emptyCell.className = 'pip-video-container';
-        emptyCell.style.cssText = 'background:#111;display:flex;align-items:center;justify-content:center';
-        const addBtn = document.createElement('div');
-        addBtn.className = 'pip-add-overlay';
-        addBtn.innerHTML = '+ Add Stream';
-        addBtn.onclick = () => showStreamSelectionForPip();
-        emptyCell.appendChild(addBtn);
-        pipGrid.appendChild(emptyCell);
-    }
-}
-
-function showStreamSelectionForPip() {
-    if (pipStreams.length >= 4) { updateStartStatus('Maximum 4 streams already playing', true); return; }
-    const list = channels.map((ch, idx) => `${idx + 1}. ${ch.name}`).join('\n');
-    const choice = prompt(`Select stream number (1-${channels.length}):\n${list}`);
-    const num = parseInt(choice);
-    if (!isNaN(num) && num >= 1 && num <= channels.length) addStreamToPip(num - 1, false);
-    else updateStartStatus('Invalid selection', true);
-}
 
 // ----- Saved Playlists Management -----
 function loadSavedPlaylists() {
@@ -684,7 +567,6 @@ clearAllBtn.addEventListener('click', () => {
 });
 infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 reloadBtn.addEventListener('click', reloadStream);
-document.getElementById('pipBtn').addEventListener('click', () => { if (!channels.length) { updateStartStatus('Load a playlist first', true); return; } togglePipMode(); });
 homePageBtn.addEventListener('click', goToHomeScreen);
 toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
 showGroupsBtn.addEventListener('click', toggleGroupsColumn);
@@ -698,8 +580,8 @@ document.addEventListener('fullscreenchange', () => {
     const isFull = !!document.fullscreenElement;
     header.classList.toggle('hidden', isFull);
     showTopControls();
-    if (pipActive) document.getElementById('pipGrid').style.width = '100%';
 });
+
 
 // ----- Initialization -----
 const savedFavs = localStorage.getItem('iptv_favorites');
@@ -709,4 +591,4 @@ const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;
 // Force a channel list refresh to show favorites
 if (currentGroup === 'favorites') renderChannelList();
-setTimeout(() => { updateFocusableElements(); focusElement(0); }, 100);
+setTimeout(() => { updateFocusableElements(); focusElement(0); }, 500);
