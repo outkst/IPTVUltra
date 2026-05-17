@@ -147,7 +147,6 @@ async function parseM3UStreaming(content) {
 // ----- Loading playlists -----
 async function loadM3UFromUrl(url) {
     if (isLoading) return;
-    if (pipActive) togglePipMode();
     isLoading = true;
     setLoadSelectedButtonEnabled(false);
     updateStartStatus(`Fetching playlist...`, false, false, true, 0);
@@ -163,15 +162,18 @@ async function loadM3UFromUrl(url) {
         channels = parsed;
         localStorage.setItem('last_m3u_url', url);
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
-        extractGroups();
         currentSearchQuery = '';
         searchInput.value = '';
-        currentGroup = 'all';
-        renderChannelList();
-        statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
-        if (channels.length) selectChannel(0);
+        currentGroup = 'favorites';
+        extractGroups();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
+        renderChannelList();
+        statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
+        if (channels.length) setTimeout(() => {
+            const firstIdx = currentFilteredChannels.length ? channels.indexOf(currentFilteredChannels[0]) : 0;
+            selectChannel(firstIdx);
+        }, 500);
     } catch (err) {
         updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
         setLoadSelectedButtonEnabled(true);
@@ -184,7 +186,6 @@ async function loadM3UFromUrl(url) {
 
 function loadDemoM3U() {
     if (isLoading) return;
-    if (pipActive) togglePipMode();
     isLoading = true;
     setLoadSelectedButtonEnabled(false);
     updateStartStatus(`Loading demo playlist...`, false, false, true, 30);
@@ -201,15 +202,18 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         const parsed = await parseM3UStreaming(demoContent);
         channels = parsed;
         updateStartStatus(`Demo loaded: ${channels.length} channels`, false, true, false, 100);
-        extractGroups();
         currentSearchQuery = '';
         searchInput.value = '';
-        currentGroup = 'all';
-        renderChannelList();
-        statusArea.innerText = `🎬 Demo: ${channels.length} channels`;
-        if (channels.length) selectChannel(0);
+        currentGroup = 'favorites';
+        extractGroups();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
+        renderChannelList();
+        statusArea.innerText = `🎬 Demo: ${channels.length} channels`;
+        if (channels.length) setTimeout(() => {
+            const firstIdx = currentFilteredChannels.length ? channels.indexOf(currentFilteredChannels[0]) : 0;
+            selectChannel(firstIdx);
+        }, 500);
         isLoading = false;
         setLoadSelectedButtonEnabled(true);
         showLoading(false);
