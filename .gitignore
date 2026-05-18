@@ -6,3 +6,7 @@ sdk/
 
 # Claude Code local settings
 .claude/
+
+# Project docs not for repo
+CLAUDE.md
+img/
