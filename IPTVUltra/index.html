@@ -87,6 +87,16 @@
 					<div class="video-controls-top" id="topControls">
 						<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
 						<button id="reloadBtn" class="top-control-btn">🔄 Reload</button>
+						<button id="audioBtn" class="top-control-btn" style="display:none;">🔊 Audio</button>
+						<button id="subtitleBtn" class="top-control-btn" style="display:none;">💬 Subtitles</button>
+					</div>
+					<div id="audioPanel" class="subtitle-panel hidden">
+						<div class="subtitle-panel-title">Audio Track</div>
+						<div id="audioTrackList"></div>
+					</div>
+					<div id="subtitlePanel" class="subtitle-panel hidden">
+						<div class="subtitle-panel-title">Subtitles / CC</div>
+						<div id="subtitleTrackList"></div>
 					</div>
 					<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
 					<div id="channelInfoTag" class="channel-info-tag"></div>

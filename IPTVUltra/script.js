@@ -43,9 +43,44 @@ const clearAllBtn = document.getElementById('clearAllBtn');
 const startDemoBtn = document.getElementById('startDemoBtn');
 const confirmYes = document.getElementById('confirmYes');
 const confirmNo = document.getElementById('confirmNo');
+const subtitleBtn = document.getElementById('subtitleBtn');
+const subtitlePanel = document.getElementById('subtitlePanel');
+const audioBtn = document.getElementById('audioBtn');
+const audioPanel = document.getElementById('audioPanel');
 
 let infoHideTimeout = null;
 let controlsTimeout = null;
+let subtitlePanelOpen = false;
+let audioPanelOpen = false;
+
+const LANG_NAMES = {
+    // Western Europe
+    en:'English', fr:'French', de:'German', it:'Italian', es:'Spanish', pt:'Portuguese',
+    nl:'Dutch', sv:'Swedish', da:'Danish', fi:'Finnish', nb:'Norwegian', no:'Norwegian',
+    is:'Icelandic', lb:'Luxembourgish', ca:'Catalan', gl:'Galician', eu:'Basque',
+    mt:'Maltese', cy:'Welsh', ga:'Irish', af:'Afrikaans',
+    // Eastern Europe
+    ru:'Russian', pl:'Polish', cs:'Czech', sk:'Slovak', hu:'Hungarian', ro:'Romanian',
+    uk:'Ukrainian', bg:'Bulgarian', hr:'Croatian', sr:'Serbian', sl:'Slovenian',
+    bs:'Bosnian', mk:'Macedonian', sq:'Albanian', el:'Greek',
+    // Baltic
+    lt:'Lithuanian', lv:'Latvian', et:'Estonian',
+    // Middle East / Central Asia
+    ar:'Arabic', he:'Hebrew', fa:'Persian', ur:'Urdu', tr:'Turkish',
+    az:'Azerbaijani', ka:'Georgian', hy:'Armenian', kk:'Kazakh', uz:'Uzbek',
+    // South Asia
+    hi:'Hindi', bn:'Bengali', ta:'Tamil', te:'Telugu', ml:'Malayalam',
+    mr:'Marathi', gu:'Gujarati', pa:'Punjabi', si:'Sinhala', ne:'Nepali',
+    // East / Southeast Asia
+    zh:'Chinese', ja:'Japanese', ko:'Korean', vi:'Vietnamese', th:'Thai',
+    id:'Indonesian', ms:'Malay', tl:'Filipino', my:'Burmese', km:'Khmer',
+    // Africa
+    sw:'Swahili', am:'Amharic', yo:'Yoruba', ig:'Igbo', ha:'Hausa', so:'Somali',
+    // Americas
+    ht:'Haitian Creole', qu:'Quechua',
+    // Mongolian / misc
+    mn:'Mongolian'
+};
 
 // Virtual scrolling globals
 let renderedItems = new Map();
@@ -410,6 +445,13 @@ function selectChannel(index) {
     statusArea.innerText = `▶️ ${ch.name}`;
     renderChannelList();
     showTopControls();
+
+    // Reset per-stream state
+    if (subtitlePanelOpen) { subtitlePanel.classList.add('hidden'); subtitlePanelOpen = false; }
+    if (audioPanelOpen) { audioPanel.classList.add('hidden'); audioPanelOpen = false; }
+
+    // Some streams add tracks well after loadedmetadata — check again after a delay
+    setTimeout(function() { updateSubtitleButton(); updateAudioButton(); }, 4000);
 }
 
 function showTopControls() {
@@ -419,22 +461,223 @@ function showTopControls() {
     controlsTimeout = setTimeout(() => c.classList.remove('visible'), 3000);
 }
 
+function resolveLanguage(code) {
+    if (!code) return null;
+    const short = code.toLowerCase().substring(0, 2);
+    return LANG_NAMES[short] || code;
+}
+
 function showStreamInfo() {
     const w = videoPlayer.videoWidth, h = videoPlayer.videoHeight;
-    if (!w) { streamInfoOverlay.innerText = '📊 Loading...'; streamInfoOverlay.style.opacity = '1'; setTimeout(() => streamInfoOverlay.style.opacity = '0', 3000); return; }
-    let res = `${w}x${h}`;
-    if (w >= 3840) res += ' (4K)';
-    else if (w >= 1920) res += ' (1080p)';
-    else if (w >= 1280) res += ' (720p)';
-    let audio = 'Unknown';
+
+    // Video resolution
+    let resText = (w && h) ? (w + '×' + h) : 'Loading…';
+    if (w >= 3840) resText += ' (4K/UHD)';
+    else if (w >= 1920) resText += ' (FHD 1080p)';
+    else if (w >= 1280) resText += ' (HD 720p)';
+    else if (w >= 720) resText += ' (SD+)';
+    else if (w > 0) resText += ' (SD)';
+
+    // Active audio track
+    let audioLang = '—';
     if (videoPlayer.audioTracks && videoPlayer.audioTracks.length) {
-        const active = Array.from(videoPlayer.audioTracks).find(t => t.enabled);
-        if (active) audio = active.label || active.language || 'AAC';
+        const tracks = Array.from(videoPlayer.audioTracks);
+        const active = tracks.find(function(t) { return t.enabled; }) || tracks[0];
+        if (active) {
+            const resolvedLang = active.language ? resolveLanguage(active.language) : null;
+            if (active.label && active.label.trim()) {
+                audioLang = active.label.trim();
+            } else {
+                audioLang = resolvedLang || 'Unknown';
+            }
+            if (active.kind && active.kind !== 'main' && active.kind !== '') {
+                audioLang += ' [' + active.kind + ']';
+            }
+        }
     }
-    streamInfoOverlay.innerText = `📐 ${res}\n🔊 ${audio}`;
+
+    // Subtitle tracks
+    const subTracks = getSubtitleTracks();
+    const subInfo = subTracks.length
+        ? subTracks.length + ' track' + (subTracks.length > 1 ? 's' : '') + ' available'
+        : 'None detected';
+
+    // Audio track count subtitle
+    const audioTracks = getAudioTracks();
+    let audioCountSub = '';
+    if (audioTracks.length > 1) {
+        const uniqueLangs = new Set(audioTracks.map(function(t) { return t.language || ''; }).filter(Boolean));
+        let countText;
+        if (uniqueLangs.size >= audioTracks.length) {
+            countText = audioTracks.length + ' languages available';
+        } else if (uniqueLangs.size <= 1) {
+            countText = audioTracks.length + ' tracks available';
+        } else {
+            countText = audioTracks.length + ' tracks, ' + uniqueLangs.size + ' languages';
+        }
+        audioCountSub = '<span class="si-sub">' + countText + '</span>';
+    }
+
+    streamInfoOverlay.innerHTML =
+        '<div class="si-section">' +
+            '<div class="si-label">Video</div>' +
+            '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
+        '</div>' +
+        '<div class="si-section">' +
+            '<div class="si-label">Audio</div>' +
+            '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
+        '</div>' +
+        '<div class="si-section">' +
+            '<div class="si-label">Subtitles</div>' +
+            '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
+        '</div>';
+
     streamInfoOverlay.style.opacity = '1';
     if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(() => streamInfoOverlay.style.opacity = '0', 5000);
+    infoHideTimeout = setTimeout(function() { streamInfoOverlay.style.opacity = '0'; }, 8000);
+}
+
+function getSubtitleTracks() {
+    if (!videoPlayer.textTracks) return [];
+    return Array.from(videoPlayer.textTracks).filter(function(t) {
+        return t.kind !== 'metadata' && t.kind !== 'chapters';
+    });
+}
+
+function updateSubtitleButton() {
+    const subs = getSubtitleTracks();
+    if (subs.length > 0) {
+        subtitleBtn.style.display = '';
+        subtitleBtn.innerHTML = '💬 Subtitles (' + subs.length + ')';
+    } else {
+        subtitleBtn.style.display = 'none';
+        if (subtitlePanelOpen) { subtitlePanel.classList.add('hidden'); subtitlePanelOpen = false; }
+    }
+}
+
+function buildSubtitlePanel() {
+    const subs = getSubtitleTracks();
+    const listEl = document.getElementById('subtitleTrackList');
+    listEl.innerHTML = '';
+
+    const allOff = subs.every(function(t) { return t.mode !== 'showing'; });
+    const offItem = document.createElement('div');
+    offItem.className = 'subtitle-track-item' + (allOff ? ' active' : '');
+    offItem.textContent = 'Off';
+    offItem.onclick = function() {
+        subs.forEach(function(t) { t.mode = 'disabled'; });
+        buildSubtitlePanel();
+        showTopControls();
+    };
+    listEl.appendChild(offItem);
+
+    subs.forEach(function(track, i) {
+        const item = document.createElement('div');
+        const isActive = track.mode === 'showing';
+        item.className = 'subtitle-track-item' + (isActive ? ' active' : '');
+
+        const lang = track.language ? resolveLanguage(track.language) : null;
+        const label = track.label || lang || ('Track ' + (i + 1));
+        const kindLabel = track.kind === 'captions' ? ' [CC]' : '';
+        item.textContent = label + kindLabel;
+
+        item.onclick = function() {
+            subs.forEach(function(t) { t.mode = 'disabled'; });
+            track.mode = 'showing';
+            buildSubtitlePanel();
+            showTopControls();
+        };
+        listEl.appendChild(item);
+    });
+}
+
+function toggleSubtitlePanel() {
+    subtitlePanelOpen = !subtitlePanelOpen;
+    if (subtitlePanelOpen) {
+        if (audioPanelOpen) { audioPanel.classList.add('hidden'); audioPanelOpen = false; }
+        buildSubtitlePanel();
+        subtitlePanel.classList.remove('hidden');
+    } else {
+        subtitlePanel.classList.add('hidden');
+    }
+}
+
+function getAudioTracks() {
+    if (!videoPlayer.audioTracks) return [];
+    return Array.from(videoPlayer.audioTracks);
+}
+
+function updateAudioButton() {
+    const tracks = getAudioTracks();
+    if (tracks.length > 1) {
+        audioBtn.style.display = '';
+        audioBtn.innerHTML = '🔊 Audio (' + tracks.length + ')';
+    } else {
+        audioBtn.style.display = 'none';
+        if (audioPanelOpen) { audioPanel.classList.add('hidden'); audioPanelOpen = false; }
+    }
+}
+
+function buildAudioPanel() {
+    const tracks = getAudioTracks();
+    const listEl = document.getElementById('audioTrackList');
+    listEl.innerHTML = '';
+
+    // Count how many times each language appears so we can disambiguate duplicates
+    const langCount = {};
+    tracks.forEach(function(t) {
+        const k = t.language || '';
+        langCount[k] = (langCount[k] || 0) + 1;
+    });
+    const langSeen = {};
+
+    tracks.forEach(function(track, i) {
+        const item = document.createElement('div');
+        item.className = 'subtitle-track-item' + (track.enabled ? ' active' : '');
+
+        const resolvedLang = track.language ? resolveLanguage(track.language) : null;
+        const langKey = track.language || '';
+        langSeen[langKey] = (langSeen[langKey] || 0) + 1;
+
+        let name;
+        if (track.label && track.label.trim()) {
+            // Label is the most descriptive source ("English 5.1", "Deutsch Director's Cut", etc.)
+            name = track.label.trim();
+        } else {
+            name = resolvedLang || ('Track ' + (i + 1));
+            // When the same language appears more than once and there's no label to distinguish,
+            // append an ordinal so the user can tell them apart
+            if (langCount[langKey] > 1) {
+                name += ' ' + langSeen[langKey];
+            }
+        }
+
+        // Kind badge for anything other than 'main'
+        if (track.kind && track.kind !== 'main' && track.kind !== '') {
+            name += ' [' + track.kind + ']';
+        }
+
+        item.textContent = name;
+        item.onclick = function() {
+            tracks.forEach(function(t) { t.enabled = false; });
+            track.enabled = true;
+            buildAudioPanel();
+            if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
+            showTopControls();
+        };
+        listEl.appendChild(item);
+    });
+}
+
+function toggleAudioPanel() {
+    audioPanelOpen = !audioPanelOpen;
+    if (audioPanelOpen) {
+        if (subtitlePanelOpen) { subtitlePanel.classList.add('hidden'); subtitlePanelOpen = false; }
+        buildAudioPanel();
+        audioPanel.classList.remove('hidden');
+    } else {
+        audioPanel.classList.add('hidden');
+    }
 }
 
 function reloadStream() {
@@ -576,9 +819,27 @@ toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
 showGroupsBtn.addEventListener('click', toggleGroupsColumn);
 searchInput.addEventListener('input', () => { currentSearchQuery = searchInput.value; if (currentSearchQuery.trim()) currentGroup = 'all'; renderGroupsList(); renderChannelList(); });
 clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); renderChannelList(); });
-videoPlayer.addEventListener('loadedmetadata', showStreamInfo);
+subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
+audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
+videoPlayer.addEventListener('loadedmetadata', function() { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
 videoPlayer.addEventListener('resize', showStreamInfo);
 videoArea.addEventListener('mousemove', showTopControls);
+videoArea.addEventListener('click', function(e) {
+    if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
+    if (audioPanelOpen && !audioPanel.contains(e.target) && e.target !== audioBtn) toggleAudioPanel();
+});
+videoPlayer.textTracks.addEventListener('addtrack', function() {
+    updateSubtitleButton();
+    if (subtitlePanelOpen) buildSubtitlePanel();
+});
+videoPlayer.textTracks.addEventListener('removetrack', function() { updateSubtitleButton(); });
+if (videoPlayer.audioTracks) {
+    videoPlayer.audioTracks.addEventListener('addtrack', function() {
+        updateAudioButton();
+        if (audioPanelOpen) buildAudioPanel();
+    });
+    videoPlayer.audioTracks.addEventListener('removetrack', function() { updateAudioButton(); });
+}
 document.addEventListener('keydown', handleRemoteNav);
 document.addEventListener('fullscreenchange', () => {
     const isFull = !!document.fullscreenElement;
