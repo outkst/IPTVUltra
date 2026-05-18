@@ -55,12 +55,6 @@
 
 		<!-- Main App -->
 		<div id="mainApp" style="display: none; flex-direction: column; height: 100%;">
-			<div class="header" id="mainHeader">
-				<div class="title-row"><span class="title">📺 IPTV Ultra</span>
-					<div class="header-right"><span id="statusArea" class="status">✨ Ready</span><button
-							id="homePageBtn" class="home-btn">⚙️ Settings</button></div>
-				</div>
-			</div>
 			<div class="main-content">
 				<div class="groups-column" id="groupsColumn">
 					<div class="groups-header"><span>📁 Groups</span><button id="toggleGroupsBtn"
@@ -68,7 +62,7 @@
 					<div class="groups-list" id="groupsList"></div>
 				</div>
 				<div class="channels-column">
-					<div class="channels-header"><span>📡 Channels</span><button id="showGroupsBtn"
+					<div class="channels-header"><span id="channelsHeaderTitle">📡 Channels</span><button id="showGroupsBtn"
 							class="show-groups-btn">▶ Groups</button></div>
 					<div class="search-container">
 						<div class="search-input-wrapper"><span class="search-icon">🔍</span><input type="text"
@@ -77,6 +71,10 @@
 					</div>
 					<div class="channel-count" id="channelCount"></div>
 					<div id="channelList" class="channel-list"></div>
+					<div class="channels-footer">
+						<span id="statusArea" class="channels-status">✨ Ready</span>
+						<button id="homePageBtn" class="home-btn" tabindex="0">⚙️ Settings</button>
+					</div>
 				</div>
 				<div class="video-area" id="videoArea">
 					<video id="videoPlayer" controls autoplay playsinline crossorigin="anonymous"></video>

@@ -55,31 +55,31 @@ let audioPanelOpen = false;
 
 const LANG_NAMES = {
     // Western Europe
-    en:'English', fr:'French', de:'German', it:'Italian', es:'Spanish', pt:'Portuguese',
-    nl:'Dutch', sv:'Swedish', da:'Danish', fi:'Finnish', nb:'Norwegian', no:'Norwegian',
-    is:'Icelandic', lb:'Luxembourgish', ca:'Catalan', gl:'Galician', eu:'Basque',
-    mt:'Maltese', cy:'Welsh', ga:'Irish', af:'Afrikaans',
+    en: 'English', fr: 'French', de: 'German', it: 'Italian', es: 'Spanish', pt: 'Portuguese',
+    nl: 'Dutch', sv: 'Swedish', da: 'Danish', fi: 'Finnish', nb: 'Norwegian', no: 'Norwegian',
+    is: 'Icelandic', lb: 'Luxembourgish', ca: 'Catalan', gl: 'Galician', eu: 'Basque',
+    mt: 'Maltese', cy: 'Welsh', ga: 'Irish', af: 'Afrikaans',
     // Eastern Europe
-    ru:'Russian', pl:'Polish', cs:'Czech', sk:'Slovak', hu:'Hungarian', ro:'Romanian',
-    uk:'Ukrainian', bg:'Bulgarian', hr:'Croatian', sr:'Serbian', sl:'Slovenian',
-    bs:'Bosnian', mk:'Macedonian', sq:'Albanian', el:'Greek',
+    ru: 'Russian', pl: 'Polish', cs: 'Czech', sk: 'Slovak', hu: 'Hungarian', ro: 'Romanian',
+    uk: 'Ukrainian', bg: 'Bulgarian', hr: 'Croatian', sr: 'Serbian', sl: 'Slovenian',
+    bs: 'Bosnian', mk: 'Macedonian', sq: 'Albanian', el: 'Greek',
     // Baltic
-    lt:'Lithuanian', lv:'Latvian', et:'Estonian',
+    lt: 'Lithuanian', lv: 'Latvian', et: 'Estonian',
     // Middle East / Central Asia
-    ar:'Arabic', he:'Hebrew', fa:'Persian', ur:'Urdu', tr:'Turkish',
-    az:'Azerbaijani', ka:'Georgian', hy:'Armenian', kk:'Kazakh', uz:'Uzbek',
+    ar: 'Arabic', he: 'Hebrew', fa: 'Persian', ur: 'Urdu', tr: 'Turkish',
+    az: 'Azerbaijani', ka: 'Georgian', hy: 'Armenian', kk: 'Kazakh', uz: 'Uzbek',
     // South Asia
-    hi:'Hindi', bn:'Bengali', ta:'Tamil', te:'Telugu', ml:'Malayalam',
-    mr:'Marathi', gu:'Gujarati', pa:'Punjabi', si:'Sinhala', ne:'Nepali',
+    hi: 'Hindi', bn: 'Bengali', ta: 'Tamil', te: 'Telugu', ml: 'Malayalam',
+    mr: 'Marathi', gu: 'Gujarati', pa: 'Punjabi', si: 'Sinhala', ne: 'Nepali',
     // East / Southeast Asia
-    zh:'Chinese', ja:'Japanese', ko:'Korean', vi:'Vietnamese', th:'Thai',
-    id:'Indonesian', ms:'Malay', tl:'Filipino', my:'Burmese', km:'Khmer',
+    zh: 'Chinese', ja: 'Japanese', ko: 'Korean', vi: 'Vietnamese', th: 'Thai',
+    id: 'Indonesian', ms: 'Malay', tl: 'Filipino', my: 'Burmese', km: 'Khmer',
     // Africa
-    sw:'Swahili', am:'Amharic', yo:'Yoruba', ig:'Igbo', ha:'Hausa', so:'Somali',
+    sw: 'Swahili', am: 'Amharic', yo: 'Yoruba', ig: 'Igbo', ha: 'Hausa', so: 'Somali',
     // Americas
-    ht:'Haitian Creole', qu:'Quechua',
+    ht: 'Haitian Creole', qu: 'Quechua',
     // Mongolian / misc
-    mn:'Mongolian'
+    mn: 'Mongolian'
 };
 
 // Virtual scrolling globals
@@ -339,6 +339,24 @@ function searchChannels(query) {
 
 // ----- Virtual Scrolling Channel List -----
 function renderChannelList() {
+    // Update channels header title
+    const headerTitle = document.getElementById('channelsHeaderTitle');
+    if (headerTitle) {
+        let title;
+        if (!channels.length || !groupsList.length) {
+            title = '📡 Channels';
+        } else if (currentSearchQuery && currentSearchQuery.trim()) {
+            title = '🔍 Search Results';
+        } else if (currentGroup === 'favorites') {
+            title = '⭐ Favorites';
+        } else if (currentGroup === 'all') {
+            title = '📺 All Channels';
+        } else {
+            title = '📁 ' + currentGroup;
+        }
+        headerTitle.textContent = title;
+    }
+
     // Determine filtered channels
     let filtered = [];
     if (currentSearchQuery && currentSearchQuery.trim()) {
@@ -407,8 +425,11 @@ function renderChannelList() {
                 logoHtml = `<div class="logo-placeholder">📺</div>`;
             }
             div.innerHTML = `
-                <div class="channel-logo">${logoHtml}</div>
-                <div class="channel-info"><span class="channel-num">${originalIndex + 1}</span><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span></div>
+                <div class="channel-logo">
+                    <span class="channel-num">${originalIndex + 1}</span>
+                    <div class="channel-logo-img">${logoHtml}</div>
+                </div>
+                <div class="channel-info"><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span></div>
                 <span class="favorite-star">${fav ? '★' : '☆'}</span>
             `;
             const starSpan = div.querySelector('.favorite-star');
@@ -451,7 +472,7 @@ function selectChannel(index) {
     if (audioPanelOpen) { audioPanel.classList.add('hidden'); audioPanelOpen = false; }
 
     // Some streams add tracks well after loadedmetadata — check again after a delay
-    setTimeout(function() { updateSubtitleButton(); updateAudioButton(); }, 4000);
+    setTimeout(function () { updateSubtitleButton(); updateAudioButton(); }, 4000);
 }
 
 function showTopControls() {
@@ -482,7 +503,7 @@ function showStreamInfo() {
     let audioLang = '—';
     if (videoPlayer.audioTracks && videoPlayer.audioTracks.length) {
         const tracks = Array.from(videoPlayer.audioTracks);
-        const active = tracks.find(function(t) { return t.enabled; }) || tracks[0];
+        const active = tracks.find(function (t) { return t.enabled; }) || tracks[0];
         if (active) {
             const resolvedLang = active.language ? resolveLanguage(active.language) : null;
             if (active.label && active.label.trim()) {
@@ -506,7 +527,7 @@ function showStreamInfo() {
     const audioTracks = getAudioTracks();
     let audioCountSub = '';
     if (audioTracks.length > 1) {
-        const uniqueLangs = new Set(audioTracks.map(function(t) { return t.language || ''; }).filter(Boolean));
+        const uniqueLangs = new Set(audioTracks.map(function (t) { return t.language || ''; }).filter(Boolean));
         let countText;
         if (uniqueLangs.size >= audioTracks.length) {
             countText = audioTracks.length + ' languages available';
@@ -520,26 +541,26 @@ function showStreamInfo() {
 
     streamInfoOverlay.innerHTML =
         '<div class="si-section">' +
-            '<div class="si-label">Video</div>' +
-            '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
+        '<div class="si-label">Video</div>' +
+        '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
         '</div>' +
         '<div class="si-section">' +
-            '<div class="si-label">Audio</div>' +
-            '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
+        '<div class="si-label">Audio</div>' +
+        '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
         '</div>' +
         '<div class="si-section">' +
-            '<div class="si-label">Subtitles</div>' +
-            '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
+        '<div class="si-label">Subtitles</div>' +
+        '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
         '</div>';
 
     streamInfoOverlay.style.opacity = '1';
     if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function() { streamInfoOverlay.style.opacity = '0'; }, 8000);
+    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 8000);
 }
 
 function getSubtitleTracks() {
     if (!videoPlayer.textTracks) return [];
-    return Array.from(videoPlayer.textTracks).filter(function(t) {
+    return Array.from(videoPlayer.textTracks).filter(function (t) {
         return t.kind !== 'metadata' && t.kind !== 'chapters';
     });
 }
@@ -560,18 +581,18 @@ function buildSubtitlePanel() {
     const listEl = document.getElementById('subtitleTrackList');
     listEl.innerHTML = '';
 
-    const allOff = subs.every(function(t) { return t.mode !== 'showing'; });
+    const allOff = subs.every(function (t) { return t.mode !== 'showing'; });
     const offItem = document.createElement('div');
     offItem.className = 'subtitle-track-item' + (allOff ? ' active' : '');
     offItem.textContent = 'Off';
-    offItem.onclick = function() {
-        subs.forEach(function(t) { t.mode = 'disabled'; });
+    offItem.onclick = function () {
+        subs.forEach(function (t) { t.mode = 'disabled'; });
         buildSubtitlePanel();
         showTopControls();
     };
     listEl.appendChild(offItem);
 
-    subs.forEach(function(track, i) {
+    subs.forEach(function (track, i) {
         const item = document.createElement('div');
         const isActive = track.mode === 'showing';
         item.className = 'subtitle-track-item' + (isActive ? ' active' : '');
@@ -581,8 +602,8 @@ function buildSubtitlePanel() {
         const kindLabel = track.kind === 'captions' ? ' [CC]' : '';
         item.textContent = label + kindLabel;
 
-        item.onclick = function() {
-            subs.forEach(function(t) { t.mode = 'disabled'; });
+        item.onclick = function () {
+            subs.forEach(function (t) { t.mode = 'disabled'; });
             track.mode = 'showing';
             buildSubtitlePanel();
             showTopControls();
@@ -625,13 +646,13 @@ function buildAudioPanel() {
 
     // Count how many times each language appears so we can disambiguate duplicates
     const langCount = {};
-    tracks.forEach(function(t) {
+    tracks.forEach(function (t) {
         const k = t.language || '';
         langCount[k] = (langCount[k] || 0) + 1;
     });
     const langSeen = {};
 
-    tracks.forEach(function(track, i) {
+    tracks.forEach(function (track, i) {
         const item = document.createElement('div');
         item.className = 'subtitle-track-item' + (track.enabled ? ' active' : '');
 
@@ -658,8 +679,8 @@ function buildAudioPanel() {
         }
 
         item.textContent = name;
-        item.onclick = function() {
-            tracks.forEach(function(t) { t.enabled = false; });
+        item.onclick = function () {
+            tracks.forEach(function (t) { t.enabled = false; });
             track.enabled = true;
             buildAudioPanel();
             if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
@@ -821,29 +842,27 @@ searchInput.addEventListener('input', () => { currentSearchQuery = searchInput.v
 clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); renderChannelList(); });
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
-videoPlayer.addEventListener('loadedmetadata', function() { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
+videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
 videoPlayer.addEventListener('resize', showStreamInfo);
 videoArea.addEventListener('mousemove', showTopControls);
-videoArea.addEventListener('click', function(e) {
+videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
     if (audioPanelOpen && !audioPanel.contains(e.target) && e.target !== audioBtn) toggleAudioPanel();
 });
-videoPlayer.textTracks.addEventListener('addtrack', function() {
+videoPlayer.textTracks.addEventListener('addtrack', function () {
     updateSubtitleButton();
     if (subtitlePanelOpen) buildSubtitlePanel();
 });
-videoPlayer.textTracks.addEventListener('removetrack', function() { updateSubtitleButton(); });
+videoPlayer.textTracks.addEventListener('removetrack', function () { updateSubtitleButton(); });
 if (videoPlayer.audioTracks) {
-    videoPlayer.audioTracks.addEventListener('addtrack', function() {
+    videoPlayer.audioTracks.addEventListener('addtrack', function () {
         updateAudioButton();
         if (audioPanelOpen) buildAudioPanel();
     });
-    videoPlayer.audioTracks.addEventListener('removetrack', function() { updateAudioButton(); });
+    videoPlayer.audioTracks.addEventListener('removetrack', function () { updateAudioButton(); });
 }
 document.addEventListener('keydown', handleRemoteNav);
 document.addEventListener('fullscreenchange', () => {
-    const isFull = !!document.fullscreenElement;
-    header.classList.toggle('hidden', isFull);
     showTopControls();
 });
 

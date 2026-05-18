@@ -328,44 +328,6 @@ body {
 }
 
 /* Main App */
-.header {
-    background: #1e1f24;
-    padding: 12px 20px;
-    border-bottom: 1px solid #2c2e36;
-    z-index: 10;
-}
-
-.title-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
-}
-
-.title {
-    font-size: 1.5rem;
-    font-weight: 600;
-    background: linear-gradient(135deg, #fff, #6c8eff);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-}
-
-.header-right {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-}
-
-.status {
-    font-size: 0.75rem;
-    color: #6c8eff;
-    background: rgba(108, 142, 255, 0.15);
-    padding: 4px 12px;
-    border-radius: 20px;
-}
-
 .home-btn {
     background: #2c2f3a;
     border: none;
@@ -377,6 +339,7 @@ body {
     display: flex;
     align-items: center;
     gap: 5px;
+    flex-shrink: 0;
 }
 
 .main-content {
@@ -459,6 +422,11 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    transition: width 0.3s ease;
+}
+
+.groups-column.collapsed + .channels-column {
+    width: 520px;
 }
 
 .channels-header {
@@ -532,6 +500,7 @@ body {
     padding: 4px 10px;
     font-size: 0.7rem;
     border-radius: 15px;
+    margin-top: 1rem;
     display: none;
 }
 
@@ -539,7 +508,26 @@ body {
 .channel-list {
     position: relative;
     overflow-y: auto;
-    height: 100%;
+    flex: 1;
+}
+
+.channels-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #0c0e12;
+    border-top: 1px solid #262a33;
+    flex-shrink: 0;
+}
+
+.channels-status {
+    font-size: 0.7rem;
+    color: #6c8eff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
 }
 
 .channel-list-virtual {
@@ -587,14 +575,27 @@ body {
 }
 
 .channel-logo {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    width: 36px;
+}
+
+.channel-logo-img {
     position: relative;
+    width: 28px;
+    height: 28px;
     background: #2c2f3a;
+    border-radius: 4px;
     display: flex;
     align-items: center;
     justify-content: center;
+    overflow: hidden;
 }
 
-.channel-logo .logo-img {
+.channel-logo-img .logo-img {
     position: absolute;
     top: 0;
     left: 0;
@@ -604,10 +605,10 @@ body {
     z-index: 2;
 }
 
-.channel-logo .logo-placeholder {
+.channel-logo-img .logo-placeholder {
     position: relative;
     z-index: 1;
-    font-size: 1rem;
+    font-size: 0.9rem;
 }
 
 /* .channel-logo {
@@ -646,15 +647,16 @@ body {
 
 .channel-num {
     color: #8e9aaf;
-    font-size: 0.65rem;
-    display: block;
+    font-size: 0.6rem;
+    line-height: 1;
+    text-align: center;
 }
 
 .channel-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.8rem;
+    font-size: 0.9rem;
 }
 
 .favorite-star {
