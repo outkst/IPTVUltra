@@ -555,7 +555,7 @@ function showStreamInfo() {
 
     streamInfoOverlay.style.opacity = '1';
     if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 8000);
+    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 3000);
 }
 
 function getSubtitleTracks() {
