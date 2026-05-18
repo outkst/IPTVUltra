@@ -33,6 +33,8 @@
 					<div class="add-header">➕ ADD NEW PLAYLIST</div>
 					<div class="add-input-group"><input type="text" id="newM3uUrl" class="add-input"
 							placeholder="M3U URL (required)" tabindex="0"></div>
+					<div class="add-input-group"><input type="text" id="newEpgUrl" class="add-input"
+							placeholder="EPG / XMLTV URL (optional)" tabindex="0"></div>
 					<div class="add-input-group"><input type="text" id="newM3uName" class="name-input"
 							placeholder="Name (optional)" tabindex="0"><button id="saveNewBtn" class="save-source-btn"
 							tabindex="0">Save Playlist</button></div>
@@ -97,6 +99,7 @@
 						<div id="subtitleTrackList"></div>
 					</div>
 					<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
+					<div id="epgNowNext" class="epg-now-next" style="display:none;"></div>
 					<div id="channelInfoTag" class="channel-info-tag"></div>
 				</div>
 			</div>

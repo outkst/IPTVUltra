@@ -10,6 +10,13 @@ let groupsColumnVisible = true;
 let isLoading = false;
 let currentSearchQuery = '';
 
+// EPG state
+let epgData = new Map();      // channelId -> [{start, stop, title, desc}]
+let epgIdMap = new Map();     // lowercase string -> actual channelId key in epgData
+let epgLoading = false;
+let currentEpgUrl = '';
+let epgRefreshTimer = null;
+
 // DOM elements
 const videoPlayer = document.getElementById('videoPlayer');
 const channelListDiv = document.getElementById('channelList');
@@ -47,6 +54,7 @@ const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
+const newEpgUrl = document.getElementById('newEpgUrl');
 
 let infoHideTimeout = null;
 let controlsTimeout = null;
@@ -81,6 +89,198 @@ const LANG_NAMES = {
     // Mongolian / misc
     mn: 'Mongolian'
 };
+
+// ----- EPG (XMLTV) -----
+function parseXMLTVDate(str) {
+    if (!str) return null;
+    const m = str.match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-])(\d{2})(\d{2})/);
+    if (!m) return null;
+    const utc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+    const sign = m[7] === '+' ? 1 : -1;
+    return utc - sign * ((+m[8]) * 60 + (+m[9])) * 60000;
+}
+
+function formatTimeHHMM(ts) {
+    const d = new Date(ts);
+    return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+}
+
+function resolveEpgId(tvgId) {
+    if (!tvgId) return null;
+    if (epgData.has(tvgId)) return tvgId;
+    return epgIdMap.get(tvgId.toLowerCase()) || null;
+}
+
+function getCurrentProgramme(tvgId) {
+    const id = resolveEpgId(tvgId);
+    if (!id) return null;
+    const now = Date.now();
+    const progs = epgData.get(id);
+    if (!progs) return null;
+    for (const p of progs) {
+        if (p.start <= now && p.stop > now) return p;
+    }
+    return null;
+}
+
+function getNextProgramme(tvgId) {
+    const id = resolveEpgId(tvgId);
+    if (!id) return null;
+    const now = Date.now();
+    const progs = epgData.get(id);
+    if (!progs) return null;
+    let next = null;
+    for (const p of progs) {
+        if (p.start > now && (!next || p.start < next.start)) next = p;
+    }
+    return next;
+}
+
+async function loadEPG(url) {
+    if (epgLoading) return;
+    epgLoading = true;
+    epgData.clear();
+    epgIdMap.clear();
+    currentEpgUrl = url;
+
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let programmeCount = 0;
+    let bytesRead = 0;
+    const now = Date.now();
+    const windowStart = now - 3600000;  // keep up to 1h ago (in-progress shows)
+    const windowEnd = now + 86400000;   // up to 24h ahead
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body.getReader();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytesRead += value.byteLength;
+            buffer += decoder.decode(value, { stream: true });
+
+            // Extract complete <channel> elements (always before <programme> in XMLTV)
+            let idx;
+            while ((idx = buffer.indexOf('</channel>')) !== -1) {
+                const s = buffer.lastIndexOf('<channel', idx);
+                if (s !== -1) {
+                    const xml = buffer.substring(s, idx + 10);
+                    const idM = xml.match(/id="([^"]*)"/);
+                    const nmM = xml.match(/<display-name[^>]*>([^<]+)<\/display-name>/);
+                    if (idM) {
+                        const cid = idM[1];
+                        epgIdMap.set(cid.toLowerCase(), cid);
+                        if (nmM) epgIdMap.set(nmM[1].toLowerCase().trim(), cid);
+                    }
+                }
+                buffer = buffer.substring(idx + 10);
+            }
+
+            // Extract complete <programme> elements
+            while ((idx = buffer.indexOf('</programme>')) !== -1) {
+                const s = buffer.lastIndexOf('<programme', idx);
+                if (s !== -1) {
+                    const xml = buffer.substring(s, idx + 12);
+                    const chM = xml.match(/channel="([^"]*)"/);
+                    const stM = xml.match(/start="([^"]*)"/);
+                    const spM = xml.match(/stop="([^"]*)"/);
+                    const tiM = xml.match(/<title[^>]*>([^<]*)<\/title>/);
+                    const deM = xml.match(/<desc[^>]*>([^<]*)<\/desc>/);
+                    if (chM && stM) {
+                        const pStart = parseXMLTVDate(stM[1]);
+                        const pStop = spM ? parseXMLTVDate(spM[1]) : null;
+                        // Only keep programmes within the time window
+                        if (pStart !== null && pStart <= windowEnd && (pStop === null || pStop >= windowStart)) {
+                            const cid = chM[1];
+                            if (!epgData.has(cid)) {
+                                epgData.set(cid, []);
+                                epgIdMap.set(cid.toLowerCase(), cid);
+                            }
+                            epgData.get(cid).push({
+                                start: pStart,
+                                stop: pStop || 0,
+                                title: tiM ? tiM[1].trim() : '',
+                                desc: deM ? deM[1].trim() : ''
+                            });
+                            programmeCount++;
+                        }
+                    }
+                }
+                buffer = buffer.substring(idx + 12);
+            }
+
+            // Safety trim: if buffer grew past 1 MB with no complete element, keep only the
+            // last partial open tag so we don't accumulate a runaway blob
+            if (buffer.length > 1048576) {
+                const trim = Math.max(buffer.lastIndexOf('<programme'), buffer.lastIndexOf('<channel'));
+                buffer = trim > 0 ? buffer.substring(trim) : '';
+            }
+
+            // Yield every ~256 KB to keep UI responsive
+            if (bytesRead % (256 * 1024) < value.byteLength) {
+                statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes…`;
+                await new Promise(r => setTimeout(r, 0));
+            }
+        }
+
+        // Sort each channel's programme list chronologically for fast lookup
+        for (const progs of epgData.values()) {
+            progs.sort((a, b) => a.start - b.start);
+        }
+
+        renderChannelList();
+        updateNowNext();
+
+        // Refresh Now/Next every minute as current programme advances
+        if (epgRefreshTimer) clearInterval(epgRefreshTimer);
+        epgRefreshTimer = setInterval(updateNowNext, 60000);
+
+        const mb = (bytesRead / 1048576).toFixed(1);
+        statusArea.innerText = `📅 EPG ready — ${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)`;
+        setTimeout(() => {
+            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
+        }, 4000);
+
+    } catch (err) {
+        statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
+        setTimeout(() => {
+            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
+        }, 3000);
+    } finally {
+        epgLoading = false;
+        buffer = null;
+    }
+}
+
+function updateNowNext() {
+    const panel = document.getElementById('epgNowNext');
+    if (!panel) return;
+    if (currentChannelIndex < 0 || !channels[currentChannelIndex]) { panel.style.display = 'none'; return; }
+    const ch = channels[currentChannelIndex];
+    const nowProg = getCurrentProgramme(ch.tvgId);
+    const nextProg = getNextProgramme(ch.tvgId);
+    if (!nowProg && !nextProg) { panel.style.display = 'none'; return; }
+
+    let html = '';
+    if (nowProg) {
+        const pct = (nowProg.stop && nowProg.stop > nowProg.start)
+            ? Math.min(100, Math.max(0, (Date.now() - nowProg.start) / (nowProg.stop - nowProg.start) * 100))
+            : 0;
+        const timeStr = nowProg.stop
+            ? formatTimeHHMM(nowProg.start) + '–' + formatTimeHHMM(nowProg.stop)
+            : formatTimeHHMM(nowProg.start);
+        html += `<div class="epg-row epg-now"><span class="epg-badge">NOW</span><span class="epg-title">${escapeHtml(nowProg.title)}</span><span class="epg-time">${timeStr}</span></div>`;
+        html += `<div class="epg-progress-bar"><div class="epg-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
+    }
+    if (nextProg) {
+        html += `<div class="epg-row epg-next"><span class="epg-badge epg-badge-next">NEXT</span><span class="epg-title epg-title-next">${escapeHtml(nextProg.title)}</span><span class="epg-time">${formatTimeHHMM(nextProg.start)}</span></div>`;
+    }
+    panel.innerHTML = html;
+    panel.style.display = 'block';
+}
 
 // Virtual scrolling globals
 let renderedItems = new Map();
@@ -180,9 +380,12 @@ async function parseM3UStreaming(content) {
 }
 
 // ----- Loading playlists -----
-async function loadM3UFromUrl(url) {
+async function loadM3UFromUrl(url, epgUrl = '') {
     if (isLoading) return;
     isLoading = true;
+    epgData.clear();
+    epgIdMap.clear();
+    currentEpgUrl = epgUrl;
     setLoadSelectedButtonEnabled(false);
     updateStartStatus(`Fetching playlist...`, false, false, true, 0);
     showLoading(true, 'Fetching playlist...');
@@ -209,6 +412,8 @@ async function loadM3UFromUrl(url) {
             const firstIdx = currentFilteredChannels.length ? channels.indexOf(currentFilteredChannels[0]) : 0;
             selectChannel(firstIdx);
         }, 500);
+        // Start EPG load in background after playlist is ready
+        if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
     } catch (err) {
         updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
         setLoadSelectedButtonEnabled(true);
@@ -383,20 +588,25 @@ function renderChannelList() {
     }
     // Clear rendered items map
     renderedItems.clear();
+
+    // Row height depends on whether EPG data is available
+    const ITEM_H = epgData.size > 0 ? 68 : 52;
+    const ITEM_INNER = epgData.size > 0 ? 66 : 50;
+
     // Setup virtual container
     channelListDiv.innerHTML = '';
     channelListDiv.style.position = 'relative';
     const virtualContainer = document.createElement('div');
     virtualContainer.className = 'channel-list-virtual';
-    virtualContainer.style.height = `${total * 52}px`; // approximate row height
+    virtualContainer.style.height = `${total * ITEM_H}px`;
     channelListDiv.appendChild(virtualContainer);
 
     // Function to render visible items
     const renderVisible = () => {
         const scrollTop = channelListDiv.scrollTop;
         const containerHeight = channelListDiv.clientHeight;
-        const startIdx = Math.floor(scrollTop / 52);
-        const endIdx = Math.min(total, startIdx + Math.ceil(containerHeight / 52) + 2);
+        const startIdx = Math.floor(scrollTop / ITEM_H);
+        const endIdx = Math.min(total, startIdx + Math.ceil(containerHeight / ITEM_H) + 2);
         // Remove items outside viewport
         for (let [idx, el] of renderedItems) {
             if (idx < startIdx || idx > endIdx) {
@@ -412,9 +622,9 @@ function renderChannelList() {
             const fav = favoriteIds.has(ch.tvgId || `idx_${originalIndex}`);
             const div = document.createElement('div');
             div.className = 'virtual-item' + (currentChannelIndex === originalIndex ? ' active' : '');
-            div.style.top = `${i * 52}px`;
-            div.style.height = '50px';
-            // Build content efficiently
+            div.style.top = `${i * ITEM_H}px`;
+            div.style.height = `${ITEM_INNER}px`;
+            // Build logo HTML
             let logoHtml = '';
             if (ch.tvgLogo && ch.tvgLogo.trim()) {
                 logoHtml = `
@@ -424,12 +634,17 @@ function renderChannelList() {
             } else {
                 logoHtml = `<div class="logo-placeholder">📺</div>`;
             }
+            // EPG "now playing" line
+            const nowProg = getCurrentProgramme(ch.tvgId);
+            const epgLine = nowProg
+                ? `<span class="channel-epg">${escapeHtml(nowProg.title.length > 36 ? nowProg.title.substring(0, 34) + '…' : nowProg.title)}</span>`
+                : (epgData.size > 0 ? '<span class="channel-epg"></span>' : '');
             div.innerHTML = `
                 <div class="channel-logo">
                     <span class="channel-num">${originalIndex + 1}</span>
                     <div class="channel-logo-img">${logoHtml}</div>
                 </div>
-                <div class="channel-info"><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span></div>
+                <div class="channel-info"><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span>${epgLine}</div>
                 <span class="favorite-star">${fav ? '★' : '☆'}</span>
             `;
             const starSpan = div.querySelector('.favorite-star');
@@ -465,6 +680,7 @@ function selectChannel(index) {
     channelInfoTag.innerText = `📺 ${ch.name}`;
     statusArea.innerText = `▶️ ${ch.name}`;
     renderChannelList();
+    updateNowNext();
     showTopControls();
 
     // Reset per-stream state
@@ -715,6 +931,7 @@ function reloadStream() {
 }
 
 function goToHomeScreen() {
+    if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
     videoPlayer.pause();
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
@@ -742,15 +959,16 @@ function loadSavedPlaylists() {
     renderSavedPlaylists();
 }
 function savePlaylistsToStorage() { localStorage.setItem('iptv_playlists', JSON.stringify(savedPlaylists)); renderSavedPlaylists(); }
-function addPlaylist(url, name) {
+function addPlaylist(url, name, epgUrl) {
     if (!url) return;
     const existing = savedPlaylists.find(p => p.url === url);
     if (existing) {
         existing.name = name || existing.name;
+        existing.epgUrl = epgUrl !== undefined ? epgUrl : (existing.epgUrl || '');
         savePlaylistsToStorage();
         updateStartStatus(`Playlist "${existing.name}" updated!`, false, true, false, 0);
     } else {
-        savedPlaylists.push({ name: name || url.substring(0, 40), url });
+        savedPlaylists.push({ name: name || url.substring(0, 40), url, epgUrl: epgUrl || '' });
         savePlaylistsToStorage();
         updateStartStatus(`Playlist saved!`, false, true, false, 0);
     }
@@ -777,9 +995,11 @@ function renderSavedPlaylists() {
             setLoadSelectedButtonEnabled(true);
             newM3uUrl.value = p.url;
             newM3uName.value = p.name;
+            newEpgUrl.value = p.epgUrl || '';
         };
-        div.innerHTML = `<div class="saved-info"><div class="saved-name">${escapeHtml(p.name)}</div><div class="saved-url">${p.url.substring(0, 57)}${p.url.length > 57 ? '...' : ''}</div></div>
-            <div class="saved-actions"><button class="edit-saved" onclick="event.stopPropagation(); document.getElementById('newM3uUrl').value='${escapeHtml(p.url)}'; document.getElementById('newM3uName').value='${escapeHtml(p.name)}';">✏️</button>
+        const epgLine = p.epgUrl ? `<div class="saved-epg">📅 ${p.epgUrl.substring(0, 50)}${p.epgUrl.length > 50 ? '...' : ''}</div>` : '';
+        div.innerHTML = `<div class="saved-info"><div class="saved-name">${escapeHtml(p.name)}</div><div class="saved-url">${p.url.substring(0, 57)}${p.url.length > 57 ? '...' : ''}</div>${epgLine}</div>
+            <div class="saved-actions"><button class="edit-saved" onclick="event.stopPropagation(); document.getElementById('newM3uUrl').value='${escapeHtml(p.url)}'; document.getElementById('newM3uName').value='${escapeHtml(p.name)}'; document.getElementById('newEpgUrl').value='${escapeHtml(p.epgUrl || '')}';  ">✏️</button>
             <button class="delete-saved" onclick="event.stopPropagation(); removePlaylist(${idx});">✕</button></div>`;
         container.appendChild(div);
     });
@@ -795,6 +1015,7 @@ function updateFocusableElements() {
         if (clearAllBtn) focusableElements.push(clearAllBtn);
         document.querySelectorAll('.saved-item').forEach(el => focusableElements.push(el));
         if (newM3uUrl) focusableElements.push(newM3uUrl);
+        if (newEpgUrl) focusableElements.push(newEpgUrl);
         if (newM3uName) focusableElements.push(newM3uName);
         if (saveNewBtn) focusableElements.push(saveNewBtn);
         if (loadSelectedBtn && !loadSelectedBtn.disabled) focusableElements.push(loadSelectedBtn);
@@ -821,10 +1042,16 @@ function handleRemoteNav(e) {
 saveNewBtn.addEventListener('click', () => {
     const url = newM3uUrl.value.trim();
     const name = newM3uName.value.trim();
-    if (url) addPlaylist(url, name);
+    const epgUrl = newEpgUrl.value.trim();
+    if (url) addPlaylist(url, name, epgUrl);
     else updateStartStatus('Please enter a valid URL', true, false, false, 0);
 });
-loadSelectedBtn.addEventListener('click', () => { if (!isLoading && selectedPlaylistId !== null && savedPlaylists[selectedPlaylistId]) loadM3UFromUrl(savedPlaylists[selectedPlaylistId].url); });
+loadSelectedBtn.addEventListener('click', () => {
+    if (!isLoading && selectedPlaylistId !== null && savedPlaylists[selectedPlaylistId]) {
+        const p = savedPlaylists[selectedPlaylistId];
+        loadM3UFromUrl(p.url, p.epgUrl || '');
+    }
+});
 startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
     confirmDialog.classList.remove('hidden');
