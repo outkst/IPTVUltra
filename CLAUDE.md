@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-IPTVUltra (v2.3.0, app ID `com.outkst.iptvultra`) is a webOS TV application for LG Smart TVs that streams IPTV channels from M3U playlists. Vanilla HTML/JS/CSS — no build system, no bundler, no test framework.
+IPTVUltra (v2.5.0, app ID `com.outkst.iptvultra`) is a webOS TV application for LG Smart TVs that streams IPTV channels from M3U playlists. Vanilla HTML/JS/CSS — no build system, no bundler, no test framework.
 
 ## Build & Deployment
 
@@ -13,7 +13,7 @@ IPTVUltra (v2.3.0, app ID `com.outkst.iptvultra`) is a webOS TV application for 
 ares-package .
 
 # Install to TV
-ares-install com.outkst.iptvultra_2.3.0_all.ipk --device LivingRoomTV
+ares-install com.outkst.iptvultra_2.5.0_all.ipk --device LivingRoomTV
 
 # Launch
 ares-launch com.outkst.iptvultra --device LivingRoomTV
