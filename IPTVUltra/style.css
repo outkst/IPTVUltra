@@ -242,6 +242,40 @@ body {
     text-transform: uppercase;
 }
 
+.tab-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 9px 12px;
+    border: 1px solid #3a3c47;
+    border-radius: 10px;
+    background: #1e2028;
+    color: #8e9aaf;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.tab-btn.active {
+    background: #2a3a70;
+    border-color: #6c8eff;
+    color: #fff;
+}
+
+.tab-btn:focus {
+    outline: 2px solid #6c8eff;
+}
+
+.tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
 .add-input-group {
     display: flex;
     gap: 10px;
@@ -434,7 +468,7 @@ body {
     transition: width 0.3s ease;
 }
 
-.groups-column.collapsed + .channels-column {
+.groups-column.collapsed+.channels-column {
     width: 520px;
 }
 
@@ -732,7 +766,7 @@ video {
     padding: 6px 12px;
     border-radius: 20px;
     color: white;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     cursor: pointer;
 }
 
@@ -928,7 +962,7 @@ video {
     backdrop-filter: blur(8px);
     padding: 5px 12px;
     border-radius: 20px;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     pointer-events: none;
     z-index: 16;
 }
