@@ -164,7 +164,7 @@ async function loadEPG(url) {
     let bytesRead = 0;
     const now = Date.now();
     const windowStart = now - 120000;
-    const windowEnd = now + 10800000;
+    const windowEnd = now + 86400000; // 24h
 
     try {
         const response = await fetch(url);
@@ -175,6 +175,8 @@ async function loadEPG(url) {
             const { done, value } = await reader.read();
             if (done) break;
             bytesRead += value.byteLength;
+            // Hard abort: avoid OOM on feeds > 30 MB
+            if (bytesRead > 30 * 1024 * 1024) { reader.cancel(); break; }
 
             // Drop already-processed portion before appending — one slice per chunk
             // instead of one slice per element.
@@ -219,14 +221,7 @@ async function loadEPG(url) {
                                 epgData.set(cid, []);
                                 epgIdMap.set(cid.toLowerCase(), cid);
                             }
-                            const arr = epgData.get(cid);
-                            arr.push({ start: pStart, stop: pStop || 0, title: tiM ? tiM[1].trim() : '' });
-                            if (arr.length > 4) {
-                                const now2 = Date.now();
-                                const pastIdx = arr.findIndex(p => p.stop > now2);
-                                if (pastIdx > 0) arr.splice(0, pastIdx);
-                                if (arr.length > 4) arr.splice(0, arr.length - 4);
-                            }
+                            epgData.get(cid).push({ start: pStart, stop: pStop || 0, title: tiM ? tiM[1].trim() : '' });
                             programmeCount++;
                         }
                     }
@@ -1031,6 +1026,80 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
     focusElement(0);
 }
 
+async function loadXtreamEPG(base, username, password) {
+    if (epgLoading) return;
+    epgLoading = true;
+    epgData.clear();
+    epgIdMap.clear();
+
+    const u = encodeURIComponent(username);
+    const pw = encodeURIComponent(password);
+    const now2 = Date.now();
+    const windowStart = now2 - 120000;
+    const windowEnd = now2 + 86400000; // 24h
+
+    // Batch requests: 10 concurrent at a time so we don't flood the server
+    const BATCH = 10;
+    const total = Math.min(channels.length, 2000);
+
+    try {
+        for (let i = 0; i < total; i += BATCH) {
+            const batch = channels.slice(i, i + BATCH).filter(ch => ch.streamId);
+            if (!batch.length) continue;
+
+            const results = await Promise.allSettled(
+                batch.map(ch =>
+                    fetch(`${base}/player_api.php?username=${u}&password=${pw}&action=get_short_epg&stream_id=${ch.streamId}&limit=48`)
+                        .then(r => r.ok ? r.json() : null)
+                        .catch(() => null)
+                )
+            );
+
+            results.forEach((result, j) => {
+                if (result.status !== 'fulfilled' || !result.value) return;
+                const ch = batch[j];
+                const listings = result.value.epg_listings;
+                if (!Array.isArray(listings) || !listings.length) return;
+
+                const progs = [];
+                for (const ep of listings) {
+                    const pStart = parseInt(ep.start_timestamp) * 1000;
+                    const pStop = parseInt(ep.stop_timestamp) * 1000;
+                    if (isNaN(pStart) || isNaN(pStop)) continue;
+                    if (pStart > windowEnd || pStop < windowStart) continue;
+                    let title = ep.title || '';
+                    try { title = atob(title); } catch (e) {}
+                    progs.push({ start: pStart, stop: pStop, title: title.trim() });
+                }
+                if (progs.length) {
+                    progs.sort((a, b) => a.start - b.start);
+                    epgData.set(ch.tvgId, progs);
+                    epgIdMap.set(ch.tvgId.toLowerCase(), ch.tvgId);
+                }
+            });
+
+            statusArea.innerText = `📅 EPG: ${Math.min(i + BATCH, total).toLocaleString()}/${total.toLocaleString()} channels…`;
+            await new Promise(r => setTimeout(r, 80));
+        }
+
+        renderChannelList();
+        updateNowNext();
+        if (epgRefreshTimer) clearInterval(epgRefreshTimer);
+        epgRefreshTimer = setInterval(updateNowNext, 60000);
+        statusArea.innerText = `📅 EPG ready — ${epgData.size.toLocaleString()} channels`;
+        setTimeout(() => {
+            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
+        }, 4000);
+    } catch (err) {
+        statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
+        setTimeout(() => {
+            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
+        }, 3000);
+    } finally {
+        epgLoading = false;
+    }
+}
+
 async function loadXtreamPlaylist(serverUrl, username, password) {
     if (isLoading) return;
     isLoading = true;
@@ -1084,7 +1153,8 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
                     tvgId: s.epg_channel_id || String(s.stream_id),
                     tvgLogo: s.stream_icon || '',
                     group: catMap[String(s.category_id)] || '',
-                    url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`
+                    url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`,
+                    streamId: s.stream_id
                 });
             }
             const pct = Math.min(90, 55 + Math.round((i / streams.length) * 35));
@@ -1108,10 +1178,8 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
             selectChannel(firstIdx);
         }, 500);
 
-        // 5. Start EPG in background from Xtream XMLTV endpoint
-        const epgUrl = `${base}/xmltv.php?username=${u}&password=${pw}`;
-        currentEpgUrl = epgUrl;
-        setTimeout(() => loadEPG(epgUrl), 1500);
+        // 5. Load EPG via per-channel JSON API (avoids downloading the full XMLTV)
+        setTimeout(() => loadXtreamEPG(base, username, password), 1500);
 
     } catch (err) {
         updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
