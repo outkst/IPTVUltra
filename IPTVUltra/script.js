@@ -11,6 +11,7 @@ let isLoading = false;
 let currentSearchQuery = '';
 
 let activeTab = 'xtream'; // 'xtream' | 'm3u'
+let epgMode = false;
 
 // EPG state
 let epgData = new Map();      // channelId -> [{start, stop, title, desc}]
@@ -593,6 +594,7 @@ function renderChannelList() {
         filtered = channels.filter(ch => ch.group === currentGroup);
     }
     currentFilteredChannels = filtered;
+    if (epgMode) { renderEPGGuide(); return; }
     const total = filtered.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
     channelCountSpan.innerText = `${total} channels${info}`;
@@ -700,6 +702,7 @@ function selectChannel(index) {
     statusArea.innerText = `▶️ ${ch.name}`;
     renderChannelList();
     updateNowNext();
+    if (epgMode) updateEPGInfoPanel(ch);
     showTopControls();
 
     // Reset per-stream state
@@ -1026,6 +1029,123 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
     focusElement(0);
 }
 
+// ── EPG Guide Layout ──────────────────────────────────────────
+const EPG_CH_W = 180;   // channel label column px
+const EPG_GUIDE_MINS = 180; // 3-hour window
+
+function enterEPGMode() {
+    epgMode = true;
+    const sv = document.getElementById('standardView');
+    const ev = document.getElementById('epgView');
+    if (!sv || !ev) return;
+    sv.style.display = 'none';
+    ev.style.display = 'flex';
+    // Move <video> into the EPG video container
+    const wrap = document.getElementById('epgVideoWrap');
+    if (wrap && videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
+    renderEPGGuide();
+    if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
+        updateEPGInfoPanel(channels[currentChannelIndex]);
+    }
+}
+
+function renderEPGGuide() {
+    const guideWrap = document.getElementById('epgGuideWrap');
+    const timeStrip = document.getElementById('epgTimeStrip');
+    const body = document.getElementById('epgBody');
+    if (!guideWrap || !timeStrip || !body) return;
+
+    const guideW = guideWrap.clientWidth - EPG_CH_W;
+    if (guideW <= 0) { requestAnimationFrame(renderEPGGuide); return; }
+
+    const pxPerMin = guideW / EPG_GUIDE_MINS;
+    const now = Date.now();
+    const winStart = now - 30 * 60000;          // 30 min ago
+    const winEnd   = winStart + EPG_GUIDE_MINS * 60000;
+
+    // Time strip
+    let tsHtml = `<div style="width:${EPG_CH_W}px;flex-shrink:0;background:#0f1117;border-right:1px solid #2a2d3a;"></div>`;
+    tsHtml += `<div style="flex:1;position:relative;overflow:hidden;">`;
+    for (let m = 0; m <= EPG_GUIDE_MINS; m += 30) {
+        const x = (m * pxPerMin).toFixed(1);
+        const t = new Date(winStart + m * 60000);
+        const label = t.getHours().toString().padStart(2,'0') + ':' + t.getMinutes().toString().padStart(2,'0');
+        tsHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
+    }
+    const nowX = Math.max(0, Math.min(guideW, (now - winStart) / 60000 * pxPerMin)).toFixed(1);
+    tsHtml += `<div class="epg-now-line" style="left:${nowX}px"></div></div>`;
+    timeStrip.innerHTML = tsHtml;
+
+    // Channel rows
+    body.innerHTML = '';
+    for (let i = 0; i < currentFilteredChannels.length; i++) {
+        const ch = currentFilteredChannels[i];
+        const origIdx = channels.indexOf(ch);
+        const isActive = origIdx === currentChannelIndex;
+
+        const row = document.createElement('div');
+        row.className = 'epg-row' + (isActive ? ' active' : '');
+
+        // Channel label
+        const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
+        const labelHtml = `<div class="epg-ch-label">${logoSrc
+            ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
+            : '<span class="epg-ch-no-logo">📺</span>'
+        }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0,20)+'…' : ch.name)}</span></div>`;
+
+        // Programme blocks
+        const resolvedId = resolveEpgId(ch.tvgId);
+        const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
+        let progsHtml = '<div class="epg-progs">';
+        for (const p of progs) {
+            if (p.stop <= winStart || p.start >= winEnd) continue;
+            const sx = Math.max(0, (p.start - winStart) / 60000 * pxPerMin).toFixed(1);
+            const ex = Math.min(guideW, (p.stop  - winStart) / 60000 * pxPerMin);
+            const w  = (ex - parseFloat(sx) - 2).toFixed(1);
+            if (parseFloat(w) < 4) continue;
+            const isNow = p.start <= now && p.stop > now;
+            progsHtml += `<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
+                `<span class="epg-prog-title">${escapeHtml(p.title)}</span></div>`;
+        }
+        progsHtml += '</div>';
+
+        row.innerHTML = labelHtml + progsHtml;
+        row.addEventListener('click', () => {
+            body.querySelectorAll('.epg-row.active').forEach(r => r.classList.remove('active'));
+            row.classList.add('active');
+            selectChannel(origIdx);
+            updateEPGInfoPanel(ch);
+        });
+        body.appendChild(row);
+    }
+}
+
+function updateEPGInfoPanel(ch) {
+    const logo  = document.getElementById('epgInfoLogo');
+    const name  = document.getElementById('epgInfoName');
+    const time  = document.getElementById('epgInfoTime');
+    const title = document.getElementById('epgInfoTitle');
+    const desc  = document.getElementById('epgInfoDesc');
+    if (!name) return;
+
+    if (ch.tvgLogo) { logo.src = ch.tvgLogo; logo.style.display = ''; }
+    else logo.style.display = 'none';
+
+    name.textContent = ch.name;
+
+    const curr = getCurrentProgramme(ch.tvgId);
+    if (curr) {
+        const totalMins = Math.round((curr.stop - curr.start) / 60000);
+        time.textContent  = `${formatTimeHHMM(curr.start)} – ${formatTimeHHMM(curr.stop)}  (${totalMins} min)`;
+        title.textContent = curr.title;
+        desc.textContent  = curr.desc || '';
+    } else {
+        time.textContent  = '';
+        title.textContent = '';
+        desc.textContent  = '';
+    }
+}
+
 async function loadXtreamEPG(base, username, password) {
     if (epgLoading) return;
     epgLoading = true;
@@ -1066,22 +1186,18 @@ async function loadXtreamEPG(base, username, password) {
                     const pStop = parseInt(ep.stop_timestamp) * 1000;
                     if (isNaN(pStart) || isNaN(pStop)) continue;
                     if (pStart > windowEnd || pStop < windowStart) continue;
-                    let title = ep.title || '';
-                    // Only decode as base64 if the string is entirely base64-alphabet
-                    // characters AND the decoded bytes are all printable ASCII — avoids
-                    // garbling plain-text titles that happen to pass atob().
-                    if (title.length % 4 === 0 && /^[A-Za-z0-9+/]+=*$/.test(title)) {
+                    const decodeField = s => {
+                        if (!s || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]+=*$/.test(s)) return s || '';
                         try {
-                            const raw = atob(title);
-                            let ok = raw.length > 0;
-                            for (let ci = 0; ok && ci < raw.length; ci++) {
-                                const c = raw.charCodeAt(ci);
-                                if (c < 0x20 && c !== 0x09 && c !== 0x0A) ok = false;
-                            }
-                            if (ok && /[a-zA-Z]/.test(raw)) title = raw;
+                            const r = atob(s); let ok = r.length > 0;
+                            for (let ci = 0; ok && ci < r.length; ci++) { const c = r.charCodeAt(ci); if (c < 0x20 && c !== 0x09 && c !== 0x0A) ok = false; }
+                            if (ok && /[a-zA-Z]/.test(r)) return r;
                         } catch (e) {}
-                    }
-                    progs.push({ start: pStart, stop: pStop, title: title.trim() });
+                        return s;
+                    };
+                    const title = decodeField(ep.title || '').trim();
+                    const desc  = decodeField(ep.description || '').trim();
+                    progs.push({ start: pStart, stop: pStop, title, desc });
                 }
                 if (progs.length) {
                     progs.sort((a, b) => a.start - b.start);
@@ -1094,10 +1210,9 @@ async function loadXtreamEPG(base, username, password) {
             await new Promise(r => setTimeout(r, 80));
         }
 
-        renderChannelList();
-        updateNowNext();
         if (epgRefreshTimer) clearInterval(epgRefreshTimer);
-        epgRefreshTimer = setInterval(updateNowNext, 60000);
+        epgRefreshTimer = setInterval(() => { if (epgMode) renderEPGGuide(); else updateNowNext(); }, 60000);
+        enterEPGMode();
         statusArea.innerText = `📅 EPG ready — ${epgData.size.toLocaleString()} channels`;
         setTimeout(() => {
             if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
