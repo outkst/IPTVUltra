@@ -1037,8 +1037,9 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
 }
 
 // ── EPG Guide Layout ──────────────────────────────────────────
-const EPG_CH_W = 180;   // channel label column px
-const EPG_GUIDE_MINS = 180; // 3-hour window
+const EPG_CH_W = 180;      // channel label column px
+const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
+const EPG_WIN_HOURS = 24;  // total scrollable window
 
 function enterEPGMode() {
     epgMode = true;
@@ -1061,43 +1062,42 @@ function enterEPGMode() {
 
 function renderEPGGuide() {
     const guideWrap = document.getElementById('epgGuideWrap');
-    const timeStrip = document.getElementById('epgTimeStrip');
+    const scrollOuter = document.getElementById('epgScrollOuter');
+    const corner = document.getElementById('epgChCorner');
+    const timeMarks = document.getElementById('epgTimeMarks');
     const body = document.getElementById('epgBody');
-    if (!guideWrap || !timeStrip || !body) return;
+    if (!guideWrap || !corner || !timeMarks || !body) return;
+    if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
 
-    const guideW = guideWrap.clientWidth - EPG_CH_W;
-    if (guideW <= 0) { requestAnimationFrame(renderEPGGuide); return; }
-
-    const pxPerMin = guideW / EPG_GUIDE_MINS;
     const now = Date.now();
-    const winStart = now - 30 * 60000;          // 30 min ago
-    const winEnd = winStart + EPG_GUIDE_MINS * 60000;
+    const winStart = now - 2 * 3600000;                        // 2h before now
+    const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
+    const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // e.g. 11520px
 
-    // Time strip — left cell shows Show Groups button when groups are collapsed
-    const groupsBtnHtml = !groupsColumnVisible
+    // Corner: Show Groups button when groups column is collapsed
+    corner.innerHTML = !groupsColumnVisible
         ? `<button class="epg-show-groups-btn" onclick="toggleGroupsColumn()">▶ Groups</button>`
         : '';
-    let tsHtml = `<div style="width:${EPG_CH_W}px;flex-shrink:0;background:#0f1117;border-right:1px solid #2a2d3a;display:flex;align-items:center;justify-content:center;">${groupsBtnHtml}</div>`;
-    tsHtml += `<div style="flex:1;position:relative;overflow:hidden;">`;
-    // Snap markers to real clock 30-min boundaries (e.g. 1:00AM, 1:30AM, 2:00AM)
+
+    // Time markers — snap to real clock 30-min boundaries
+    timeMarks.style.width = totalGuideW + 'px';
     const HALF_HOUR_MS = 30 * 60000;
     const firstMark = Math.ceil(winStart / HALF_HOUR_MS) * HALF_HOUR_MS;
+    let tmHtml = '';
     for (let t = firstMark; t <= winEnd; t += HALF_HOUR_MS) {
-        const m = (t - winStart) / 60000;
-        const x = (m * pxPerMin).toFixed(1);
+        const x = ((t - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
         const d = new Date(t);
-        const h = d.getHours();
-        const min = d.getMinutes();
-        const ampm = h >= 12 ? 'PM' : 'AM';
+        const h = d.getHours(), min = d.getMinutes();
         const h12 = h % 12 || 12;
-        const label = `${h12}:${min.toString().padStart(2, '0')}${ampm}`;
-        tsHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
+        const label = `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
+        tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
     }
-    const nowX = Math.max(0, Math.min(guideW, (now - winStart) / 60000 * pxPerMin)).toFixed(1);
-    tsHtml += `<div class="epg-now-line" style="left:${nowX}px"></div></div>`;
-    timeStrip.innerHTML = tsHtml;
+    const nowX = ((now - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+    tmHtml += `<div class="epg-now-line" style="left:${nowX}px"></div>`;
+    timeMarks.innerHTML = tmHtml;
 
     // Channel rows
+    const prevScrollLeft = scrollOuter ? scrollOuter.scrollLeft : 0;
     body.innerHTML = '';
     for (let i = 0; i < currentFilteredChannels.length; i++) {
         const ch = currentFilteredChannels[i];
@@ -1107,33 +1107,38 @@ function renderEPGGuide() {
         const row = document.createElement('div');
         row.className = 'epg-row' + (isActive ? ' active' : '');
 
-        // Channel label
+        // Channel label (sticky left)
         const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
         const labelHtml = `<div class="epg-ch-label">${logoSrc
             ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
             : '<span class="epg-ch-no-logo">📺</span>'
             }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span></div>`;
 
-        // Programme blocks
+        // Programme blocks — width anchored to the same totalGuideW as the time marks
         const resolvedId = resolveEpgId(ch.tvgId);
         const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
-        let progsHtml = '<div class="epg-progs">';
+        let progsHtml = `<div class="epg-progs" style="width:${totalGuideW}px">`;
         let hadBlock = false;
         for (const p of progs) {
             if (p.stop <= winStart || p.start >= winEnd) continue;
-            const sx = Math.max(0, (p.start - winStart) / 60000 * pxPerMin).toFixed(1);
-            const ex = Math.min(guideW, (p.stop - winStart) / 60000 * pxPerMin);
+            const sx = Math.max(0, (p.start - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+            const ex = Math.min(totalGuideW, (p.stop - winStart) / 60000 * EPG_PX_PER_MIN);
             const w = (ex - parseFloat(sx) - 2).toFixed(1);
             if (parseFloat(w) < 4) continue;
             const isNow = p.start <= now && p.stop > now;
+            const wNum = parseFloat(w);
+            // Show description only when the block is wide enough to fit it
+            const descHtml = p.desc && wNum > 120
+                ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
+                : '';
             progsHtml += `<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
-                `<span class="epg-prog-title">${escapeHtml(p.title)}</span></div>`;
+                `<span class="epg-prog-title">${escapeHtml(p.title)}</span>${descHtml}</div>`;
             hadBlock = true;
         }
         if (!hadBlock) {
             const label = epgLoading ? 'Loading ...' : 'No data available ...';
             const cls = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
-            progsHtml += `<div class="${cls}" style="left:2px;width:${(guideW - 4).toFixed(1)}px">` +
+            progsHtml += `<div class="${cls}" style="left:2px;width:${(totalGuideW - 4).toFixed(1)}px">` +
                 `<span class="epg-prog-title">${label}</span></div>`;
         }
         progsHtml += '</div>';
@@ -1146,6 +1151,20 @@ function renderEPGGuide() {
             updateEPGInfoPanel(ch);
         });
         body.appendChild(row);
+    }
+
+    // Restore or initialise horizontal scroll position
+    if (scrollOuter) {
+        if (prevScrollLeft > 0) {
+            scrollOuter.scrollLeft = prevScrollLeft;
+        } else {
+            // First render: put "now" at about 1/3 from the left of the visible guide area
+            requestAnimationFrame(() => {
+                const nowOffsetPx = 2 * 60 * EPG_PX_PER_MIN; // 2h of lookback
+                const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
+                scrollOuter.scrollLeft = Math.max(0, nowOffsetPx - Math.floor(visibleW / 3));
+            });
+        }
     }
 }
 
@@ -1185,8 +1204,8 @@ async function loadXtreamEPG(base, username, password) {
     const u = encodeURIComponent(username);
     const pw = encodeURIComponent(password);
     const now2 = Date.now();
-    const windowStart = now2 - 120000;
-    const windowEnd = now2 + 86400000; // 24h
+    const windowStart = now2 - 2 * 3600000; // 2h lookback to match guide display
+    const windowEnd = now2 + 86400000;       // 24h ahead
 
     const BATCH = 100;
     const total = channels.length;

@@ -563,13 +563,44 @@ body {
     border-top: 2px solid #6c8eff;
 }
 
+/* Single container that scrolls both axes — keeps time strip + rows in sync */
+.epg-scroll-outer {
+    flex: 1;
+    overflow: auto;
+}
+
+/* Time strip row — sticks to the top as you scroll vertically */
 .epg-time-strip {
+    position: sticky;
+    top: 0;
+    z-index: 10;
     display: flex;
     flex-direction: row;
     height: 34px;
-    flex-shrink: 0;
     background: #13141b;
     border-bottom: 1px solid #2a2d3a;
+}
+
+/* Top-left corner cell — doubly frozen (sticks left AND is inside the sticky row) */
+.epg-ch-corner {
+    width: 180px;
+    min-width: 180px;
+    flex-shrink: 0;
+    position: sticky;
+    left: 0;
+    z-index: 11;
+    background: #0f1117;
+    border-right: 1px solid #2a2d3a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Time markers area — width set inline via JS to match total guide width */
+.epg-time-marks {
+    position: relative;
+    height: 34px;
+    flex-shrink: 0;
 }
 
 .epg-time-marker {
@@ -592,10 +623,9 @@ body {
     pointer-events: none;
 }
 
+/* Body — no overflow; epg-scroll-outer handles it */
 .epg-body {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
+    display: block;
 }
 
 .epg-row {
@@ -615,9 +645,13 @@ body {
     background: rgba(108, 142, 255, 0.13);
 }
 
+/* Channel label — sticks to the left as you scroll horizontally */
 .epg-ch-label {
     width: 180px;
     min-width: 180px;
+    position: sticky;
+    left: 0;
+    z-index: 5;
     display: flex;
     align-items: center;
     padding: 0 8px;
@@ -649,10 +683,12 @@ body {
     flex: 1;
 }
 
+/* Programme area — width set inline via JS; fixed so blocks align to time strip */
 .epg-progs {
-    flex: 1;
     position: relative;
+    flex-shrink: 0;
     overflow: hidden;
+    height: 62px;
 }
 
 .epg-prog-block {
@@ -662,10 +698,11 @@ body {
     border-radius: 5px;
     background: #1b2038;
     border: 1px solid #2a3550;
-    padding: 0 8px;
+    padding: 4px 8px;
     overflow: hidden;
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: center;
     box-sizing: border-box;
     transition: background 0.1s;
 }
@@ -686,6 +723,16 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
     pointer-events: none;
+}
+
+.epg-prog-desc {
+    font-size: 0.6rem;
+    color: #6c7a93;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+    margin-top: 2px;
 }
 
 .epg-prog-placeholder {
