@@ -57,6 +57,7 @@ const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
+const epgInfoBtn = document.getElementById('epgInfoBtn');
 const newEpgUrl = document.getElementById('newEpgUrl');
 const tabM3u = document.getElementById('tabM3u');
 const tabXtream = document.getElementById('tabXtream');
@@ -231,7 +232,7 @@ async function loadEPG(url) {
 
                 // Yield inside the loop so GC can run between elements
                 if (programmeCount > 0 && programmeCount % 256 === 0) {
-                    statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes…`;
+                    statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes …`;
                     await new Promise(r => setTimeout(r, 0));
                     // Re-trim after yield so resumed work starts on a small buffer
                     if (cursor > 65536) { buffer = buffer.slice(cursor); cursor = 0; }
@@ -716,8 +717,13 @@ function selectChannel(index) {
 function showTopControls() {
     const c = document.getElementById('topControls');
     c.classList.add('visible');
+    const ec = document.getElementById('epgTopControls');
+    if (ec) ec.classList.add('visible');
     if (controlsTimeout) clearTimeout(controlsTimeout);
-    controlsTimeout = setTimeout(() => c.classList.remove('visible'), 3000);
+    controlsTimeout = setTimeout(() => {
+        c.classList.remove('visible');
+        if (ec) ec.classList.remove('visible');
+    }, 3000);
 }
 
 function resolveLanguage(code) {
@@ -730,7 +736,7 @@ function showStreamInfo() {
     const w = videoPlayer.videoWidth, h = videoPlayer.videoHeight;
 
     // Video resolution
-    let resText = (w && h) ? (w + '×' + h) : 'Loading…';
+    let resText = (w && h) ? (w + '×' + h) : 'Loading ...';
     if (w >= 3840) resText += ' (4K/UHD)';
     else if (w >= 1920) resText += ' (FHD 1080p)';
     else if (w >= 1280) resText += ' (HD 720p)';
@@ -947,7 +953,7 @@ function reloadStream() {
     videoPlayer.src = url;
     videoPlayer.load();
     if (wasPlaying) videoPlayer.play().catch(e => console.log);
-    statusArea.innerText = '🔄 Reloading...';
+    statusArea.innerText = '🔄 Reloading ...';
     setTimeout(() => statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`, 2000);
     showTopControls();
 }
@@ -971,6 +977,7 @@ function toggleGroupsColumn() {
     groupsColumn.classList.toggle('collapsed', !groupsColumnVisible);
     toggleGroupsBtn.innerHTML = groupsColumnVisible ? '◀ Hide' : '▶ Show';
     showGroupsBtn.style.display = groupsColumnVisible ? 'none' : 'block';
+    if (epgMode) renderEPGGuide();
 }
 
 
@@ -1040,9 +1047,12 @@ function enterEPGMode() {
     if (!sv || !ev) return;
     sv.style.display = 'none';
     ev.style.display = 'flex';
-    // Move <video> into the EPG video container
+    // Move <video> and stream-info overlay into the EPG video container
     const wrap = document.getElementById('epgVideoWrap');
-    if (wrap && videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
+    if (wrap) {
+        if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
+        if (streamInfoOverlay.parentNode !== wrap) wrap.appendChild(streamInfoOverlay);
+    }
     renderEPGGuide();
     if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
         updateEPGInfoPanel(channels[currentChannelIndex]);
@@ -1061,15 +1071,26 @@ function renderEPGGuide() {
     const pxPerMin = guideW / EPG_GUIDE_MINS;
     const now = Date.now();
     const winStart = now - 30 * 60000;          // 30 min ago
-    const winEnd   = winStart + EPG_GUIDE_MINS * 60000;
+    const winEnd = winStart + EPG_GUIDE_MINS * 60000;
 
-    // Time strip
-    let tsHtml = `<div style="width:${EPG_CH_W}px;flex-shrink:0;background:#0f1117;border-right:1px solid #2a2d3a;"></div>`;
+    // Time strip — left cell shows Show Groups button when groups are collapsed
+    const groupsBtnHtml = !groupsColumnVisible
+        ? `<button class="epg-show-groups-btn" onclick="toggleGroupsColumn()">▶ Groups</button>`
+        : '';
+    let tsHtml = `<div style="width:${EPG_CH_W}px;flex-shrink:0;background:#0f1117;border-right:1px solid #2a2d3a;display:flex;align-items:center;justify-content:center;">${groupsBtnHtml}</div>`;
     tsHtml += `<div style="flex:1;position:relative;overflow:hidden;">`;
-    for (let m = 0; m <= EPG_GUIDE_MINS; m += 30) {
+    // Snap markers to real clock 30-min boundaries (e.g. 1:00AM, 1:30AM, 2:00AM)
+    const HALF_HOUR_MS = 30 * 60000;
+    const firstMark = Math.ceil(winStart / HALF_HOUR_MS) * HALF_HOUR_MS;
+    for (let t = firstMark; t <= winEnd; t += HALF_HOUR_MS) {
+        const m = (t - winStart) / 60000;
         const x = (m * pxPerMin).toFixed(1);
-        const t = new Date(winStart + m * 60000);
-        const label = t.getHours().toString().padStart(2,'0') + ':' + t.getMinutes().toString().padStart(2,'0');
+        const d = new Date(t);
+        const h = d.getHours();
+        const min = d.getMinutes();
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 || 12;
+        const label = `${h12}:${min.toString().padStart(2, '0')}${ampm}`;
         tsHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
     }
     const nowX = Math.max(0, Math.min(guideW, (now - winStart) / 60000 * pxPerMin)).toFixed(1);
@@ -1091,7 +1112,7 @@ function renderEPGGuide() {
         const labelHtml = `<div class="epg-ch-label">${logoSrc
             ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
             : '<span class="epg-ch-no-logo">📺</span>'
-        }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0,20)+'…' : ch.name)}</span></div>`;
+            }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span></div>`;
 
         // Programme blocks
         const resolvedId = resolveEpgId(ch.tvgId);
@@ -1101,8 +1122,8 @@ function renderEPGGuide() {
         for (const p of progs) {
             if (p.stop <= winStart || p.start >= winEnd) continue;
             const sx = Math.max(0, (p.start - winStart) / 60000 * pxPerMin).toFixed(1);
-            const ex = Math.min(guideW, (p.stop  - winStart) / 60000 * pxPerMin);
-            const w  = (ex - parseFloat(sx) - 2).toFixed(1);
+            const ex = Math.min(guideW, (p.stop - winStart) / 60000 * pxPerMin);
+            const w = (ex - parseFloat(sx) - 2).toFixed(1);
             if (parseFloat(w) < 4) continue;
             const isNow = p.start <= now && p.stop > now;
             progsHtml += `<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
@@ -1110,8 +1131,8 @@ function renderEPGGuide() {
             hadBlock = true;
         }
         if (!hadBlock) {
-            const label = epgLoading ? 'Loading…' : 'No Data Available';
-            const cls   = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
+            const label = epgLoading ? 'Loading ...' : 'No data available ...';
+            const cls = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
             progsHtml += `<div class="${cls}" style="left:2px;width:${(guideW - 4).toFixed(1)}px">` +
                 `<span class="epg-prog-title">${label}</span></div>`;
         }
@@ -1129,11 +1150,11 @@ function renderEPGGuide() {
 }
 
 function updateEPGInfoPanel(ch) {
-    const logo  = document.getElementById('epgInfoLogo');
-    const name  = document.getElementById('epgInfoName');
-    const time  = document.getElementById('epgInfoTime');
+    const logo = document.getElementById('epgInfoLogo');
+    const name = document.getElementById('epgInfoName');
+    const time = document.getElementById('epgInfoTime');
     const title = document.getElementById('epgInfoTitle');
-    const desc  = document.getElementById('epgInfoDesc');
+    const desc = document.getElementById('epgInfoDesc');
     if (!name) return;
 
     if (ch.tvgLogo) { logo.src = ch.tvgLogo; logo.style.display = ''; }
@@ -1144,14 +1165,14 @@ function updateEPGInfoPanel(ch) {
     const curr = getCurrentProgramme(ch.tvgId);
     if (curr) {
         const totalMins = Math.round((curr.stop - curr.start) / 60000);
-        time.textContent  = `${formatTimeHHMM(curr.start)} – ${formatTimeHHMM(curr.stop)}  (${totalMins} min)`;
+        time.textContent = `${formatTimeHHMM(curr.start)} – ${formatTimeHHMM(curr.stop)}  (${totalMins} min)`;
         title.textContent = curr.title;
-        desc.textContent  = curr.desc || '';
+        desc.textContent = curr.desc || '';
     } else {
-        const placeholder = epgLoading ? 'Loading…' : 'No Data Available';
-        time.textContent  = '';
+        const placeholder = epgLoading ? 'Loading ...' : 'No data available ...';
+        time.textContent = '';
         title.textContent = placeholder;
-        desc.textContent  = '';
+        desc.textContent = '';
     }
 }
 
@@ -1201,11 +1222,11 @@ async function loadXtreamEPG(base, username, password) {
                             const r = atob(s); let ok = r.length > 0;
                             for (let ci = 0; ok && ci < r.length; ci++) { const c = r.charCodeAt(ci); if (c < 0x20 && c !== 0x09 && c !== 0x0A) ok = false; }
                             if (ok && /[a-zA-Z]/.test(r)) return r;
-                        } catch (e) {}
+                        } catch (e) { }
                         return s;
                     };
                     const title = decodeField(ep.title || '').trim();
-                    const desc  = decodeField(ep.description || '').trim();
+                    const desc = decodeField(ep.description || '').trim();
                     progs.push({ start: pStart, stop: pStop, title, desc });
                 }
                 if (progs.length) {
@@ -1215,7 +1236,7 @@ async function loadXtreamEPG(base, username, password) {
                 }
             });
 
-            statusArea.innerText = `📅 EPG: ${Math.min(i + BATCH, total).toLocaleString()}/${total.toLocaleString()} channels…`;
+            statusArea.innerText = `📅 EPG: ${Math.min(i + BATCH, total).toLocaleString()}/${total.toLocaleString()} channels …`;
             await new Promise(r => setTimeout(r, 80));
         }
 
@@ -1242,8 +1263,8 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
     epgData.clear();
     epgIdMap.clear();
     setLoadSelectedButtonEnabled(false);
-    updateStartStatus('Connecting to Xtream API…', false, false, true, 0);
-    showLoading(true, 'Connecting to Xtream API…');
+    updateStartStatus('Connecting to Xtream API …', false, false, true, 0);
+    showLoading(true, 'Connecting to Xtream API …');
 
     const base = serverUrl.replace(/\/$/, '');
     const u = encodeURIComponent(username);
@@ -1255,7 +1276,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         if (!authResp.ok) throw new Error(`Auth HTTP ${authResp.status}`);
         const authData = await authResp.json();
         if (authData.user_info && authData.user_info.auth === 0) throw new Error('Invalid username or password');
-        updateStartStatus('Authenticated! Loading categories…', false, false, true, 15);
+        updateStartStatus('Authenticated! Loading categories …', false, false, true, 15);
 
         // 2. Categories (for group names)
         let catMap = {};
@@ -1266,13 +1287,13 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
                 if (Array.isArray(cats)) cats.forEach(c => { catMap[String(c.category_id)] = c.category_name; });
             }
         } catch { /* categories are optional */ }
-        updateStartStatus('Loading channel list…', false, false, true, 30);
+        updateStartStatus('Loading channel list …', false, false, true, 30);
 
         // 3. Live streams
         const streamsResp = await fetch(`${base}/player_api.php?username=${u}&password=${pw}&action=get_live_streams`);
         if (!streamsResp.ok) throw new Error(`Streams HTTP ${streamsResp.status}`);
         const streamsText = await streamsResp.text();
-        updateStartStatus('Parsing channels…', false, false, true, 55);
+        updateStartStatus('Parsing channels …', false, false, true, 55);
         await new Promise(r => setTimeout(r, 0)); // yield before heavy JSON parse
 
         const streams = JSON.parse(streamsText);
@@ -1294,7 +1315,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
                 });
             }
             const pct = Math.min(90, 55 + Math.round((i / streams.length) * 35));
-            updateStartStatus(`Parsed ${parsed.length.toLocaleString()} channels…`, false, false, true, pct);
+            updateStartStatus(`Parsed ${parsed.length.toLocaleString()} channels …`, false, false, true, pct);
             await new Promise(r => setTimeout(r, 5));
         }
 
@@ -1468,7 +1489,7 @@ saveXtreamBtn.addEventListener('click', async () => {
         updateStartStatus('Please enter server URL, username, and password', true, false, false, 0);
         return;
     }
-    updateStartStatus('Verifying credentials…', false, false, true, 50);
+    updateStartStatus('Verifying credentials …', false, false, true, 50);
     try {
         const base = server.replace(/\/$/, '');
         const resp = await fetch(`${base}/player_api.php?username=${encodeURIComponent(uname)}&password=${encodeURIComponent(pass)}`);
@@ -1492,10 +1513,13 @@ clearAllBtn.addEventListener('click', () => {
     confirmNo.addEventListener('click', noHandler);
 });
 infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
+if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 reloadBtn.addEventListener('click', reloadStream);
 homePageBtn.addEventListener('click', goToHomeScreen);
 toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
 showGroupsBtn.addEventListener('click', toggleGroupsColumn);
+const epgVideoWrap = document.getElementById('epgVideoWrap');
+if (epgVideoWrap) epgVideoWrap.addEventListener('mousemove', showTopControls);
 searchInput.addEventListener('input', () => { currentSearchQuery = searchInput.value; if (currentSearchQuery.trim()) currentGroup = 'all'; renderGroupsList(); renderChannelList(); });
 clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); renderChannelList(); });
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });

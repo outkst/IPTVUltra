@@ -124,7 +124,11 @@
 				<!-- EPG guide view: video+info panel on top, guide grid below -->
 				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;">
 					<div class="epg-top">
-						<div class="epg-video-wrap" id="epgVideoWrap"></div>
+						<div class="epg-video-wrap" id="epgVideoWrap">
+						<div class="video-controls-top" id="epgTopControls">
+							<button id="epgInfoBtn" class="top-control-btn">ℹ️ Stream Info</button>
+						</div>
+					</div>
 						<div class="epg-info-panel" id="epgInfoPanel">
 							<img id="epgInfoLogo" class="epg-info-logo" src="" alt="">
 							<div id="epgInfoName" class="epg-info-name"></div>
