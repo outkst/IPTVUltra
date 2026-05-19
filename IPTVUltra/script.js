@@ -155,12 +155,16 @@ async function loadEPG(url) {
     currentEpgUrl = url;
 
     const decoder = new TextDecoder('utf-8');
+    // cursor tracks how far into `buffer` we've processed; we only slice the
+    // string once per 64 KB consumed rather than once per element, which avoids
+    // the O(n²) string-copy behaviour that exhausts memory on large feeds.
     let buffer = '';
+    let cursor = 0;
     let programmeCount = 0;
     let bytesRead = 0;
     const now = Date.now();
-    const windowStart = now - 120000;   // keep up to 2min ago (in-progress shows)
-    const windowEnd = now + 10800000;  // up to 3h ahead
+    const windowStart = now - 120000;
+    const windowEnd = now + 10800000;
 
     try {
         const response = await fetch(url);
@@ -171,13 +175,20 @@ async function loadEPG(url) {
             const { done, value } = await reader.read();
             if (done) break;
             bytesRead += value.byteLength;
+
+            // Drop already-processed portion before appending — one slice per chunk
+            // instead of one slice per element.
+            if (cursor > 65536) {
+                buffer = buffer.slice(cursor);
+                cursor = 0;
+            }
             buffer += decoder.decode(value, { stream: true });
 
             // Extract complete <channel> elements (always before <programme> in XMLTV)
             let idx;
-            while ((idx = buffer.indexOf('</channel>')) !== -1) {
+            while ((idx = buffer.indexOf('</channel>', cursor)) !== -1) {
                 const s = buffer.lastIndexOf('<channel', idx);
-                if (s !== -1) {
+                if (s !== -1 && s >= cursor) {
                     const xml = buffer.substring(s, idx + 10);
                     const idM = xml.match(/id="([^"]*)"/);
                     const nmM = xml.match(/<display-name[^>]*>([^<]+)<\/display-name>/);
@@ -187,13 +198,13 @@ async function loadEPG(url) {
                         if (nmM) epgIdMap.set(nmM[1].toLowerCase().trim(), cid);
                     }
                 }
-                buffer = buffer.substring(idx + 10);
+                cursor = idx + 10;
             }
 
             // Extract complete <programme> elements
-            while ((idx = buffer.indexOf('</programme>')) !== -1) {
+            while ((idx = buffer.indexOf('</programme>', cursor)) !== -1) {
                 const s = buffer.lastIndexOf('<programme', idx);
-                if (s !== -1) {
+                if (s !== -1 && s >= cursor) {
                     const xml = buffer.substring(s, idx + 12);
                     const chM = xml.match(/channel="([^"]*)"/);
                     const stM = xml.match(/start="([^"]*)"/);
@@ -202,7 +213,6 @@ async function loadEPG(url) {
                     if (chM && stM) {
                         const pStart = parseXMLTVDate(stM[1]);
                         const pStop = spM ? parseXMLTVDate(spM[1]) : null;
-                        // Only keep programmes within the time window
                         if (pStart !== null && pStart <= windowEnd && (pStop === null || pStop >= windowStart)) {
                             const cid = chM[1];
                             if (!epgData.has(cid)) {
@@ -210,12 +220,7 @@ async function loadEPG(url) {
                                 epgIdMap.set(cid.toLowerCase(), cid);
                             }
                             const arr = epgData.get(cid);
-                            arr.push({
-                                start: pStart,
-                                stop: pStop || 0,
-                                title: tiM ? tiM[1].trim() : ''
-                            });
-                            // Cap at 4 entries per channel; drop oldest past entries first
+                            arr.push({ start: pStart, stop: pStop || 0, title: tiM ? tiM[1].trim() : '' });
                             if (arr.length > 4) {
                                 const now2 = Date.now();
                                 const pastIdx = arr.findIndex(p => p.stop > now2);
@@ -226,20 +231,22 @@ async function loadEPG(url) {
                         }
                     }
                 }
-                buffer = buffer.substring(idx + 12);
+                cursor = idx + 12;
+
+                // Yield inside the loop so GC can run between elements
+                if (programmeCount > 0 && programmeCount % 256 === 0) {
+                    statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes…`;
+                    await new Promise(r => setTimeout(r, 0));
+                    // Re-trim after yield so resumed work starts on a small buffer
+                    if (cursor > 65536) { buffer = buffer.slice(cursor); cursor = 0; }
+                }
             }
 
-            // Safety trim: if buffer grew past 1 MB with no complete element, keep only the
-            // last partial open tag so we don't accumulate a runaway blob
-            if (buffer.length > 1048576) {
-                const trim = Math.max(buffer.lastIndexOf('<programme'), buffer.lastIndexOf('<channel'));
-                buffer = trim > 0 ? buffer.substring(trim) : '';
-            }
-
-            // Yield every 256 programmes to keep UI responsive and let GC run
-            if (programmeCount > 0 && programmeCount % 256 === 0) {
-                statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes…`;
-                await new Promise(r => setTimeout(r, 0));
+            // Safety: if a single element is pathologically large, discard to cursor
+            if (buffer.length - cursor > 1048576) {
+                const trim = Math.max(buffer.lastIndexOf('<programme', buffer.length), buffer.lastIndexOf('<channel', buffer.length));
+                if (trim > cursor) { buffer = buffer.slice(trim); cursor = 0; }
+                else { buffer = buffer.slice(cursor); cursor = 0; }
             }
         }
 
