@@ -181,7 +181,7 @@ async function loadEPG(url) {
     let bytesRead = 0;
     const now = Date.now();
     const windowStart = now - 120000;
-    const windowEnd = now + 86400000; // 24h
+    const windowEnd = now + 6 * 3600000; // 6h
 
     showEPGToast('Downloading EPG data …', 'loading');
     try {
@@ -193,8 +193,8 @@ async function loadEPG(url) {
             const { done, value } = await reader.read();
             if (done) break;
             bytesRead += value.byteLength;
-            // Hard abort: avoid OOM on feeds > 30 MB
-            if (bytesRead > 30 * 1024 * 1024) { reader.cancel(); break; }
+            // Hard abort: avoid OOM on feeds > 20 MB
+            if (bytesRead > 20 * 1024 * 1024) { reader.cancel(); break; }
 
             // Drop already-processed portion before appending — one slice per chunk
             // instead of one slice per element.
@@ -247,7 +247,7 @@ async function loadEPG(url) {
                 cursor = idx + 12;
 
                 // Yield inside the loop so GC can run between elements
-                if (programmeCount > 0 && programmeCount % 256 === 0) {
+                if (programmeCount > 0 && programmeCount % 128 === 0) {
                     const _progMsg = `${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes …`;
                     statusArea.innerText = `📅 EPG: ${_progMsg}`;
                     showEPGToast(_progMsg, 'loading');
@@ -1085,7 +1085,7 @@ function hideEPGToast(delayMs = 0) {
 // ── EPG Guide Layout ──────────────────────────────────────────
 const EPG_CH_W = 200;      // channel label column px
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
-const EPG_WIN_HOURS = 24;  // total scrollable window
+const EPG_WIN_HOURS = 7;   // ~1h past + 6h ahead
 
 function enterEPGMode() {
     epgMode = true;
@@ -1275,8 +1275,8 @@ async function loadXtreamEPG(base, username, password) {
     const u = encodeURIComponent(username);
     const pw = encodeURIComponent(password);
     const now2 = Date.now();
-    const windowStart = 0; // fetch all past and future programme data
-    const windowEnd = now2 + 86400000;       // 24h ahead
+    const windowStart = now2 - 120000;
+    const windowEnd = now2 + 6 * 3600000; // 6h ahead
 
     const BATCH = 100;
     const total = channels.length;
