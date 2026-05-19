@@ -1114,6 +1114,8 @@ function renderEPGGuide() {
         const label = `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
         tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
     }
+    // "NOW" marker at left edge (winStart = now)
+    tmHtml += `<div class="epg-now-line" style="left:0px"><span class="epg-now-label">NOW</span></div>`;
     timeMarks.innerHTML = tmHtml;
 
     // Channel rows
@@ -1171,6 +1173,16 @@ function renderEPGGuide() {
             updateEPGInfoPanel(ch);
         });
         body.appendChild(row);
+    }
+
+    // Full-height "now" line through the body rows
+    if (scrollOuter) {
+        let fullMarker = scrollOuter.querySelector('.epg-now-fullmarker');
+        if (!fullMarker) {
+            fullMarker = document.createElement('div');
+            fullMarker.className = 'epg-now-fullmarker';
+            scrollOuter.appendChild(fullMarker);
+        }
     }
 
     // Restore or initialise horizontal scroll position

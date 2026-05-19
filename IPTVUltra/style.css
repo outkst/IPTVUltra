@@ -567,6 +567,7 @@ body {
 .epg-scroll-outer {
     flex: 1;
     overflow: auto;
+    position: relative;
 }
 
 /* Time strip row — sticks to the top as you scroll vertically */
@@ -617,9 +618,38 @@ body {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: 2px;
+    width: 3px;
     background: #ff5555;
+    box-shadow: 0 0 6px rgba(255, 85, 85, 0.7);
     z-index: 4;
+    pointer-events: none;
+}
+
+.epg-now-label {
+    position: absolute;
+    top: 4px;
+    left: 5px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #fff;
+    background: #ff5555;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+    box-shadow: 0 0 6px rgba(255, 85, 85, 0.6);
+    pointer-events: none;
+}
+
+.epg-now-fullmarker {
+    position: absolute;
+    left: 200px;
+    top: 34px;
+    bottom: 0;
+    width: 3px;
+    background: rgba(255, 85, 85, 0.45);
+    box-shadow: 0 0 8px rgba(255, 85, 85, 0.35);
+    z-index: 3;
     pointer-events: none;
 }
 
@@ -657,39 +687,42 @@ body {
 
 .epg-time-nav-btn {
     position: absolute;
-    top: 0;
-    height: 34px;
+    top: 4px;
+    height: 26px;
     z-index: 20;
-    background: rgba(15, 17, 23, 0.95);
-    border: none;
-    border-bottom: 1px solid #2a2d3a;
-    color: #a3c0ff;
-    font-size: 0.68rem;
-    padding: 0 12px;
+    background: #2a4acc;
+    border: 1px solid #4a6aff;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0 14px;
     cursor: pointer;
     display: flex;
     align-items: center;
     white-space: nowrap;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(59, 110, 255, 0.45);
+    letter-spacing: 0.3px;
 }
 
 .epg-time-nav-btn:hover {
-    background: rgba(108, 142, 255, 0.15);
-    color: #fff;
+    background: #3b6eff;
+    border-color: #6c8eff;
+    box-shadow: 0 2px 14px rgba(59, 110, 255, 0.7);
 }
 
 .epg-time-nav-prev {
-    left: 200px;
-    border-right: 1px solid #2a2d3a;
+    left: 208px;
 }
 
 .epg-time-nav-next {
-    right: 0;
-    border-left: 1px solid #2a2d3a;
+    right: 8px;
 }
 
 /* Channel label — sticks to the left as you scroll horizontally */
 .epg-ch-label {
     width: 200px;
+    height: 100%;
     min-width: 200px;
     position: sticky;
     left: 0;
