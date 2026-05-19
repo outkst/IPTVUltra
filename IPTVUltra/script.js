@@ -1097,6 +1097,7 @@ function renderEPGGuide() {
         const resolvedId = resolveEpgId(ch.tvgId);
         const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
         let progsHtml = '<div class="epg-progs">';
+        let hadBlock = false;
         for (const p of progs) {
             if (p.stop <= winStart || p.start >= winEnd) continue;
             const sx = Math.max(0, (p.start - winStart) / 60000 * pxPerMin).toFixed(1);
@@ -1106,6 +1107,13 @@ function renderEPGGuide() {
             const isNow = p.start <= now && p.stop > now;
             progsHtml += `<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
                 `<span class="epg-prog-title">${escapeHtml(p.title)}</span></div>`;
+            hadBlock = true;
+        }
+        if (!hadBlock) {
+            const label = epgLoading ? 'Loading…' : 'No Data Available';
+            const cls   = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
+            progsHtml += `<div class="${cls}" style="left:2px;width:${(guideW - 4).toFixed(1)}px">` +
+                `<span class="epg-prog-title">${label}</span></div>`;
         }
         progsHtml += '</div>';
 
@@ -1140,8 +1148,9 @@ function updateEPGInfoPanel(ch) {
         title.textContent = curr.title;
         desc.textContent  = curr.desc || '';
     } else {
+        const placeholder = epgLoading ? 'Loading…' : 'No Data Available';
         time.textContent  = '';
-        title.textContent = '';
+        title.textContent = placeholder;
         desc.textContent  = '';
     }
 }
@@ -1299,6 +1308,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         renderChannelList();
+        enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
             const firstIdx = currentFilteredChannels.length ? channels.indexOf(currentFilteredChannels[0]) : 0;
