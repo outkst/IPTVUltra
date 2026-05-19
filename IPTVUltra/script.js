@@ -625,7 +625,7 @@ function renderChannelList() {
         const scrollTop = channelListDiv.scrollTop;
         const containerHeight = channelListDiv.clientHeight;
         const startIdx = Math.floor(scrollTop / ITEM_H);
-        const endIdx = Math.min(total, startIdx + Math.ceil(containerHeight / ITEM_H) + 2);
+        const endIdx = Math.min(total - 1, startIdx + Math.ceil(containerHeight / ITEM_H) + 2);
         // Remove items outside viewport
         for (let [idx, el] of renderedItems) {
             if (idx < startIdx || idx > endIdx) {
@@ -1038,9 +1038,9 @@ async function loadXtreamEPG(base, username, password) {
     const windowStart = now2 - 120000;
     const windowEnd = now2 + 86400000; // 24h
 
-    // Batch requests: 10 concurrent at a time so we don't flood the server
-    const BATCH = 10;
-    const total = Math.min(channels.length, 2000);
+    // Batch requests: 20 concurrent at a time so we don't flood the server
+    const BATCH = 20;
+    const total = channels.length;
 
     try {
         for (let i = 0; i < total; i += BATCH) {
