@@ -1092,7 +1092,7 @@ function renderEPGGuide() {
     if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
 
     const now = Date.now();
-    const winStart = now - 2 * 3600000;                        // 2h before now
+    const winStart = now;                                       // guide starts at current time
     const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
     const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // e.g. 11520px
 
@@ -1114,8 +1114,6 @@ function renderEPGGuide() {
         const label = `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
         tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
     }
-    const nowX = ((now - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
-    tmHtml += `<div class="epg-now-line" style="left:${nowX}px"></div>`;
     timeMarks.innerHTML = tmHtml;
 
     // Channel rows
@@ -1180,12 +1178,8 @@ function renderEPGGuide() {
         if (prevScrollLeft > 0) {
             scrollOuter.scrollLeft = prevScrollLeft;
         } else {
-            // First render: put "now" at about 1/3 from the left of the visible guide area
-            requestAnimationFrame(() => {
-                const nowOffsetPx = 2 * 60 * EPG_PX_PER_MIN; // 2h of lookback
-                const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
-                scrollOuter.scrollLeft = Math.max(0, nowOffsetPx - Math.floor(visibleW / 3));
-            });
+            // First render: guide starts at "now" (left edge = current time)
+            scrollOuter.scrollLeft = 0;
         }
     }
 
@@ -1271,7 +1265,9 @@ async function loadXtreamEPG(base, username, password) {
                         return s;
                     };
                     const title = decodeField(ep.title || '').trim();
-                    const desc = decodeField(ep.description || '').trim();
+                    const rawDesc = decodeField(ep.description || '').trim();
+                    // Strip embedded "start:YYYY-MM-DD ... stop:YYYY-MM-DD ..." timestamps some providers inject
+                    const desc = rawDesc.replace(/\s+start:\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}.*stop:\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}.*/i, '').trim();
                     progs.push({ start: pStart, stop: pStop, title, desc });
                 }
                 if (progs.length) {
