@@ -183,6 +183,7 @@ async function loadEPG(url) {
     const windowStart = now - 120000;
     const windowEnd = now + 86400000; // 24h
 
+    showEPGToast('Downloading EPG data …', 'loading');
     try {
         const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -247,7 +248,9 @@ async function loadEPG(url) {
 
                 // Yield inside the loop so GC can run between elements
                 if (programmeCount > 0 && programmeCount % 256 === 0) {
-                    statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes …`;
+                    const _progMsg = `${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes …`;
+                    statusArea.innerText = `📅 EPG: ${_progMsg}`;
+                    showEPGToast(_progMsg, 'loading');
                     await new Promise(r => setTimeout(r, 0));
                     // Re-trim after yield so resumed work starts on a small buffer
                     if (cursor > 65536) { buffer = buffer.slice(cursor); cursor = 0; }
@@ -275,13 +278,18 @@ async function loadEPG(url) {
         epgRefreshTimer = setInterval(updateNowNext, 60000);
 
         const mb = (bytesRead / 1048576).toFixed(1);
-        statusArea.innerText = `📅 EPG ready — ${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)`;
+        const readyMsg = `${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)`;
+        statusArea.innerText = `📅 EPG ready — ${readyMsg}`;
+        showEPGToast(readyMsg, 'success');
+        hideEPGToast(3500);
         setTimeout(() => {
             if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
         }, 4000);
 
     } catch (err) {
         statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
+        showEPGToast(err.message, 'error');
+        hideEPGToast(7000);
         setTimeout(() => {
             if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
         }, 3000);
@@ -1051,6 +1059,29 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
     focusElement(0);
 }
 
+// ── EPG Toast Notifications ───────────────────────────────────
+let _epgToastTimer = null;
+function showEPGToast(msg, type = 'loading') {
+    const toast = document.getElementById('epgToast');
+    const titleEl = document.getElementById('epgToastTitle');
+    const msgEl = document.getElementById('epgToastMsg');
+    const spinner = document.getElementById('epgToastSpinner');
+    if (!toast) return;
+    if (_epgToastTimer) { clearTimeout(_epgToastTimer); _epgToastTimer = null; }
+    const titles = { loading: 'EPG Loading', error: 'EPG Error', success: 'EPG Ready' };
+    toast.className = `epg-toast epg-toast--${type} epg-toast--visible`;
+    if (titleEl) titleEl.textContent = titles[type] || 'EPG';
+    if (msgEl) msgEl.textContent = msg;
+    if (spinner) spinner.style.display = type === 'loading' ? '' : 'none';
+}
+function hideEPGToast(delayMs = 0) {
+    const dismiss = () => {
+        const toast = document.getElementById('epgToast');
+        if (toast) toast.classList.remove('epg-toast--visible');
+    };
+    if (delayMs > 0) { _epgToastTimer = setTimeout(dismiss, delayMs); } else { dismiss(); }
+}
+
 // ── EPG Guide Layout ──────────────────────────────────────────
 const EPG_CH_W = 200;      // channel label column px
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
@@ -1092,9 +1123,11 @@ function renderEPGGuide() {
     if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
 
     const now = Date.now();
-    const winStart = now;                                       // guide starts at current time
+    const HOUR_MS = 3600000;
+    // Last whole hour that is at least 60 min in the past (e.g. at 2:45PM → 1:00PM)
+    const winStart = Math.floor((now - HOUR_MS) / HOUR_MS) * HOUR_MS;
     const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
-    const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // e.g. 11520px
+    const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // 11520px
 
     // Corner: Show Groups button when groups column is collapsed
     corner.innerHTML = !groupsColumnVisible
@@ -1114,8 +1147,9 @@ function renderEPGGuide() {
         const label = `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
         tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
     }
-    // "NOW" marker at left edge (winStart = now)
-    tmHtml += `<div class="epg-now-line" style="left:0px"><span class="epg-now-label">NOW</span></div>`;
+    // "NOW" marker at the actual current-time position within the guide
+    const nowOffsetPx = ((now - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+    tmHtml += `<div class="epg-now-line" style="left:${nowOffsetPx}px"><span class="epg-now-label">NOW</span></div>`;
     timeMarks.innerHTML = tmHtml;
 
     // Channel rows
@@ -1175,7 +1209,7 @@ function renderEPGGuide() {
         body.appendChild(row);
     }
 
-    // Full-height "now" line through the body rows
+    // Full-height "now" line through the body rows — position matches the time-strip marker
     if (scrollOuter) {
         let fullMarker = scrollOuter.querySelector('.epg-now-fullmarker');
         if (!fullMarker) {
@@ -1183,6 +1217,7 @@ function renderEPGGuide() {
             fullMarker.className = 'epg-now-fullmarker';
             scrollOuter.appendChild(fullMarker);
         }
+        fullMarker.style.left = `${EPG_CH_W + parseFloat(nowOffsetPx)}px`;
     }
 
     // Restore or initialise horizontal scroll position
@@ -1190,8 +1225,11 @@ function renderEPGGuide() {
         if (prevScrollLeft > 0) {
             scrollOuter.scrollLeft = prevScrollLeft;
         } else {
-            // First render: guide starts at "now" (left edge = current time)
-            scrollOuter.scrollLeft = 0;
+            // First render: put "now" ~1/3 from the left so past and future are both visible
+            requestAnimationFrame(() => {
+                const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
+                scrollOuter.scrollLeft = Math.max(0, parseFloat(nowOffsetPx) - Math.floor(visibleW / 3));
+            });
         }
     }
 
@@ -1232,6 +1270,7 @@ async function loadXtreamEPG(base, username, password) {
     epgLoading = true;
     epgData.clear();
     epgIdMap.clear();
+    showEPGToast('Connecting to EPG …', 'loading');
 
     const u = encodeURIComponent(username);
     const pw = encodeURIComponent(password);
@@ -1289,19 +1328,26 @@ async function loadXtreamEPG(base, username, password) {
                 }
             });
 
-            statusArea.innerText = `📅 EPG: ${Math.min(i + BATCH, total).toLocaleString()}/${total.toLocaleString()} channels …`;
+            const _batchMsg = `${Math.min(i + BATCH, total).toLocaleString()} / ${total.toLocaleString()} channels …`;
+            statusArea.innerText = `📅 EPG: ${_batchMsg}`;
+            showEPGToast(_batchMsg, 'loading');
             await new Promise(r => setTimeout(r, 80));
         }
 
         if (epgRefreshTimer) clearInterval(epgRefreshTimer);
         epgRefreshTimer = setInterval(() => { if (epgMode) renderEPGGuide(); else updateNowNext(); }, 60000);
         enterEPGMode();
-        statusArea.innerText = `📅 EPG ready — ${epgData.size.toLocaleString()} channels`;
+        const xtReadyMsg = `${epgData.size.toLocaleString()} channels loaded`;
+        statusArea.innerText = `📅 EPG ready — ${xtReadyMsg}`;
+        showEPGToast(xtReadyMsg, 'success');
+        hideEPGToast(3500);
         setTimeout(() => {
             if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
         }, 4000);
     } catch (err) {
         statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
+        showEPGToast(err.message, 'error');
+        hideEPGToast(7000);
         setTimeout(() => {
             if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
         }, 3000);
