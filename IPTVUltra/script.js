@@ -521,7 +521,9 @@ function extractGroups() {
 }
 
 function renderGroupsList() {
+    const pinnedDiv = document.getElementById('groupsPinned');
     groupsListDiv.innerHTML = '';
+    if (pinnedDiv) pinnedDiv.innerHTML = '';
     for (const group of groupsList) {
         const div = document.createElement('div');
         div.className = 'group-item' + (currentGroup === group ? ' active' : '');
@@ -547,7 +549,11 @@ function renderGroupsList() {
             renderGroupsList();
             renderChannelList();
         };
-        groupsListDiv.appendChild(div);
+        if ((group === 'favorites' || group === 'all') && pinnedDiv) {
+            pinnedDiv.appendChild(div);
+        } else {
+            groupsListDiv.appendChild(div);
+        }
     }
 }
 
@@ -1155,6 +1161,11 @@ function renderEPGGuide() {
     // Channel rows
     const prevScrollLeft = scrollOuter ? scrollOuter.scrollLeft : 0;
     body.innerHTML = '';
+    if (!currentFilteredChannels.length) {
+        body.innerHTML = `<div class="epg-empty-group">📭 No channels exist for this group …</div>`;
+        updateEPGNavVisibility();
+        return;
+    }
     for (let i = 0; i < currentFilteredChannels.length; i++) {
         const ch = currentFilteredChannels[i];
         const origIdx = channels.indexOf(ch);
@@ -1215,15 +1226,15 @@ function renderEPGGuide() {
         body.appendChild(row);
     }
 
-    // Full-height "now" line through the body rows — position matches the time-strip marker
+    // Full-height "now" line — lives inside epgBody so bottom:0 reaches the last row
     if (scrollOuter) {
-        let fullMarker = scrollOuter.querySelector('.epg-now-fullmarker');
+        let fullMarker = body.querySelector('.epg-now-fullmarker');
         if (!fullMarker) {
             fullMarker = document.createElement('div');
             fullMarker.className = 'epg-now-fullmarker';
-            scrollOuter.appendChild(fullMarker);
+            body.appendChild(fullMarker);
         }
-        fullMarker.style.left = `${EPG_CH_W + parseFloat(nowOffsetPx)}px`;
+        fullMarker.style.left = `${timeMarks.offsetLeft + parseFloat(nowOffsetPx)}px`;
     }
 
     // Restore or initialise horizontal scroll position

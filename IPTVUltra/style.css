@@ -425,6 +425,12 @@ body {
     border-radius: 15px;
 }
 
+.groups-pinned {
+    flex-shrink: 0;
+    padding: 8px 0 4px;
+    border-bottom: 1px solid #262a33;
+}
+
 .groups-list {
     flex: 1;
     overflow-y: auto;
@@ -544,8 +550,8 @@ body {
 
 .epg-info-fav-btn {
     background: none;
-    border: 1px solid #3a3e52;
-    color: #4a5070;
+    border: 1px solid #a09457;
+    color: #a09457;
     font-size: 1.3rem;
     cursor: pointer;
     padding: 3px 10px;
@@ -632,7 +638,7 @@ body {
 
 .epg-time-marker {
     position: absolute;
-    font-size: 0.67rem;
+    font-size: 0.8rem;
     color: #6c8eff;
     top: 9px;
     transform: translateX(-50%);
@@ -655,7 +661,7 @@ body {
     position: absolute;
     top: 4px;
     left: 5px;
-    font-size: 0.62rem;
+    font-size: 0.5rem;
     font-weight: 700;
     color: #fff;
     background: #ff5555;
@@ -663,14 +669,13 @@ body {
     border-radius: 4px;
     white-space: nowrap;
     letter-spacing: 0.5px;
-    box-shadow: 0 0 6px rgba(255, 85, 85, 0.6);
     pointer-events: none;
 }
 
 .epg-now-fullmarker {
     position: absolute;
     /* left is set inline by JS at EPG_CH_W + nowOffsetPx */
-    top: 34px;
+    top: 0;
     bottom: 0;
     width: 3px;
     background: rgba(255, 85, 85, 0.45);
@@ -682,6 +687,7 @@ body {
 /* Body — no overflow; epg-scroll-outer handles it */
 .epg-body {
     display: block;
+    position: relative;
 }
 
 .epg-row {
@@ -836,7 +842,7 @@ body {
 }
 
 .epg-ch-name {
-    font-size: 0.8rem;
+    font-size: 0.9rem;
     color: #c8d0e0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -848,7 +854,7 @@ body {
 .epg-fav-btn {
     background: none;
     border: none;
-    color: #3a3e52;
+    color: #a09457;
     font-size: 1rem;
     cursor: pointer;
     padding: 0 5px 0 2px;
@@ -895,7 +901,7 @@ body {
 }
 
 .epg-prog-title {
-    font-size: 0.8rem;
+    font-size: 0.9rem;
     color: #c8d0e0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -908,7 +914,7 @@ body {
 }
 
 .epg-prog-desc {
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     color: #6c7a93;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -938,6 +944,14 @@ body {
 
 .epg-prog-placeholder.loading .epg-prog-title {
     color: #4a5070;
+}
+
+.epg-empty-group {
+    padding: 60px 24px;
+    text-align: center;
+    color: #4a5070;
+    font-size: 1rem;
+    font-style: italic;
 }
 
 .channels-header {
@@ -1524,9 +1538,17 @@ video {
     transform: translateX(0);
 }
 
-.epg-toast.epg-toast--loading { border-left-color: #6c8eff; }
-.epg-toast.epg-toast--error   { border-left-color: #ff5555; }
-.epg-toast.epg-toast--success { border-left-color: #4cff9f; }
+.epg-toast.epg-toast--loading {
+    border-left-color: #6c8eff;
+}
+
+.epg-toast.epg-toast--error {
+    border-left-color: #ff5555;
+}
+
+.epg-toast.epg-toast--success {
+    border-left-color: #4cff9f;
+}
 
 .epg-toast-body {
     flex: 1;
@@ -1542,8 +1564,13 @@ video {
     margin-bottom: 3px;
 }
 
-.epg-toast--error   .epg-toast-title { color: #ff5555; }
-.epg-toast--success .epg-toast-title { color: #4cff9f; }
+.epg-toast--error .epg-toast-title {
+    color: #ff5555;
+}
+
+.epg-toast--success .epg-toast-title {
+    color: #4cff9f;
+}
 
 .epg-toast-msg {
     font-size: 0.78rem;
