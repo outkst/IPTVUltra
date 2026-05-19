@@ -19,6 +19,7 @@ let epgIdMap = new Map();     // lowercase string -> actual channelId key in epg
 let epgLoading = false;
 let currentEpgUrl = '';
 let epgRefreshTimer = null;
+let epgFocusedRowIdx = 0;     // remote-cursor row in EPG guide (independent of playing channel)
 
 // DOM elements
 const videoPlayer = document.getElementById('videoPlayer');
@@ -116,6 +117,20 @@ function parseXMLTVDate(str) {
 function formatTimeHHMM(ts) {
     const d = new Date(ts);
     return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+}
+
+function formatTime12(ts) {
+    const d = new Date(ts);
+    const h = d.getHours(), min = d.getMinutes();
+    const h12 = h % 12 || 12;
+    return `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+function formatDuration(totalMins) {
+    if (totalMins < 60) return `${totalMins} min`;
+    const hrs = Math.floor(totalMins / 60);
+    const mins = totalMins % 60;
+    return mins > 0 ? `${hrs}hr ${mins}min` : `${hrs}hr`;
 }
 
 function resolveEpgId(tvgId) {
@@ -1037,7 +1052,7 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
 }
 
 // ── EPG Guide Layout ──────────────────────────────────────────
-const EPG_CH_W = 180;      // channel label column px
+const EPG_CH_W = 200;      // channel label column px
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
 const EPG_WIN_HOURS = 24;  // total scrollable window
 
@@ -1053,6 +1068,13 @@ function enterEPGMode() {
     if (wrap) {
         if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
         if (streamInfoOverlay.parentNode !== wrap) wrap.appendChild(streamInfoOverlay);
+    }
+    // Start focus cursor at the currently playing channel
+    if (currentChannelIndex >= 0) {
+        const idx = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+        epgFocusedRowIdx = idx >= 0 ? idx : 0;
+    } else {
+        epgFocusedRowIdx = 0;
     }
     renderEPGGuide();
     if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
@@ -1166,6 +1188,10 @@ function renderEPGGuide() {
             });
         }
     }
+
+    // Clamp focused row and apply highlight
+    epgFocusedRowIdx = Math.min(epgFocusedRowIdx, Math.max(0, currentFilteredChannels.length - 1));
+    updateEPGRowFocus();
 }
 
 function updateEPGInfoPanel(ch) {
@@ -1184,7 +1210,7 @@ function updateEPGInfoPanel(ch) {
     const curr = getCurrentProgramme(ch.tvgId);
     if (curr) {
         const totalMins = Math.round((curr.stop - curr.start) / 60000);
-        time.textContent = `${formatTimeHHMM(curr.start)} – ${formatTimeHHMM(curr.stop)}  (${totalMins} min)`;
+        time.textContent = `${formatTime12(curr.start)} – ${formatTime12(curr.stop)}  (${formatDuration(totalMins)})`;
         title.textContent = curr.title;
         desc.textContent = curr.desc || '';
     } else {
@@ -1204,7 +1230,7 @@ async function loadXtreamEPG(base, username, password) {
     const u = encodeURIComponent(username);
     const pw = encodeURIComponent(password);
     const now2 = Date.now();
-    const windowStart = now2 - 2 * 3600000; // 2h lookback to match guide display
+    const windowStart = 0; // fetch all past and future programme data
     const windowEnd = now2 + 86400000;       // 24h ahead
 
     const BATCH = 100;
@@ -1475,7 +1501,71 @@ function focusElement(idx) {
     const el = focusableElements[currentFocusIndex];
     if (el) { el.focus(); el.scrollIntoView({ block: 'nearest' }); }
 }
+// ── EPG Remote Navigation ─────────────────────────────────────
+function updateEPGRowFocus() {
+    const body = document.getElementById('epgBody');
+    if (!body) return;
+    const rows = body.querySelectorAll('.epg-row');
+    rows.forEach((r, i) => {
+        r.classList.toggle('epg-focused', i === epgFocusedRowIdx);
+    });
+    scrollEPGRowIntoView(epgFocusedRowIdx);
+}
+
+function scrollEPGRowIntoView(idx) {
+    const scrollOuter = document.getElementById('epgScrollOuter');
+    const body = document.getElementById('epgBody');
+    if (!scrollOuter || !body) return;
+    const rows = body.querySelectorAll('.epg-row');
+    if (!rows[idx]) return;
+    const row = rows[idx];
+    const timeStripH = 34;
+    const rowTop = row.offsetTop;
+    const rowBottom = rowTop + row.offsetHeight;
+    const viewTop = scrollOuter.scrollTop + timeStripH;
+    const viewBottom = scrollOuter.scrollTop + scrollOuter.clientHeight;
+    if (rowTop < viewTop) {
+        scrollOuter.scrollTop = rowTop - timeStripH;
+    } else if (rowBottom > viewBottom) {
+        scrollOuter.scrollTop = rowBottom - scrollOuter.clientHeight;
+    }
+}
+
+function scrollEPGTimeBy(mins) {
+    const scrollOuter = document.getElementById('epgScrollOuter');
+    if (!scrollOuter) return;
+    scrollOuter.scrollLeft = Math.max(0, scrollOuter.scrollLeft + mins * EPG_PX_PER_MIN);
+}
+
+function selectEPGFocusedChannel() {
+    const body = document.getElementById('epgBody');
+    if (!body) return;
+    const rows = body.querySelectorAll('.epg-row');
+    if (rows[epgFocusedRowIdx]) rows[epgFocusedRowIdx].click();
+}
+
 function handleRemoteNav(e) {
+    if (epgMode) {
+        if (e.key === 'ArrowUp' || e.keyCode === 38) {
+            e.preventDefault();
+            epgFocusedRowIdx = Math.max(0, epgFocusedRowIdx - 1);
+            updateEPGRowFocus();
+        } else if (e.key === 'ArrowDown' || e.keyCode === 40) {
+            e.preventDefault();
+            epgFocusedRowIdx = Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1);
+            updateEPGRowFocus();
+        } else if (e.key === 'ArrowLeft' || e.keyCode === 37) {
+            e.preventDefault();
+            scrollEPGTimeBy(-30);
+        } else if (e.key === 'ArrowRight' || e.keyCode === 39) {
+            e.preventDefault();
+            scrollEPGTimeBy(30);
+        } else if (e.key === 'Enter' || e.keyCode === 13) {
+            e.preventDefault();
+            selectEPGFocusedChannel();
+        }
+        return;
+    }
     if (!startPage.classList.contains('hidden') && (!confirmDialog || confirmDialog.classList.contains('hidden'))) {
         if (e.key === 'Tab') { e.preventDefault(); switchTab(activeTab === 'm3u' ? 'xtream' : 'm3u'); }
         else if (e.key === 'ArrowUp' || e.keyCode === 38) { e.preventDefault(); currentFocusIndex--; focusElement(currentFocusIndex); }
@@ -1533,6 +1623,10 @@ clearAllBtn.addEventListener('click', () => {
 });
 infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
+const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
+const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
+if (epgTimePrevBtn) epgTimePrevBtn.addEventListener('click', () => scrollEPGTimeBy(-30));
+if (epgTimeNextBtn) epgTimeNextBtn.addEventListener('click', () => scrollEPGTimeBy(30));
 reloadBtn.addEventListener('click', reloadStream);
 homePageBtn.addEventListener('click', goToHomeScreen);
 toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);

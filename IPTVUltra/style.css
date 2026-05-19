@@ -547,7 +547,6 @@ body {
 }
 
 .epg-info-desc {
-    font-size: 0.88rem;
     color: #8e9aaf;
     line-height: 1.6;
     overflow-y: auto;
@@ -561,6 +560,7 @@ body {
     overflow: hidden;
     background: #0a0b10;
     border-top: 2px solid #6c8eff;
+    position: relative;
 }
 
 /* Single container that scrolls both axes — keeps time strip + rows in sync */
@@ -583,8 +583,8 @@ body {
 
 /* Top-left corner cell — doubly frozen (sticks left AND is inside the sticky row) */
 .epg-ch-corner {
-    width: 180px;
-    min-width: 180px;
+    width: 200px;
+    min-width: 200px;
     flex-shrink: 0;
     position: sticky;
     left: 0;
@@ -645,16 +645,58 @@ body {
     background: rgba(108, 142, 255, 0.13);
 }
 
+.epg-row.epg-focused {
+    background: rgba(255, 255, 255, 0.04);
+    box-shadow: inset 2px 0 0 #6c8eff;
+}
+
+.epg-row.active.epg-focused {
+    background: rgba(108, 142, 255, 0.18);
+    box-shadow: inset 2px 0 0 #6c8eff;
+}
+
+.epg-time-nav-btn {
+    position: absolute;
+    top: 0;
+    height: 34px;
+    z-index: 20;
+    background: rgba(15, 17, 23, 0.95);
+    border: none;
+    border-bottom: 1px solid #2a2d3a;
+    color: #a3c0ff;
+    font-size: 0.68rem;
+    padding: 0 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.epg-time-nav-btn:hover {
+    background: rgba(108, 142, 255, 0.15);
+    color: #fff;
+}
+
+.epg-time-nav-prev {
+    left: 200px;
+    border-right: 1px solid #2a2d3a;
+}
+
+.epg-time-nav-next {
+    right: 0;
+    border-left: 1px solid #2a2d3a;
+}
+
 /* Channel label — sticks to the left as you scroll horizontally */
 .epg-ch-label {
-    width: 180px;
-    min-width: 180px;
+    width: 200px;
+    min-width: 200px;
     position: sticky;
     left: 0;
     z-index: 5;
     display: flex;
     align-items: center;
-    padding: 0 8px;
+    padding: 0;
     gap: 7px;
     border-right: 1px solid #2a2d3a;
     background: #0f1117;
@@ -675,7 +717,7 @@ body {
 }
 
 .epg-ch-name {
-    font-size: 0.68rem;
+    font-size: 0.8rem;
     color: #c8d0e0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -717,7 +759,7 @@ body {
 }
 
 .epg-prog-title {
-    font-size: 0.68rem;
+    font-size: 0.8rem;
     color: #c8d0e0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -725,8 +767,12 @@ body {
     pointer-events: none;
 }
 
+.now-playing>.epg-prog-title {
+    color: #fafafa;
+}
+
 .epg-prog-desc {
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     color: #6c7a93;
     overflow: hidden;
     text-overflow: ellipsis;
