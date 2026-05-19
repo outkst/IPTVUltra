@@ -10,7 +10,7 @@ let groupsColumnVisible = true;
 let isLoading = false;
 let currentSearchQuery = '';
 
-let activeTab = 'm3u'; // 'm3u' | 'xtream'
+let activeTab = 'xtream'; // 'xtream' | 'm3u'
 
 // EPG state
 let epgData = new Map();      // channelId -> [{start, stop, title, desc}]
@@ -1284,8 +1284,8 @@ function updateFocusableElements() {
         focusableElements = [];
         if (clearAllBtn) focusableElements.push(clearAllBtn);
         document.querySelectorAll('.saved-item').forEach(el => focusableElements.push(el));
-        if (tabM3u) focusableElements.push(tabM3u);
         if (tabXtream) focusableElements.push(tabXtream);
+        if (tabM3u) focusableElements.push(tabM3u);
         if (activeTab === 'm3u') {
             if (newM3uUrl) focusableElements.push(newM3uUrl);
             if (newEpgUrl) focusableElements.push(newEpgUrl);
