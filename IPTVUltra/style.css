@@ -525,6 +525,12 @@ body {
     display: block;
 }
 
+.epg-info-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .epg-info-name {
     font-size: 1.25rem;
     font-weight: 700;
@@ -532,6 +538,26 @@ body {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.epg-info-fav-btn {
+    background: none;
+    border: 1px solid #3a3e52;
+    color: #4a5070;
+    font-size: 1.3rem;
+    cursor: pointer;
+    padding: 3px 10px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.epg-info-fav-btn.fav-active {
+    color: #ffc107;
+    border-color: #ffc107;
 }
 
 .epg-info-time {
@@ -671,23 +697,73 @@ body {
     background: rgba(108, 142, 255, 0.06);
 }
 
+/* Currently playing channel — amber/gold, distinct from blue navigation */
 .epg-row.active {
-    background: rgba(108, 142, 255, 0.13);
+    background: rgba(232, 168, 32, 0.09);
+    box-shadow: inset 5px 0 0 #e8a820;
 }
 
+.epg-row.active .epg-ch-label {
+    background: #1c1900;
+}
+
+.epg-row.active .epg-ch-name {
+    color: #ffd265;
+    font-weight: 600;
+}
+
+/* Focused row — highlighted by remote cursor */
 .epg-row.epg-focused {
-    background: rgba(255, 255, 255, 0.04);
-    box-shadow: inset 2px 0 0 #6c8eff;
+    background: rgba(108, 142, 255, 0.20);
+    box-shadow: inset 5px 0 0 #6c8eff;
 }
 
+.epg-row.epg-focused .epg-ch-label {
+    background: #1b2345;
+}
+
+.epg-row.epg-focused .epg-ch-name {
+    color: #e8efff;
+    font-weight: 600;
+}
+
+.epg-row.epg-focused .epg-prog-block {
+    background: #232e5a;
+    border-color: #3d4e80;
+}
+
+.epg-row.epg-focused .epg-prog-block.now-playing {
+    background: #1e3290;
+    border-color: #8aa0ff;
+}
+
+/* Playing + focused: blue focus background, amber bar keeps the playing signal visible */
 .epg-row.active.epg-focused {
-    background: rgba(108, 142, 255, 0.18);
-    box-shadow: inset 2px 0 0 #6c8eff;
+    background: rgba(108, 142, 255, 0.22);
+    box-shadow: inset 5px 0 0 #e8a820;
+}
+
+.epg-row.active.epg-focused .epg-ch-label {
+    background: #1b2345;
+}
+
+.epg-row.active.epg-focused .epg-ch-name {
+    color: #ffd265;
+    font-weight: 600;
+}
+
+.epg-row.active.epg-focused .epg-prog-block {
+    background: #232e5a;
+    border-color: #3d4e80;
+}
+
+.epg-row.active.epg-focused .epg-prog-block.now-playing {
+    background: #1e3290;
+    border-color: #8aa0ff;
 }
 
 .epg-time-nav-btn {
-    position: absolute;
-    top: 4px;
+    position: sticky;
     height: 26px;
     z-index: 20;
     background: #2a4acc;
@@ -703,6 +779,11 @@ body {
     border-radius: 6px;
     box-shadow: 0 2px 8px rgba(59, 110, 255, 0.45);
     letter-spacing: 0.3px;
+    flex-shrink: 0;
+    align-self: center;
+    opacity: 1;
+    transition: opacity 0.15s;
+    pointer-events: auto;
 }
 
 .epg-time-nav-btn:hover {
@@ -712,11 +793,16 @@ body {
 }
 
 .epg-time-nav-prev {
-    left: 208px;
+    left: 200px;
 }
 
 .epg-time-nav-next {
-    right: 8px;
+    right: 0;
+}
+
+.epg-nav-hidden {
+    opacity: 0;
+    pointer-events: none;
 }
 
 /* Channel label — sticks to the left as you scroll horizontally */
@@ -756,6 +842,23 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+    min-width: 0;
+}
+
+.epg-fav-btn {
+    background: none;
+    border: none;
+    color: #3a3e52;
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 0 5px 0 2px;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.epg-fav-btn.fav-active {
+    color: #ffc107;
 }
 
 /* Programme area — width set inline via JS; fixed so blocks align to time strip */

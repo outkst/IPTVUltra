@@ -143,7 +143,10 @@
 						</div>
 						<div class="epg-info-panel" id="epgInfoPanel">
 							<img id="epgInfoLogo" class="epg-info-logo" src="" alt="">
-							<div id="epgInfoName" class="epg-info-name"></div>
+							<div class="epg-info-name-row">
+								<div id="epgInfoName" class="epg-info-name"></div>
+								<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
+							</div>
 							<div id="epgInfoTime" class="epg-info-time"></div>
 							<div id="epgInfoTitle" class="epg-info-title"></div>
 							<div id="epgInfoDesc" class="epg-info-desc"></div>
@@ -153,12 +156,12 @@
 						<div id="epgScrollOuter" class="epg-scroll-outer">
 							<div id="epgTimeStrip" class="epg-time-strip">
 								<div id="epgChCorner" class="epg-ch-corner"></div>
+								<button id="epgTimePrevBtn" class="epg-time-nav-btn epg-time-nav-prev">◀ Prev</button>
 								<div id="epgTimeMarks" class="epg-time-marks"></div>
+								<button id="epgTimeNextBtn" class="epg-time-nav-btn epg-time-nav-next">Next ▶</button>
 							</div>
 							<div id="epgBody" class="epg-body"></div>
 						</div>
-						<button id="epgTimePrevBtn" class="epg-time-nav-btn epg-time-nav-prev">◀ Prev</button>
-						<button id="epgTimeNextBtn" class="epg-time-nav-btn epg-time-nav-next">Next ▶</button>
 					</div>
 				</div>
 			</div>

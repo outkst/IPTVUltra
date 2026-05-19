@@ -1165,10 +1165,12 @@ function renderEPGGuide() {
 
         // Channel label (sticky left)
         const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
+        const favId = ch.tvgId || `idx_${origIdx}`;
+        const isFav = favoriteIds.has(favId);
         const labelHtml = `<div class="epg-ch-label">${logoSrc
             ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
             : '<span class="epg-ch-no-logo">📺</span>'
-            }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span></div>`;
+            }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
         // Programme blocks — width anchored to the same totalGuideW as the time marks
         const resolvedId = resolveEpgId(ch.tvgId);
@@ -1200,6 +1202,10 @@ function renderEPGGuide() {
         progsHtml += '</div>';
 
         row.innerHTML = labelHtml + progsHtml;
+        row.querySelector('.epg-fav-btn').addEventListener('click', e => {
+            e.stopPropagation();
+            toggleEPGFav(favId);
+        });
         row.addEventListener('click', () => {
             body.querySelectorAll('.epg-row.active').forEach(r => r.classList.remove('active'));
             row.classList.add('active');
@@ -1224,11 +1230,13 @@ function renderEPGGuide() {
     if (scrollOuter) {
         if (prevScrollLeft > 0) {
             scrollOuter.scrollLeft = prevScrollLeft;
+            updateEPGNavVisibility();
         } else {
             // First render: put "now" ~1/3 from the left so past and future are both visible
             requestAnimationFrame(() => {
                 const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
                 scrollOuter.scrollLeft = Math.max(0, parseFloat(nowOffsetPx) - Math.floor(visibleW / 3));
+                updateEPGNavVisibility();
             });
         }
     }
@@ -1244,12 +1252,21 @@ function updateEPGInfoPanel(ch) {
     const time = document.getElementById('epgInfoTime');
     const title = document.getElementById('epgInfoTitle');
     const desc = document.getElementById('epgInfoDesc');
+    const favBtn = document.getElementById('epgInfoFavBtn');
     if (!name) return;
 
     if (ch.tvgLogo) { logo.src = ch.tvgLogo; logo.style.display = ''; }
     else logo.style.display = 'none';
 
     name.textContent = ch.name;
+
+    if (favBtn) {
+        const favId = ch.tvgId || `idx_${channels.indexOf(ch)}`;
+        favBtn.dataset.favId = favId;
+        const isFav = favoriteIds.has(favId);
+        favBtn.textContent = isFav ? '★' : '☆';
+        favBtn.classList.toggle('fav-active', isFav);
+    }
 
     const curr = getCurrentProgramme(ch.tvgId);
     if (curr) {
@@ -1588,7 +1605,33 @@ function scrollEPGRowIntoView(idx) {
 function scrollEPGTimeBy(mins) {
     const scrollOuter = document.getElementById('epgScrollOuter');
     if (!scrollOuter) return;
-    scrollOuter.scrollLeft = Math.max(0, scrollOuter.scrollLeft + mins * EPG_PX_PER_MIN);
+    const maxScroll = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
+    scrollOuter.scrollLeft = Math.max(0, Math.min(maxScroll, scrollOuter.scrollLeft + mins * EPG_PX_PER_MIN));
+    updateEPGNavVisibility();
+}
+
+function updateEPGNavVisibility() {
+    const so = document.getElementById('epgScrollOuter');
+    const prevBtn = document.getElementById('epgTimePrevBtn');
+    const nextBtn = document.getElementById('epgTimeNextBtn');
+    if (!so || !prevBtn || !nextBtn) return;
+    const maxScroll = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, so.clientWidth - EPG_CH_W);
+    prevBtn.classList.toggle('epg-nav-hidden', so.scrollLeft <= 1);
+    nextBtn.classList.toggle('epg-nav-hidden', so.scrollLeft >= maxScroll - 1);
+}
+
+function toggleEPGFav(id) {
+    if (favoriteIds.has(id)) favoriteIds.delete(id);
+    else favoriteIds.add(id);
+    localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
+    const isFav = favoriteIds.has(id);
+    document.querySelectorAll('.epg-fav-btn, .epg-info-fav-btn').forEach(el => {
+        if (el.dataset.favId === id) {
+            el.textContent = isFav ? '★' : '☆';
+            el.classList.toggle('fav-active', isFav);
+        }
+    });
+    renderChannelList();
 }
 
 function selectEPGFocusedChannel() {
@@ -1681,6 +1724,12 @@ const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
 if (epgTimePrevBtn) epgTimePrevBtn.addEventListener('click', () => scrollEPGTimeBy(-30));
 if (epgTimeNextBtn) epgTimeNextBtn.addEventListener('click', () => scrollEPGTimeBy(30));
+const epgScrollOuterEl = document.getElementById('epgScrollOuter');
+if (epgScrollOuterEl) epgScrollOuterEl.addEventListener('scroll', updateEPGNavVisibility);
+const epgInfoFavBtn = document.getElementById('epgInfoFavBtn');
+if (epgInfoFavBtn) epgInfoFavBtn.addEventListener('click', () => {
+    if (epgInfoFavBtn.dataset.favId) toggleEPGFav(epgInfoFavBtn.dataset.favId);
+});
 reloadBtn.addEventListener('click', reloadStream);
 homePageBtn.addEventListener('click', goToHomeScreen);
 toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
