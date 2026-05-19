@@ -647,7 +647,7 @@ function renderChannelList() {
             let logoHtml = '';
             if (ch.tvgLogo && ch.tvgLogo.trim()) {
                 logoHtml = `
-                    <img class="logo-img" src="${escapeHtml(ch.tvgLogo)}" loading="lazy" onerror="this.style.display='none'">
+                    <img class="logo-img" src="${escapeHtml(ch.tvgLogo)}" loading="lazy" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'">
                     <div class="logo-placeholder">📺</div>
                 `;
             } else {
@@ -1038,8 +1038,7 @@ async function loadXtreamEPG(base, username, password) {
     const windowStart = now2 - 120000;
     const windowEnd = now2 + 86400000; // 24h
 
-    // Batch requests: 20 concurrent at a time so we don't flood the server
-    const BATCH = 20;
+    const BATCH = 100;
     const total = channels.length;
 
     try {
@@ -1068,7 +1067,20 @@ async function loadXtreamEPG(base, username, password) {
                     if (isNaN(pStart) || isNaN(pStop)) continue;
                     if (pStart > windowEnd || pStop < windowStart) continue;
                     let title = ep.title || '';
-                    try { title = atob(title); } catch (e) {}
+                    // Only decode as base64 if the string is entirely base64-alphabet
+                    // characters AND the decoded bytes are all printable ASCII — avoids
+                    // garbling plain-text titles that happen to pass atob().
+                    if (title.length % 4 === 0 && /^[A-Za-z0-9+/]+=*$/.test(title)) {
+                        try {
+                            const raw = atob(title);
+                            let ok = raw.length > 0;
+                            for (let ci = 0; ok && ci < raw.length; ci++) {
+                                const c = raw.charCodeAt(ci);
+                                if (c < 0x20 && c !== 0x09 && c !== 0x0A) ok = false;
+                            }
+                            if (ok && /[a-zA-Z]/.test(raw)) title = raw;
+                        } catch (e) {}
+                    }
                     progs.push({ start: pStart, stop: pStop, title: title.trim() });
                 }
                 if (progs.length) {
