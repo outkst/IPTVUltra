@@ -30,12 +30,32 @@
 					</div>
 				</div>
 				<div class="add-source">
-					<div class="add-header">➕ ADD NEW PLAYLIST</div>
-					<div class="add-input-group"><input type="text" id="newM3uUrl" class="add-input"
-							placeholder="M3U URL (required)" tabindex="0"></div>
-					<div class="add-input-group"><input type="text" id="newM3uName" class="name-input"
-							placeholder="Name (optional)" tabindex="0"><button id="saveNewBtn" class="save-source-btn"
-							tabindex="0">Save Playlist</button></div>
+					<div class="tab-bar">
+						<button id="tabXtream" class="tab-btn active" tabindex="1">🔑 Xtream API</button>
+						<button id="tabM3u" class="tab-btn" tabindex="2">📡 Direct URL</button>
+					</div>
+					<div id="panelXtream" class="tab-panel">
+						<div class="add-input-group"><input type="text" id="xtreamServer" class="add-input"
+								placeholder="Server URL (e.g. http://server:8080)" tabindex="3"></div>
+						<div class="add-input-group">
+							<input type="text" id="xtreamUsername" class="add-input" placeholder="Username"
+								tabindex="4">
+							<input type="password" id="xtreamPassword" class="add-input" placeholder="Password"
+								tabindex="5">
+						</div>
+						<div class="add-input-group"><input type="text" id="xtreamName" class="name-input"
+								placeholder="Name (optional)" tabindex="6"><button id="saveXtreamBtn"
+								class="save-source-btn" tabindex="7">Connect &amp; Save</button></div>
+					</div>
+					<div id="panelM3u" class="tab-panel" style="display:none;">
+						<div class="add-input-group"><input type="text" id="newM3uUrl" class="add-input"
+								placeholder="M3U URL (required)" tabindex="3"></div>
+						<div class="add-input-group"><input type="text" id="newEpgUrl" class="add-input"
+								placeholder="EPG / XMLTV URL (optional)" tabindex="4"></div>
+						<div class="add-input-group"><input type="text" id="newM3uName" class="name-input"
+								placeholder="Name (optional)" tabindex="5"><button id="saveNewBtn"
+								class="save-source-btn" tabindex="6">Save Playlist</button></div>
+					</div>
 				</div>
 				<div class="start-buttons"><button id="loadSelectedBtn" class="start-btn primary" disabled
 						tabindex="0">▶ Load Selected</button><button id="startDemoBtn" class="start-btn secondary"
@@ -53,6 +73,15 @@
 			</div>
 		</div>
 
+		<!-- EPG Toast Notification -->
+		<div id="epgToast" class="epg-toast">
+			<div class="epg-toast-spinner" id="epgToastSpinner"></div>
+			<div class="epg-toast-body">
+				<div class="epg-toast-title" id="epgToastTitle">EPG</div>
+				<div class="epg-toast-msg" id="epgToastMsg"></div>
+			</div>
+		</div>
+
 		<!-- Main App -->
 		<div id="mainApp" style="display: none; flex-direction: column; height: 100%;">
 			<div class="main-content">
@@ -61,43 +90,79 @@
 							class="toggle-groups-btn">◀ Hide</button></div>
 					<div class="groups-list" id="groupsList"></div>
 				</div>
-				<div class="channels-column">
-					<div class="channels-header"><span id="channelsHeaderTitle">📡 Channels</span><button id="showGroupsBtn"
-							class="show-groups-btn">▶ Groups</button></div>
-					<div class="search-container">
-						<div class="search-input-wrapper"><span class="search-icon">🔍</span><input type="text"
-								id="searchInput" class="search-input" placeholder="Search channels and groups..."></div>
-						<button id="clearSearchBtn" class="clear-search-btn">✕ Clear</button>
+				<!-- Standard view: channel list + video side-by-side -->
+				<div id="standardView" style="display:flex;flex:1;min-width:0;">
+					<div class="channels-column">
+						<div class="channels-header"><span id="channelsHeaderTitle">📡 Channels</span><button
+								id="showGroupsBtn" class="show-groups-btn">▶ Groups</button></div>
+						<div class="search-container">
+							<div class="search-input-wrapper"><span class="search-icon">🔍</span><input type="text"
+									id="searchInput" class="search-input" placeholder="Search channels and groups...">
+							</div>
+							<button id="clearSearchBtn" class="clear-search-btn">✕ Clear</button>
+						</div>
+						<div class="channel-count" id="channelCount"></div>
+						<div id="channelList" class="channel-list"></div>
+						<div class="channels-footer">
+							<span id="statusArea" class="channels-status">✨ Ready</span>
+							<button id="homePageBtn" class="home-btn" tabindex="0">⚙️ Settings</button>
+						</div>
 					</div>
-					<div class="channel-count" id="channelCount"></div>
-					<div id="channelList" class="channel-list"></div>
-					<div class="channels-footer">
-						<span id="statusArea" class="channels-status">✨ Ready</span>
-						<button id="homePageBtn" class="home-btn" tabindex="0">⚙️ Settings</button>
+					<div class="video-area" id="videoArea">
+						<video id="videoPlayer" controls autoplay playsinline crossorigin="anonymous"></video>
+						<div id="loadingOverlay" class="loading-overlay hidden">
+							<div class="loading-spinner"></div>
+							<div class="loading-text">Loading playlist...</div>
+						</div>
+						<div class="video-controls-top" id="topControls">
+							<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
+							<button id="reloadBtn" class="top-control-btn">🔄 Reload</button>
+							<button id="audioBtn" class="top-control-btn" style="display:none;">🔊 Audio</button>
+							<button id="subtitleBtn" class="top-control-btn" style="display:none;">💬 Subtitles</button>
+						</div>
+						<div id="audioPanel" class="subtitle-panel hidden">
+							<div class="subtitle-panel-title">Audio Track</div>
+							<div id="audioTrackList"></div>
+						</div>
+						<div id="subtitlePanel" class="subtitle-panel hidden">
+							<div class="subtitle-panel-title">Subtitles / CC</div>
+							<div id="subtitleTrackList"></div>
+						</div>
+						<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
+						<div id="epgNowNext" class="epg-now-next" style="display:none;"></div>
+						<div id="channelInfoTag" class="channel-info-tag"></div>
 					</div>
 				</div>
-				<div class="video-area" id="videoArea">
-					<video id="videoPlayer" controls autoplay playsinline crossorigin="anonymous"></video>
-					<div id="loadingOverlay" class="loading-overlay hidden">
-						<div class="loading-spinner"></div>
-						<div class="loading-text">Loading playlist...</div>
+				<!-- EPG guide view: video+info panel on top, guide grid below -->
+				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;">
+					<div class="epg-top">
+						<div class="epg-video-wrap" id="epgVideoWrap">
+							<div class="video-controls-top" id="epgTopControls">
+								<button id="epgInfoBtn" class="top-control-btn">ℹ️ Stream Info</button>
+							</div>
+						</div>
+						<div class="epg-info-panel" id="epgInfoPanel">
+							<img id="epgInfoLogo" class="epg-info-logo" src="" alt="">
+							<div class="epg-info-name-row">
+								<div id="epgInfoName" class="epg-info-name"></div>
+								<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
+							</div>
+							<div id="epgInfoTime" class="epg-info-time"></div>
+							<div id="epgInfoTitle" class="epg-info-title"></div>
+							<div id="epgInfoDesc" class="epg-info-desc"></div>
+						</div>
 					</div>
-					<div class="video-controls-top" id="topControls">
-						<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
-						<button id="reloadBtn" class="top-control-btn">🔄 Reload</button>
-						<button id="audioBtn" class="top-control-btn" style="display:none;">🔊 Audio</button>
-						<button id="subtitleBtn" class="top-control-btn" style="display:none;">💬 Subtitles</button>
+					<div id="epgGuideWrap" class="epg-guide-wrap">
+						<div id="epgScrollOuter" class="epg-scroll-outer">
+							<div id="epgTimeStrip" class="epg-time-strip">
+								<div id="epgChCorner" class="epg-ch-corner"></div>
+								<button id="epgTimePrevBtn" class="epg-time-nav-btn epg-time-nav-prev">◀ Prev</button>
+								<div id="epgTimeMarks" class="epg-time-marks"></div>
+								<button id="epgTimeNextBtn" class="epg-time-nav-btn epg-time-nav-next">Next ▶</button>
+							</div>
+							<div id="epgBody" class="epg-body"></div>
+						</div>
 					</div>
-					<div id="audioPanel" class="subtitle-panel hidden">
-						<div class="subtitle-panel-title">Audio Track</div>
-						<div id="audioTrackList"></div>
-					</div>
-					<div id="subtitlePanel" class="subtitle-panel hidden">
-						<div class="subtitle-panel-title">Subtitles / CC</div>
-						<div id="subtitleTrackList"></div>
-					</div>
-					<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
-					<div id="channelInfoTag" class="channel-info-tag"></div>
 				</div>
 			</div>
 		</div>

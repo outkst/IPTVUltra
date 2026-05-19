@@ -189,6 +189,15 @@ body {
     white-space: nowrap;
 }
 
+.saved-epg {
+    font-size: 0.65rem;
+    color: #6c7a93;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
 .saved-actions {
     display: flex;
     gap: 8px;
@@ -231,6 +240,40 @@ body {
     color: #6c8eff;
     margin-bottom: 12px;
     text-transform: uppercase;
+}
+
+.tab-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.tab-btn {
+    flex: 1;
+    padding: 9px 12px;
+    border: 1px solid #3a3c47;
+    border-radius: 10px;
+    background: #1e2028;
+    color: #8e9aaf;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: 0.15s;
+}
+
+.tab-btn.active {
+    background: #2a3a70;
+    border-color: #6c8eff;
+    color: #fff;
+}
+
+.tab-btn:focus {
+    outline: 2px solid #6c8eff;
+}
+
+.tab-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
 }
 
 .add-input-group {
@@ -425,8 +468,476 @@ body {
     transition: width 0.3s ease;
 }
 
-.groups-column.collapsed + .channels-column {
+.groups-column.collapsed+#standardView .channels-column {
     width: 520px;
+}
+
+/* ── EPG Guide Layout ─────────────────────────────────────── */
+#standardView {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+}
+
+#epgView {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+}
+
+.epg-top {
+    display: flex;
+    flex-direction: row;
+    height: 50%;
+    flex-shrink: 0;
+}
+
+.epg-video-wrap {
+    flex: 3;
+    position: relative;
+    background: #000;
+    overflow: hidden;
+}
+
+.epg-video-wrap video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+.epg-info-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: #0f1117;
+    border-left: 2px solid #6c8eff;
+    padding: 14px 14px 10px;
+    gap: 7px;
+    overflow-y: auto;
+    min-width: 0;
+}
+
+.epg-info-logo {
+    height: 60px;
+    max-width: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.epg-info-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.epg-info-name {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+}
+
+.epg-info-fav-btn {
+    background: none;
+    border: 1px solid #3a3e52;
+    color: #4a5070;
+    font-size: 1.3rem;
+    cursor: pointer;
+    padding: 3px 10px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: color 0.15s, border-color 0.15s;
+}
+
+.epg-info-fav-btn.fav-active {
+    color: #ffc107;
+    border-color: #ffc107;
+}
+
+.epg-info-time {
+    font-size: 0.95rem;
+    color: #6c8eff;
+    font-weight: 600;
+}
+
+.epg-info-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: #e0e4f0;
+}
+
+.epg-info-desc {
+    color: #8e9aaf;
+    line-height: 1.6;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.epg-guide-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #0a0b10;
+    border-top: 2px solid #6c8eff;
+    position: relative;
+}
+
+/* Single container that scrolls both axes — keeps time strip + rows in sync */
+.epg-scroll-outer {
+    flex: 1;
+    overflow: auto;
+    position: relative;
+}
+
+/* Time strip row — sticks to the top as you scroll vertically */
+.epg-time-strip {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: row;
+    height: 34px;
+    background: #13141b;
+    border-bottom: 1px solid #2a2d3a;
+}
+
+/* Top-left corner cell — doubly frozen (sticks left AND is inside the sticky row) */
+.epg-ch-corner {
+    width: 200px;
+    min-width: 200px;
+    flex-shrink: 0;
+    position: sticky;
+    left: 0;
+    z-index: 11;
+    background: #0f1117;
+    border-right: 1px solid #2a2d3a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Time markers area — width set inline via JS to match total guide width */
+.epg-time-marks {
+    position: relative;
+    height: 34px;
+    flex-shrink: 0;
+}
+
+.epg-time-marker {
+    position: absolute;
+    font-size: 0.67rem;
+    color: #6c8eff;
+    top: 9px;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.epg-now-line {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: #ff5555;
+    box-shadow: 0 0 6px rgba(255, 85, 85, 0.7);
+    z-index: 4;
+    pointer-events: none;
+}
+
+.epg-now-label {
+    position: absolute;
+    top: 4px;
+    left: 5px;
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #fff;
+    background: #ff5555;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+    box-shadow: 0 0 6px rgba(255, 85, 85, 0.6);
+    pointer-events: none;
+}
+
+.epg-now-fullmarker {
+    position: absolute;
+    /* left is set inline by JS at EPG_CH_W + nowOffsetPx */
+    top: 34px;
+    bottom: 0;
+    width: 3px;
+    background: rgba(255, 85, 85, 0.45);
+    box-shadow: 0 0 8px rgba(255, 85, 85, 0.35);
+    z-index: 3;
+    pointer-events: none;
+}
+
+/* Body — no overflow; epg-scroll-outer handles it */
+.epg-body {
+    display: block;
+}
+
+.epg-row {
+    display: flex;
+    flex-direction: row;
+    height: 62px;
+    border-bottom: 1px solid #181a22;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.epg-row:hover {
+    background: rgba(108, 142, 255, 0.06);
+}
+
+/* Currently playing channel — amber/gold, distinct from blue navigation */
+.epg-row.active {
+    background: rgba(232, 168, 32, 0.09);
+    box-shadow: inset 5px 0 0 #e8a820;
+}
+
+.epg-row.active .epg-ch-label {
+    background: #1c1900;
+}
+
+.epg-row.active .epg-ch-name {
+    color: #ffd265;
+    font-weight: 600;
+}
+
+/* Focused row — highlighted by remote cursor */
+.epg-row.epg-focused {
+    background: rgba(108, 142, 255, 0.20);
+    box-shadow: inset 5px 0 0 #6c8eff;
+}
+
+.epg-row.epg-focused .epg-ch-label {
+    background: #1b2345;
+}
+
+.epg-row.epg-focused .epg-ch-name {
+    color: #e8efff;
+    font-weight: 600;
+}
+
+.epg-row.epg-focused .epg-prog-block {
+    background: #232e5a;
+    border-color: #3d4e80;
+}
+
+.epg-row.epg-focused .epg-prog-block.now-playing {
+    background: #1e3290;
+    border-color: #8aa0ff;
+}
+
+/* Playing + focused: blue focus background, amber bar keeps the playing signal visible */
+.epg-row.active.epg-focused {
+    background: rgba(108, 142, 255, 0.22);
+    box-shadow: inset 5px 0 0 #e8a820;
+}
+
+.epg-row.active.epg-focused .epg-ch-label {
+    background: #1b2345;
+}
+
+.epg-row.active.epg-focused .epg-ch-name {
+    color: #ffd265;
+    font-weight: 600;
+}
+
+.epg-row.active.epg-focused .epg-prog-block {
+    background: #232e5a;
+    border-color: #3d4e80;
+}
+
+.epg-row.active.epg-focused .epg-prog-block.now-playing {
+    background: #1e3290;
+    border-color: #8aa0ff;
+}
+
+.epg-time-nav-btn {
+    position: sticky;
+    height: 26px;
+    z-index: 20;
+    background: #2a4acc;
+    border: 1px solid #4a6aff;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(59, 110, 255, 0.45);
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+    align-self: center;
+    opacity: 1;
+    transition: opacity 0.15s;
+    pointer-events: auto;
+}
+
+.epg-time-nav-btn:hover {
+    background: #3b6eff;
+    border-color: #6c8eff;
+    box-shadow: 0 2px 14px rgba(59, 110, 255, 0.7);
+}
+
+.epg-time-nav-prev {
+    left: 200px;
+}
+
+.epg-time-nav-next {
+    right: 0;
+}
+
+.epg-nav-hidden {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Channel label — sticks to the left as you scroll horizontally */
+.epg-ch-label {
+    width: 200px;
+    height: 100%;
+    min-width: 200px;
+    position: sticky;
+    left: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    padding: 0;
+    gap: 7px;
+    border-right: 1px solid #2a2d3a;
+    background: #0f1117;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.epg-ch-logo {
+    width: 44px;
+    height: 34px;
+    object-fit: contain;
+    flex-shrink: 0;
+}
+
+.epg-ch-no-logo {
+    font-size: 1.1rem;
+    flex-shrink: 0;
+}
+
+.epg-ch-name {
+    font-size: 0.8rem;
+    color: #c8d0e0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.epg-fav-btn {
+    background: none;
+    border: none;
+    color: #3a3e52;
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 0 5px 0 2px;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: color 0.15s;
+}
+
+.epg-fav-btn.fav-active {
+    color: #ffc107;
+}
+
+/* Programme area — width set inline via JS; fixed so blocks align to time strip */
+.epg-progs {
+    position: relative;
+    flex-shrink: 0;
+    overflow: hidden;
+    height: 62px;
+}
+
+.epg-prog-block {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    border-radius: 5px;
+    background: #1b2038;
+    border: 1px solid #2a3550;
+    padding: 4px 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    box-sizing: border-box;
+    transition: background 0.1s;
+}
+
+.epg-prog-block:hover {
+    background: #242d50;
+}
+
+.epg-prog-block.now-playing {
+    background: #162060;
+    border-color: #6c8eff;
+}
+
+.epg-prog-title {
+    font-size: 0.8rem;
+    color: #c8d0e0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.now-playing>.epg-prog-title {
+    color: #fafafa;
+}
+
+.epg-prog-desc {
+    font-size: 0.7rem;
+    color: #6c7a93;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    pointer-events: none;
+    margin-top: 2px;
+}
+
+.epg-prog-placeholder {
+    position: absolute;
+    top: 5px;
+    bottom: 5px;
+    border-radius: 5px;
+    background: #161820;
+    border: 1px dashed #2a2d3a;
+    padding: 0 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    box-sizing: border-box;
+}
+
+.epg-prog-placeholder .epg-prog-title {
+    color: #3a3e52;
+    font-style: italic;
+}
+
+.epg-prog-placeholder.loading .epg-prog-title {
+    color: #4a5070;
 }
 
 .channels-header {
@@ -502,6 +1013,17 @@ body {
     border-radius: 15px;
     margin-top: 1rem;
     display: none;
+}
+
+.epg-show-groups-btn {
+    background: #2a3a70;
+    border: 1px solid #6c8eff;
+    padding: 4px 10px;
+    font-size: 0.68rem;
+    border-radius: 12px;
+    color: #a3c0ff;
+    cursor: pointer;
+    white-space: nowrap;
 }
 
 /* Virtual scroll container */
@@ -659,6 +1181,16 @@ body {
     font-size: 0.9rem;
 }
 
+.channel-epg {
+    display: block;
+    font-size: 0.65rem;
+    color: #6c7a93;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
 .favorite-star {
     color: #ffc107;
     font-size: 1rem;
@@ -701,6 +1233,7 @@ video {
 }
 
 .video-area:hover .video-controls-top,
+.epg-video-wrap:hover .video-controls-top,
 .video-controls-top.visible {
     opacity: 1;
     pointer-events: auto;
@@ -713,7 +1246,7 @@ video {
     padding: 6px 12px;
     border-radius: 20px;
     color: white;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     cursor: pointer;
 }
 
@@ -823,16 +1356,95 @@ video {
     padding-left: 10px;
 }
 
+.epg-now-next {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.78);
+    backdrop-filter: blur(10px);
+    padding: 8px 16px 10px;
+    border-top: 1px solid rgba(108, 142, 255, 0.15);
+    pointer-events: none;
+    z-index: 15;
+}
+
+.epg-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    line-height: 1.2;
+}
+
+.epg-now {
+    margin-bottom: 3px;
+}
+
+.epg-next {
+    margin-top: 4px;
+}
+
+.epg-badge {
+    font-size: 0.5rem;
+    font-weight: 700;
+    padding: 2px 5px;
+    border-radius: 3px;
+    background: #6c8eff;
+    color: #fff;
+    flex-shrink: 0;
+    letter-spacing: 0.5px;
+}
+
+.epg-badge-next {
+    background: #2c2f3a;
+    color: #6c7a93;
+}
+
+.epg-title {
+    font-size: 0.78rem;
+    color: #eee;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.epg-title-next {
+    color: #8e9aaf;
+    font-size: 0.7rem;
+}
+
+.epg-time {
+    font-size: 0.62rem;
+    color: #6c7a93;
+    flex-shrink: 0;
+}
+
+.epg-progress-bar {
+    height: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 1px;
+    margin: 4px 0 2px;
+    overflow: hidden;
+}
+
+.epg-progress-fill {
+    height: 100%;
+    background: #6c8eff;
+    border-radius: 1px;
+}
+
 .channel-info-tag {
     position: absolute;
-    bottom: 15px;
+    bottom: 75px;
     left: 15px;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(8px);
     padding: 5px 12px;
     border-radius: 20px;
-    font-size: 0.7rem;
+    font-size: 0.8rem;
     pointer-events: none;
+    z-index: 16;
 }
 
 .loading-overlay {
@@ -884,4 +1496,69 @@ video {
     .groups-column {
         width: 160px;
     }
+}
+
+/* ── EPG Toast Notification ──────────────────────────────────── */
+.epg-toast {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    min-width: 260px;
+    max-width: 440px;
+    background: rgba(14, 16, 22, 0.97);
+    border: 1px solid #2a2d3a;
+    border-left: 4px solid #6c8eff;
+    border-radius: 10px;
+    padding: 13px 18px;
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    z-index: 9999;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+    transform: translateX(calc(100% + 40px));
+    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), border-left-color 0.2s;
+    pointer-events: none;
+}
+
+.epg-toast.epg-toast--visible {
+    transform: translateX(0);
+}
+
+.epg-toast.epg-toast--loading { border-left-color: #6c8eff; }
+.epg-toast.epg-toast--error   { border-left-color: #ff5555; }
+.epg-toast.epg-toast--success { border-left-color: #4cff9f; }
+
+.epg-toast-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.epg-toast-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: #6c8eff;
+    margin-bottom: 3px;
+}
+
+.epg-toast--error   .epg-toast-title { color: #ff5555; }
+.epg-toast--success .epg-toast-title { color: #4cff9f; }
+
+.epg-toast-msg {
+    font-size: 0.78rem;
+    color: #c8d0e0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.epg-toast-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(108, 142, 255, 0.25);
+    border-top-color: #6c8eff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
 }
