@@ -10,6 +10,8 @@ let groupsColumnVisible = true;
 let isLoading = false;
 let currentSearchQuery = '';
 
+let activeTab = 'm3u'; // 'm3u' | 'xtream'
+
 // EPG state
 let epgData = new Map();      // channelId -> [{start, stop, title, desc}]
 let epgIdMap = new Map();     // lowercase string -> actual channelId key in epgData
@@ -55,6 +57,15 @@ const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
 const newEpgUrl = document.getElementById('newEpgUrl');
+const tabM3u = document.getElementById('tabM3u');
+const tabXtream = document.getElementById('tabXtream');
+const panelM3u = document.getElementById('panelM3u');
+const panelXtream = document.getElementById('panelXtream');
+const xtreamServer = document.getElementById('xtreamServer');
+const xtreamUsername = document.getElementById('xtreamUsername');
+const xtreamPassword = document.getElementById('xtreamPassword');
+const xtreamName = document.getElementById('xtreamName');
+const saveXtreamBtn = document.getElementById('saveXtreamBtn');
 
 let infoHideTimeout = null;
 let controlsTimeout = null;
@@ -148,8 +159,8 @@ async function loadEPG(url) {
     let programmeCount = 0;
     let bytesRead = 0;
     const now = Date.now();
-    const windowStart = now - 3600000;  // keep up to 1h ago (in-progress shows)
-    const windowEnd = now + 86400000;   // up to 24h ahead
+    const windowStart = now - 120000;   // keep up to 2min ago (in-progress shows)
+    const windowEnd = now + 10800000;  // up to 3h ahead
 
     try {
         const response = await fetch(url);
@@ -188,7 +199,6 @@ async function loadEPG(url) {
                     const stM = xml.match(/start="([^"]*)"/);
                     const spM = xml.match(/stop="([^"]*)"/);
                     const tiM = xml.match(/<title[^>]*>([^<]*)<\/title>/);
-                    const deM = xml.match(/<desc[^>]*>([^<]*)<\/desc>/);
                     if (chM && stM) {
                         const pStart = parseXMLTVDate(stM[1]);
                         const pStop = spM ? parseXMLTVDate(spM[1]) : null;
@@ -199,12 +209,19 @@ async function loadEPG(url) {
                                 epgData.set(cid, []);
                                 epgIdMap.set(cid.toLowerCase(), cid);
                             }
-                            epgData.get(cid).push({
+                            const arr = epgData.get(cid);
+                            arr.push({
                                 start: pStart,
                                 stop: pStop || 0,
-                                title: tiM ? tiM[1].trim() : '',
-                                desc: deM ? deM[1].trim() : ''
+                                title: tiM ? tiM[1].trim() : ''
                             });
+                            // Cap at 4 entries per channel; drop oldest past entries first
+                            if (arr.length > 4) {
+                                const now2 = Date.now();
+                                const pastIdx = arr.findIndex(p => p.stop > now2);
+                                if (pastIdx > 0) arr.splice(0, pastIdx);
+                                if (arr.length > 4) arr.splice(0, arr.length - 4);
+                            }
                             programmeCount++;
                         }
                     }
@@ -219,8 +236,8 @@ async function loadEPG(url) {
                 buffer = trim > 0 ? buffer.substring(trim) : '';
             }
 
-            // Yield every ~256 KB to keep UI responsive
-            if (bytesRead % (256 * 1024) < value.byteLength) {
+            // Yield every 256 programmes to keep UI responsive and let GC run
+            if (programmeCount > 0 && programmeCount % 256 === 0) {
                 statusArea.innerText = `📅 EPG: ${(bytesRead / 1048576).toFixed(1)} MB — ${programmeCount.toLocaleString()} programmes…`;
                 await new Promise(r => setTimeout(r, 0));
             }
@@ -952,6 +969,153 @@ function toggleGroupsColumn() {
 }
 
 
+// ----- Tab switching -----
+function switchTab(tab) {
+    activeTab = tab;
+    const isM3u = tab === 'm3u';
+    tabM3u.classList.toggle('active', isM3u);
+    tabXtream.classList.toggle('active', !isM3u);
+    panelM3u.style.display = isM3u ? '' : 'none';
+    panelXtream.style.display = isM3u ? 'none' : '';
+    updateFocusableElements();
+    focusElement(focusableElements.indexOf(isM3u ? tabM3u : tabXtream));
+}
+
+function editPlaylist(idx) {
+    const p = savedPlaylists[idx];
+    if (!p) return;
+    if (p.type === 'xtream') {
+        switchTab('xtream');
+        xtreamServer.value = p.url;
+        xtreamUsername.value = p.username || '';
+        xtreamPassword.value = p.password || '';
+        xtreamName.value = p.name || '';
+    } else {
+        switchTab('m3u');
+        newM3uUrl.value = p.url;
+        newM3uName.value = p.name;
+        newEpgUrl.value = p.epgUrl || '';
+    }
+}
+
+// ----- Xtream API -----
+function addXtreamPlaylist(serverUrl, username, password, name) {
+    const existing = savedPlaylists.find(p => p.type === 'xtream' && p.url === serverUrl && p.username === username);
+    if (existing) {
+        existing.name = name || existing.name;
+        existing.password = password;
+        savePlaylistsToStorage();
+        updateStartStatus(`Playlist "${existing.name}" updated!`, false, true, false, 0);
+    } else {
+        let displayName = name;
+        if (!displayName) {
+            try { displayName = `${username}@${new URL(serverUrl).host}`; } catch { displayName = username; }
+        }
+        savedPlaylists.push({ type: 'xtream', name: displayName, url: serverUrl, username, password });
+        savePlaylistsToStorage();
+        updateStartStatus('Xtream playlist saved!', false, true, false, 0);
+    }
+    setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 2000);
+    xtreamServer.value = '';
+    xtreamUsername.value = '';
+    xtreamPassword.value = '';
+    xtreamName.value = '';
+    updateFocusableElements();
+    focusElement(0);
+}
+
+async function loadXtreamPlaylist(serverUrl, username, password) {
+    if (isLoading) return;
+    isLoading = true;
+    epgData.clear();
+    epgIdMap.clear();
+    setLoadSelectedButtonEnabled(false);
+    updateStartStatus('Connecting to Xtream API…', false, false, true, 0);
+    showLoading(true, 'Connecting to Xtream API…');
+
+    const base = serverUrl.replace(/\/$/, '');
+    const u = encodeURIComponent(username);
+    const pw = encodeURIComponent(password);
+
+    try {
+        // 1. Authenticate
+        const authResp = await fetch(`${base}/player_api.php?username=${u}&password=${pw}`);
+        if (!authResp.ok) throw new Error(`Auth HTTP ${authResp.status}`);
+        const authData = await authResp.json();
+        if (authData.user_info && authData.user_info.auth === 0) throw new Error('Invalid username or password');
+        updateStartStatus('Authenticated! Loading categories…', false, false, true, 15);
+
+        // 2. Categories (for group names)
+        let catMap = {};
+        try {
+            const catResp = await fetch(`${base}/player_api.php?username=${u}&password=${pw}&action=get_live_categories`);
+            if (catResp.ok) {
+                const cats = await catResp.json();
+                if (Array.isArray(cats)) cats.forEach(c => { catMap[String(c.category_id)] = c.category_name; });
+            }
+        } catch { /* categories are optional */ }
+        updateStartStatus('Loading channel list…', false, false, true, 30);
+
+        // 3. Live streams
+        const streamsResp = await fetch(`${base}/player_api.php?username=${u}&password=${pw}&action=get_live_streams`);
+        if (!streamsResp.ok) throw new Error(`Streams HTTP ${streamsResp.status}`);
+        const streamsText = await streamsResp.text();
+        updateStartStatus('Parsing channels…', false, false, true, 55);
+        await new Promise(r => setTimeout(r, 0)); // yield before heavy JSON parse
+
+        const streams = JSON.parse(streamsText);
+        if (!Array.isArray(streams) || !streams.length) throw new Error('No live channels found');
+
+        // 4. Map to internal channel format in batches
+        const parsed = [];
+        const BATCH = 5000;
+        for (let i = 0; i < streams.length; i += BATCH) {
+            const slice = streams.slice(i, i + BATCH);
+            for (const s of slice) {
+                parsed.push({
+                    name: s.name || 'Unknown',
+                    tvgId: s.epg_channel_id || String(s.stream_id),
+                    tvgLogo: s.stream_icon || '',
+                    group: catMap[String(s.category_id)] || '',
+                    url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`
+                });
+            }
+            const pct = Math.min(90, 55 + Math.round((i / streams.length) * 35));
+            updateStartStatus(`Parsed ${parsed.length.toLocaleString()} channels…`, false, false, true, pct);
+            await new Promise(r => setTimeout(r, 5));
+        }
+
+        channels = parsed;
+        localStorage.setItem('last_m3u_url', ''); // clear M3U cache; Xtream uses its own auth
+        updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
+        currentSearchQuery = '';
+        searchInput.value = '';
+        currentGroup = 'favorites';
+        extractGroups();
+        startPage.classList.add('hidden');
+        mainApp.style.display = 'flex';
+        renderChannelList();
+        statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
+        if (channels.length) setTimeout(() => {
+            const firstIdx = currentFilteredChannels.length ? channels.indexOf(currentFilteredChannels[0]) : 0;
+            selectChannel(firstIdx);
+        }, 500);
+
+        // 5. Start EPG in background from Xtream XMLTV endpoint
+        const epgUrl = `${base}/xmltv.php?username=${u}&password=${pw}`;
+        currentEpgUrl = epgUrl;
+        setTimeout(() => loadEPG(epgUrl), 1500);
+
+    } catch (err) {
+        updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
+        setLoadSelectedButtonEnabled(true);
+    } finally {
+        isLoading = false;
+        showLoading(false);
+        setTimeout(() => { if (!startPage.classList.contains('hidden')) updateStartStatus('Ready', false, false, false, 0); }, 3000);
+    }
+}
+
 // ----- Saved Playlists Management -----
 function loadSavedPlaylists() {
     const saved = localStorage.getItem('iptv_playlists');
@@ -983,7 +1147,11 @@ function clearAllPlaylists() { savedPlaylists = []; selectedPlaylistId = null; s
 function renderSavedPlaylists() {
     const container = document.getElementById('savedSourcesList');
     if (!container) return;
-    if (!savedPlaylists.length) { container.innerHTML = '<div class="empty-saved">No saved playlists yet. Add one below!</div>'; updateFocusableElements(); return; }
+    if (!savedPlaylists.length) {
+        container.innerHTML = '<div class="empty-saved">No saved playlists yet. Add one below!</div>';
+        updateFocusableElements();
+        return;
+    }
     container.innerHTML = '';
     savedPlaylists.forEach((p, idx) => {
         const div = document.createElement('div');
@@ -993,13 +1161,28 @@ function renderSavedPlaylists() {
             div.style.background = '#2a3a70';
             selectedPlaylistId = idx;
             setLoadSelectedButtonEnabled(true);
-            newM3uUrl.value = p.url;
-            newM3uName.value = p.name;
-            newEpgUrl.value = p.epgUrl || '';
+            if (p.type === 'xtream') {
+                switchTab('xtream');
+                xtreamServer.value = p.url;
+                xtreamUsername.value = p.username || '';
+                xtreamPassword.value = p.password || '';
+                xtreamName.value = p.name || '';
+            } else {
+                switchTab('m3u');
+                newM3uUrl.value = p.url;
+                newM3uName.value = p.name;
+                newEpgUrl.value = p.epgUrl || '';
+            }
         };
-        const epgLine = p.epgUrl ? `<div class="saved-epg">📅 ${p.epgUrl.substring(0, 50)}${p.epgUrl.length > 50 ? '...' : ''}</div>` : '';
-        div.innerHTML = `<div class="saved-info"><div class="saved-name">${escapeHtml(p.name)}</div><div class="saved-url">${p.url.substring(0, 57)}${p.url.length > 57 ? '...' : ''}</div>${epgLine}</div>
-            <div class="saved-actions"><button class="edit-saved" onclick="event.stopPropagation(); document.getElementById('newM3uUrl').value='${escapeHtml(p.url)}'; document.getElementById('newM3uName').value='${escapeHtml(p.name)}'; document.getElementById('newEpgUrl').value='${escapeHtml(p.epgUrl || '')}';  ">✏️</button>
+        let displayUrl, subLine = '';
+        if (p.type === 'xtream') {
+            try { displayUrl = `🔑 ${p.username}@${new URL(p.url).host}`; } catch { displayUrl = `🔑 ${p.username}@${p.url}`; }
+        } else {
+            displayUrl = p.url.substring(0, 54) + (p.url.length > 54 ? '…' : '');
+            if (p.epgUrl) subLine = `<div class="saved-epg">📅 ${p.epgUrl.substring(0, 50)}${p.epgUrl.length > 50 ? '…' : ''}</div>`;
+        }
+        div.innerHTML = `<div class="saved-info"><div class="saved-name">${escapeHtml(p.name)}</div><div class="saved-url">${escapeHtml(displayUrl)}</div>${subLine}</div>
+            <div class="saved-actions"><button class="edit-saved" onclick="event.stopPropagation(); editPlaylist(${idx});">✏️</button>
             <button class="delete-saved" onclick="event.stopPropagation(); removePlaylist(${idx});">✕</button></div>`;
         container.appendChild(div);
     });
@@ -1014,12 +1197,22 @@ function updateFocusableElements() {
         focusableElements = [];
         if (clearAllBtn) focusableElements.push(clearAllBtn);
         document.querySelectorAll('.saved-item').forEach(el => focusableElements.push(el));
-        if (newM3uUrl) focusableElements.push(newM3uUrl);
-        if (newEpgUrl) focusableElements.push(newEpgUrl);
-        if (newM3uName) focusableElements.push(newM3uName);
-        if (saveNewBtn) focusableElements.push(saveNewBtn);
+        if (tabM3u) focusableElements.push(tabM3u);
+        if (tabXtream) focusableElements.push(tabXtream);
+        if (activeTab === 'm3u') {
+            if (newM3uUrl) focusableElements.push(newM3uUrl);
+            if (newEpgUrl) focusableElements.push(newEpgUrl);
+            if (newM3uName) focusableElements.push(newM3uName);
+            if (saveNewBtn) focusableElements.push(saveNewBtn);
+            if (startDemoBtn) focusableElements.push(startDemoBtn);
+        } else {
+            if (xtreamServer) focusableElements.push(xtreamServer);
+            if (xtreamUsername) focusableElements.push(xtreamUsername);
+            if (xtreamPassword) focusableElements.push(xtreamPassword);
+            if (xtreamName) focusableElements.push(xtreamName);
+            if (saveXtreamBtn) focusableElements.push(saveXtreamBtn);
+        }
         if (loadSelectedBtn && !loadSelectedBtn.disabled) focusableElements.push(loadSelectedBtn);
-        if (startDemoBtn) focusableElements.push(startDemoBtn);
     }
 }
 function focusElement(idx) {
@@ -1032,7 +1225,8 @@ function focusElement(idx) {
 }
 function handleRemoteNav(e) {
     if (!startPage.classList.contains('hidden') && (!confirmDialog || confirmDialog.classList.contains('hidden'))) {
-        if (e.key === 'ArrowUp' || e.keyCode === 38) { e.preventDefault(); currentFocusIndex--; focusElement(currentFocusIndex); }
+        if (e.key === 'Tab') { e.preventDefault(); switchTab(activeTab === 'm3u' ? 'xtream' : 'm3u'); }
+        else if (e.key === 'ArrowUp' || e.keyCode === 38) { e.preventDefault(); currentFocusIndex--; focusElement(currentFocusIndex); }
         else if (e.key === 'ArrowDown' || e.keyCode === 40) { e.preventDefault(); currentFocusIndex++; focusElement(currentFocusIndex); }
         else if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); if (document.activeElement && document.activeElement.click) document.activeElement.click(); }
     }
@@ -1049,9 +1243,34 @@ saveNewBtn.addEventListener('click', () => {
 loadSelectedBtn.addEventListener('click', () => {
     if (!isLoading && selectedPlaylistId !== null && savedPlaylists[selectedPlaylistId]) {
         const p = savedPlaylists[selectedPlaylistId];
-        loadM3UFromUrl(p.url, p.epgUrl || '');
+        if (p.type === 'xtream') loadXtreamPlaylist(p.url, p.username, p.password);
+        else loadM3UFromUrl(p.url, p.epgUrl || '');
     }
 });
+saveXtreamBtn.addEventListener('click', async () => {
+    const server = xtreamServer.value.trim();
+    const uname = xtreamUsername.value.trim();
+    const pass = xtreamPassword.value.trim();
+    const name = xtreamName.value.trim();
+    if (!server || !uname || !pass) {
+        updateStartStatus('Please enter server URL, username, and password', true, false, false, 0);
+        return;
+    }
+    updateStartStatus('Verifying credentials…', false, false, true, 50);
+    try {
+        const base = server.replace(/\/$/, '');
+        const resp = await fetch(`${base}/player_api.php?username=${encodeURIComponent(uname)}&password=${encodeURIComponent(pass)}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (data.user_info && data.user_info.auth === 0) throw new Error('Invalid credentials');
+        addXtreamPlaylist(server, uname, pass, name);
+    } catch (err) {
+        updateStartStatus(`Login failed: ${err.message}`, true, false, false, 0);
+        setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 3000);
+    }
+});
+tabM3u.addEventListener('click', () => switchTab('m3u'));
+tabXtream.addEventListener('click', () => switchTab('xtream'));
 startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
     confirmDialog.classList.remove('hidden');
