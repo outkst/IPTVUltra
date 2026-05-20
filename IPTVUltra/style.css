@@ -626,7 +626,55 @@ body {
     border-right: 1px solid #2a2d3a;
     display: flex;
     align-items: center;
-    justify-content: center;
+    /* gap: 4px; */
+    /* padding: 0 6px; */
+}
+
+.epg-corner-search {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: #1a1c24;
+    /* border: 1px solid #3a3c47; */
+    border-radius: 5px;
+    padding: 0 8px;
+    height: 26px;
+    min-width: 0;
+    gap: 4px;
+}
+
+.epg-corner-search:focus-within {
+    border-color: #6c8eff;
+}
+
+.epg-corner-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    background: transparent;
+    border: none;
+    color: #e8efff;
+    font-size: 0.75rem;
+    outline: none;
+}
+
+.epg-corner-search-input::placeholder {
+    color: #5a6070;
+}
+
+.epg-corner-clear-btn {
+    background: transparent;
+    border: none;
+    color: #8e9aaf;
+    font-size: 0.65rem;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.epg-corner-clear-btn:hover {
+    color: #ff6666;
 }
 
 /* Time markers area — width set inline via JS to match total guide width */

@@ -22,6 +22,16 @@ let epgRefreshTimer = null;
 let epgFocusedRowIdx = 0;     // remote-cursor row in EPG guide (independent of playing channel)
 
 let channelIndexMap = new Map(); // channel object → its index in channels[]
+let _searchCache = { query: null, result: null }; // invalidated on every channels reload
+let _searchDebounceTimer = null;
+
+// EPG virtual scroll state
+const EPG_ROW_H = 63;           // 62px row height + 1px border-bottom
+let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
+let epgVirtualScrollListener = null;
+let _epgWinStart = 0;
+let _epgWinEnd = 0;
+let _epgTotalGuideW = 0;
 
 // Precompiled regexes reused across many XMLTV parse iterations
 const _RE_CHAN_ID     = /id="([^"]*)"/;
@@ -121,6 +131,7 @@ const LANG_NAMES = {
 function buildChannelIndexMap() {
     channelIndexMap = new Map();
     for (let i = 0; i < channels.length; i++) channelIndexMap.set(channels[i], i);
+    _searchCache = { query: null, result: null };
 }
 function getChannelIndex(ch) {
     const i = channelIndexMap.get(ch);
@@ -604,6 +615,7 @@ function highlightText(text, query) {
 
 function searchChannels(query) {
     if (!query.trim()) return [...channels];
+    if (_searchCache.query === query) return _searchCache.result;
     const terms = query.toLowerCase().split(/\s+/);
     const scored = channels.map((ch, idx) => {
         let score = 0;
@@ -621,8 +633,9 @@ function searchChannels(query) {
         }
         return { idx, score };
     });
-    const sorted = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score);
-    return sorted.map(s => channels[s.idx]);
+    const result = scored.filter(s => s.score > 0).sort((a, b) => b.score - a.score).map(s => channels[s.idx]);
+    _searchCache = { query, result };
+    return result;
 }
 
 // ----- Virtual Scrolling Channel List -----
@@ -1133,6 +1146,9 @@ function enterEPGMode() {
     if (!sv || !ev) return;
     sv.style.display = 'none';
     ev.style.display = 'flex';
+    // Sync EPG search input with current query
+    const epgSI = document.getElementById('epgSearchInput');
+    if (epgSI) epgSI.value = currentSearchQuery;
     // Move <video> and stream-info overlay into the EPG video container
     const wrap = document.getElementById('epgVideoWrap');
     if (wrap) {
@@ -1152,6 +1168,88 @@ function enterEPGMode() {
     }
 }
 
+function buildEPGRow(i) {
+    const ch = currentFilteredChannels[i];
+    const origIdx = getChannelIndex(ch);
+    const isActive = origIdx === currentChannelIndex;
+    const now = Date.now();
+
+    const row = document.createElement('div');
+    row.className = 'epg-row' +
+        (isActive ? ' active' : '') +
+        (i === epgFocusedRowIdx ? ' epg-focused' : '');
+    row.style.cssText = `position:absolute;top:${i * EPG_ROW_H}px;width:${EPG_CH_W + _epgTotalGuideW}px`;
+
+    const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
+    const favId = ch.tvgId || `idx_${origIdx}`;
+    const isFav = favoriteIds.has(favId);
+    const labelHtml = `<div class="epg-ch-label">${logoSrc
+        ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
+        : '<span class="epg-ch-no-logo">📺</span>'
+        }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+
+    const resolvedId = resolveEpgId(ch.tvgId);
+    const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
+    const progsParts = [`<div class="epg-progs" style="width:${_epgTotalGuideW}px">`];
+    let hadBlock = false;
+    for (const p of progs) {
+        if (p.stop <= _epgWinStart || p.start >= _epgWinEnd) continue;
+        const sx = Math.max(0, (p.start - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+        const ex = Math.min(_epgTotalGuideW, (p.stop - _epgWinStart) / 60000 * EPG_PX_PER_MIN);
+        const w = (ex - parseFloat(sx) - 2).toFixed(1);
+        if (parseFloat(w) < 4) continue;
+        const isNow = p.start <= now && p.stop > now;
+        const wNum = parseFloat(w);
+        const descHtml = p.desc && wNum > 120
+            ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
+            : '';
+        progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
+            `<span class="epg-prog-title">${escapeHtml(p.title)}</span>${descHtml}</div>`);
+        hadBlock = true;
+    }
+    if (!hadBlock) {
+        const label = epgLoading ? 'Loading ...' : 'No data available ...';
+        const cls = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
+        progsParts.push(`<div class="${cls}" style="left:2px;width:${(_epgTotalGuideW - 4).toFixed(1)}px">` +
+            `<span class="epg-prog-title">${label}</span></div>`);
+    }
+    progsParts.push('</div>');
+    row.innerHTML = labelHtml + progsParts.join('');
+    row.querySelector('.epg-fav-btn').addEventListener('click', e => {
+        e.stopPropagation();
+        toggleEPGFav(favId);
+    });
+    row.addEventListener('click', () => {
+        for (const [, el] of epgRenderedRows) el.classList.remove('active');
+        row.classList.add('active');
+        selectChannel(origIdx);
+        updateEPGInfoPanel(ch);
+    });
+    return row;
+}
+
+function renderEPGVisibleRows() {
+    const body = document.getElementById('epgBody');
+    const scrollOuter = document.getElementById('epgScrollOuter');
+    if (!body || !scrollOuter || !currentFilteredChannels.length || !_epgTotalGuideW) return;
+    const BUFFER = 3;
+    const TIME_STRIP_H = 34;
+    const scrollTop = Math.max(0, scrollOuter.scrollTop - TIME_STRIP_H);
+    const viewH = scrollOuter.clientHeight - TIME_STRIP_H;
+    const startIdx = Math.max(0, Math.floor(scrollTop / EPG_ROW_H) - BUFFER);
+    const endIdx = Math.min(currentFilteredChannels.length - 1,
+        Math.ceil((scrollTop + viewH) / EPG_ROW_H) + BUFFER);
+    for (const [idx, el] of epgRenderedRows) {
+        if (idx < startIdx || idx > endIdx) { el.remove(); epgRenderedRows.delete(idx); }
+    }
+    for (let i = startIdx; i <= endIdx; i++) {
+        if (epgRenderedRows.has(i)) continue;
+        const row = buildEPGRow(i);
+        body.appendChild(row);
+        epgRenderedRows.set(i, row);
+    }
+}
+
 function renderEPGGuide() {
     const guideWrap = document.getElementById('epgGuideWrap');
     const scrollOuter = document.getElementById('epgScrollOuter');
@@ -1168,8 +1266,9 @@ function renderEPGGuide() {
     const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
     const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // 11520px
 
-    // Corner: Show Groups button when groups column is collapsed
-    corner.innerHTML = !groupsColumnVisible
+    // Corner: Show Groups button when groups column is collapsed (update sub-div only — search input lives alongside it)
+    const cornerGroupsBtn = document.getElementById('epgCornerGroupsBtn');
+    if (cornerGroupsBtn) cornerGroupsBtn.innerHTML = !groupsColumnVisible
         ? `<button class="epg-show-groups-btn" onclick="toggleGroupsColumn()">▶ Groups</button>`
         : '';
 
@@ -1191,74 +1290,27 @@ function renderEPGGuide() {
     tmHtml += `<div class="epg-now-line" style="left:${nowOffsetPx}px"><span class="epg-now-label">NOW</span></div>`;
     timeMarks.innerHTML = tmHtml;
 
-    // Channel rows
+    // Channel rows — virtual scroll setup
     const prevScrollLeft = scrollOuter ? scrollOuter.scrollLeft : 0;
     body.innerHTML = '';
+    body.style.height = '';
+    epgRenderedRows.clear();
+    if (epgVirtualScrollListener && scrollOuter) {
+        scrollOuter.removeEventListener('scroll', epgVirtualScrollListener);
+        epgVirtualScrollListener = null;
+    }
     if (!currentFilteredChannels.length) {
         body.innerHTML = `<div class="epg-empty-group">📭 No channels exist for this group …</div>`;
         updateEPGNavVisibility();
         return;
     }
-    const epgFrag = document.createDocumentFragment();
-    for (let i = 0; i < currentFilteredChannels.length; i++) {
-        const ch = currentFilteredChannels[i];
-        const origIdx = getChannelIndex(ch);
-        const isActive = origIdx === currentChannelIndex;
-
-        const row = document.createElement('div');
-        row.className = 'epg-row' + (isActive ? ' active' : '');
-
-        // Channel label (sticky left)
-        const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
-        const favId = ch.tvgId || `idx_${origIdx}`;
-        const isFav = favoriteIds.has(favId);
-        const labelHtml = `<div class="epg-ch-label">${logoSrc
-            ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
-            : '<span class="epg-ch-no-logo">📺</span>'
-            }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
-
-        // Programme blocks — width anchored to the same totalGuideW as the time marks
-        const resolvedId = resolveEpgId(ch.tvgId);
-        const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
-        const progsParts = [`<div class="epg-progs" style="width:${totalGuideW}px">`];
-        let hadBlock = false;
-        for (const p of progs) {
-            if (p.stop <= winStart || p.start >= winEnd) continue;
-            const sx = Math.max(0, (p.start - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
-            const ex = Math.min(totalGuideW, (p.stop - winStart) / 60000 * EPG_PX_PER_MIN);
-            const w = (ex - parseFloat(sx) - 2).toFixed(1);
-            if (parseFloat(w) < 4) continue;
-            const isNow = p.start <= now && p.stop > now;
-            const wNum = parseFloat(w);
-            const descHtml = p.desc && wNum > 120
-                ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
-                : '';
-            progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
-                `<span class="epg-prog-title">${escapeHtml(p.title)}</span>${descHtml}</div>`);
-            hadBlock = true;
-        }
-        if (!hadBlock) {
-            const label = epgLoading ? 'Loading ...' : 'No data available ...';
-            const cls = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
-            progsParts.push(`<div class="${cls}" style="left:2px;width:${(totalGuideW - 4).toFixed(1)}px">` +
-                `<span class="epg-prog-title">${label}</span></div>`);
-        }
-        progsParts.push('</div>');
-
-        row.innerHTML = labelHtml + progsParts.join('');
-        row.querySelector('.epg-fav-btn').addEventListener('click', e => {
-            e.stopPropagation();
-            toggleEPGFav(favId);
-        });
-        row.addEventListener('click', () => {
-            body.querySelectorAll('.epg-row.active').forEach(r => r.classList.remove('active'));
-            row.classList.add('active');
-            selectChannel(origIdx);
-            updateEPGInfoPanel(ch);
-        });
-        epgFrag.appendChild(row);
-    }
-    body.appendChild(epgFrag);
+    _epgWinStart = winStart;
+    _epgWinEnd = winEnd;
+    _epgTotalGuideW = totalGuideW;
+    body.style.height = `${currentFilteredChannels.length * EPG_ROW_H}px`;
+    renderEPGVisibleRows();
+    epgVirtualScrollListener = () => requestAnimationFrame(renderEPGVisibleRows);
+    if (scrollOuter) scrollOuter.addEventListener('scroll', epgVirtualScrollListener);
 
     // Full-height "now" line — lives inside epgBody so bottom:0 reaches the last row
     if (scrollOuter) {
@@ -1624,31 +1676,26 @@ function focusElement(idx) {
 }
 // ── EPG Remote Navigation ─────────────────────────────────────
 function updateEPGRowFocus() {
-    const body = document.getElementById('epgBody');
-    if (!body) return;
-    const rows = body.querySelectorAll('.epg-row');
-    rows.forEach((r, i) => {
-        r.classList.toggle('epg-focused', i === epgFocusedRowIdx);
-    });
+    for (const [idx, el] of epgRenderedRows) {
+        el.classList.toggle('epg-focused', idx === epgFocusedRowIdx);
+    }
     scrollEPGRowIntoView(epgFocusedRowIdx);
 }
 
 function scrollEPGRowIntoView(idx) {
     const scrollOuter = document.getElementById('epgScrollOuter');
-    const body = document.getElementById('epgBody');
-    if (!scrollOuter || !body) return;
-    const rows = body.querySelectorAll('.epg-row');
-    if (!rows[idx]) return;
-    const row = rows[idx];
+    if (!scrollOuter) return;
     const timeStripH = 34;
-    const rowTop = row.offsetTop;
-    const rowBottom = rowTop + row.offsetHeight;
+    const rowTop = idx * EPG_ROW_H;
+    const rowBottom = rowTop + EPG_ROW_H;
     const viewTop = scrollOuter.scrollTop + timeStripH;
     const viewBottom = scrollOuter.scrollTop + scrollOuter.clientHeight;
     if (rowTop < viewTop) {
         scrollOuter.scrollTop = rowTop - timeStripH;
+        renderEPGVisibleRows();
     } else if (rowBottom > viewBottom) {
         scrollOuter.scrollTop = rowBottom - scrollOuter.clientHeight;
+        renderEPGVisibleRows();
     }
 }
 
@@ -1786,8 +1833,32 @@ toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
 showGroupsBtn.addEventListener('click', toggleGroupsColumn);
 const epgVideoWrap = document.getElementById('epgVideoWrap');
 if (epgVideoWrap) epgVideoWrap.addEventListener('mousemove', showTopControls);
-searchInput.addEventListener('input', () => { currentSearchQuery = searchInput.value; if (currentSearchQuery.trim()) currentGroup = 'all'; renderGroupsList(); renderChannelList(); });
+searchInput.addEventListener('input', () => {
+    currentSearchQuery = searchInput.value;
+    if (currentSearchQuery.trim()) currentGroup = 'all';
+    renderGroupsList();
+    clearTimeout(_searchDebounceTimer);
+    _searchDebounceTimer = setTimeout(renderChannelList, 150);
+});
 clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); renderChannelList(); });
+const epgSearchInput = document.getElementById('epgSearchInput');
+const epgClearSearchBtn = document.getElementById('epgClearSearchBtn');
+if (epgSearchInput) {
+    epgSearchInput.addEventListener('input', () => {
+        currentSearchQuery = epgSearchInput.value;
+        searchInput.value = epgSearchInput.value;
+        clearTimeout(_searchDebounceTimer);
+        _searchDebounceTimer = setTimeout(renderChannelList, 150);
+    });
+}
+if (epgClearSearchBtn) {
+    epgClearSearchBtn.addEventListener('click', () => {
+        currentSearchQuery = '';
+        epgSearchInput.value = '';
+        searchInput.value = '';
+        renderChannelList();
+    });
+}
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
 videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
