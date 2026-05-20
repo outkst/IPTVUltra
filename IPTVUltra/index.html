@@ -116,10 +116,12 @@
 							<div class="loading-text">Loading playlist...</div>
 						</div>
 						<div class="video-controls-top" id="topControls">
-							<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
 							<button id="reloadBtn" class="top-control-btn">🔄 Reload</button>
 							<button id="audioBtn" class="top-control-btn" style="display:none;">🔊 Audio</button>
 							<button id="subtitleBtn" class="top-control-btn" style="display:none;">💬 Subtitles</button>
+						</div>
+						<div class="video-controls-top-right" id="topControlsRight">
+							<button id="infoBtn" class="top-control-btn">ℹ️ Stream Info</button>
 						</div>
 						<div id="audioPanel" class="subtitle-panel hidden">
 							<div class="subtitle-panel-title">Audio Track</div>
@@ -135,10 +137,11 @@
 					</div>
 				</div>
 				<!-- EPG guide view: video+info panel on top, guide grid below -->
-				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;">
+				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;position:relative;">
+					<button id="epgFloatingGroupsBtn" class="epg-floating-groups-btn" style="display:none;" onclick="toggleGroupsColumn()">▶ Groups</button>
 					<div class="epg-top">
 						<div class="epg-video-wrap" id="epgVideoWrap">
-							<div class="video-controls-top" id="epgTopControls">
+							<div class="video-controls-top-right" id="epgTopControls">
 								<button id="epgInfoBtn" class="top-control-btn">ℹ️ Stream Info</button>
 							</div>
 						</div>
@@ -147,10 +150,16 @@
 							<div class="epg-info-name-row">
 								<div id="epgInfoName" class="epg-info-name"></div>
 							</div>
+							<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
 							<div id="epgInfoTime" class="epg-info-time"></div>
 							<div id="epgInfoTitle" class="epg-info-title"></div>
 							<div id="epgInfoDesc" class="epg-info-desc"></div>
-							<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
+							<div id="epgInfoUpNext" class="epg-info-up-next" style="display:none;">
+								<div class="epg-info-up-next-label">Up Next</div>
+								<div id="epgInfoNextTime" class="epg-info-next-time"></div>
+								<div id="epgInfoNextTitle" class="epg-info-next-title"></div>
+								<div id="epgInfoNextDesc" class="epg-info-next-desc"></div>
+							</div>
 						</div>
 					</div>
 					<div id="epgGuideWrap" class="epg-guide-wrap">

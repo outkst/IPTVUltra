@@ -792,11 +792,14 @@ function selectChannel(index) {
 function showTopControls() {
     const c = document.getElementById('topControls');
     c.classList.add('visible');
+    const cr = document.getElementById('topControlsRight');
+    if (cr) cr.classList.add('visible');
     const ec = document.getElementById('epgTopControls');
     if (ec) ec.classList.add('visible');
     if (controlsTimeout) clearTimeout(controlsTimeout);
     controlsTimeout = setTimeout(() => {
         c.classList.remove('visible');
+        if (cr) cr.classList.remove('visible');
         if (ec) ec.classList.remove('visible');
     }, 3000);
 }
@@ -1052,6 +1055,8 @@ function toggleGroupsColumn() {
     groupsColumn.classList.toggle('collapsed', !groupsColumnVisible);
     toggleGroupsBtn.innerHTML = groupsColumnVisible ? '◀ Hide' : '▶ Show';
     showGroupsBtn.style.display = groupsColumnVisible ? 'none' : 'block';
+    const floatingBtn = document.getElementById('epgFloatingGroupsBtn');
+    if (floatingBtn) floatingBtn.style.display = (epgMode && !groupsColumnVisible) ? '' : 'none';
     if (epgMode) renderEPGGuide();
 }
 
@@ -1162,6 +1167,8 @@ function enterEPGMode() {
     } else {
         epgFocusedRowIdx = 0;
     }
+    const floatingBtn = document.getElementById('epgFloatingGroupsBtn');
+    if (floatingBtn) floatingBtn.style.display = !groupsColumnVisible ? '' : 'none';
     renderEPGGuide();
     if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
         updateEPGInfoPanel(channels[currentChannelIndex]);
@@ -1266,24 +1273,27 @@ function renderEPGGuide() {
     const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
     const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // 11520px
 
-    // Corner: Show Groups button when groups column is collapsed (update sub-div only — search input lives alongside it)
-    const cornerGroupsBtn = document.getElementById('epgCornerGroupsBtn');
-    if (cornerGroupsBtn) cornerGroupsBtn.innerHTML = !groupsColumnVisible
-        ? `<button class="epg-show-groups-btn" onclick="toggleGroupsColumn()">▶ Groups</button>`
-        : '';
+    // Floating groups button visibility is managed by toggleGroupsColumn / enterEPGMode
 
-    // Time markers — snap to real clock 30-min boundaries
+    // Time markers — hour labels with 15-min tick marks between (3 ticks per hour)
     timeMarks.style.width = totalGuideW + 'px';
-    const HALF_HOUR_MS = 30 * 60000;
-    const firstMark = Math.ceil(winStart / HALF_HOUR_MS) * HALF_HOUR_MS;
+    const QUARTER_HOUR_MS = 15 * 60000;
+    const firstMark = Math.ceil(winStart / QUARTER_HOUR_MS) * QUARTER_HOUR_MS;
     let tmHtml = '';
-    for (let t = firstMark; t <= winEnd; t += HALF_HOUR_MS) {
+    for (let t = firstMark; t <= winEnd; t += QUARTER_HOUR_MS) {
         const x = ((t - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
-        const d = new Date(t);
-        const h = d.getHours(), min = d.getMinutes();
-        const h12 = h % 12 || 12;
-        const label = `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
-        tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
+        const minOfHour = new Date(t).getMinutes();
+        if (minOfHour === 0) {
+            const d = new Date(t);
+            const h = d.getHours();
+            const h12 = h % 12 || 12;
+            const label = `${h12}:00${h >= 12 ? 'PM' : 'AM'}`;
+            tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
+        } else if (minOfHour === 30) {
+            tmHtml += `<span class="epg-time-tick epg-time-tick-half" style="left:${x}px"></span>`;
+        } else {
+            tmHtml += `<span class="epg-time-tick" style="left:${x}px"></span>`;
+        }
     }
     // "NOW" marker at the actual current-time position within the guide
     const nowOffsetPx = ((now - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
@@ -1376,6 +1386,20 @@ function updateEPGInfoPanel(ch) {
         time.textContent = '';
         title.textContent = placeholder;
         desc.textContent = '';
+    }
+
+    const upNextEl = document.getElementById('epgInfoUpNext');
+    const nextTimeEl = document.getElementById('epgInfoNextTime');
+    const nextTitleEl = document.getElementById('epgInfoNextTitle');
+    const nextDescEl = document.getElementById('epgInfoNextDesc');
+    const next = getNextProgramme(ch.tvgId);
+    if (upNextEl && next) {
+        nextTimeEl.textContent = `${formatTime12(next.start)} – ${formatTime12(next.stop)}`;
+        nextTitleEl.textContent = next.title;
+        nextDescEl.textContent = next.desc || '';
+        upNextEl.style.display = '';
+    } else if (upNextEl) {
+        upNextEl.style.display = 'none';
     }
 }
 
