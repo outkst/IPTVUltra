@@ -34,14 +34,31 @@ The app fetches your full channel list via the Xtream API and automatically load
 
 ## EPG (Electronic Programme Guide)
 
-When EPG data is available the guide can be opened from the channel list. It shows a scrollable 7-hour timeline for every channel:
+When EPG data is available the guide opens automatically (Xtream) or can be accessed from the channel list (M3U). It shows a scrollable 7-hour timeline for every channel.
 
+### Guide layout
+
+- **Time strip** — hour labels with tick marks at every 15 minutes (:15, :30, :45)
 - **NOW marker** — a red line tracks the current time across all rows
-- **Now/Next panel** — current programme title and progress bar beneath the video
 - **Focused row** — the remote-cursor row and its programme blocks are highlighted in blue
 - **Playing channel** — the currently playing channel is highlighted in amber/gold, distinct from the focused row
-- **Favorites** — star buttons appear in both the channel label and the info panel; changes sync instantly across the guide and the standard channel list
-- **Prev/Next buttons** — snap to the time strip and hide automatically at the guide boundaries
+- **Prev/Next buttons** — snap the timeline backwards or forwards 30 minutes; hide automatically at the guide boundaries
+- **EPG search** — filter channels by name directly from the guide's corner search box
+
+### Info panel
+
+The info panel (top-right of the EPG view) shows details for the focused channel:
+
+- Channel logo and name
+- Current programme title, time range, and duration
+- Programme description
+- **Up Next** — the next scheduled airing's title, description, and start/end time
+- **Favorite button** (top-right of the panel) — toggle the channel as a favorite; syncs instantly with the channel list and guide rows
+
+### Groups
+
+- The groups column can be shown or hidden while in the EPG view
+- When hidden, a **floating Groups button** appears in the top-left corner to restore it
 
 EPG data is trimmed to a 6-hour lookahead window to keep memory usage low on webOS hardware.
 
