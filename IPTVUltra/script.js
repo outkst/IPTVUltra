@@ -281,7 +281,7 @@ async function loadEPG(url) {
                                 epgData.set(cid, []);
                                 epgIdMap.set(cid.toLowerCase(), cid);
                             }
-                            epgData.get(cid).push({ start: pStart, stop: pStop || 0, title: tiM ? tiM[1].trim() : '' });
+                            epgData.get(cid).push({ start: pStart, stop: pStop || 0, title: tiM ? unescapeXml(tiM[1].trim()) : '' });
                             programmeCount++;
                         }
                     }
@@ -1403,10 +1403,31 @@ function updateEPGInfoPanel(ch) {
     }
 }
 
+function unescapeXml(s) {
+    if (!s || s.indexOf('&') === -1) return s;
+    return s
+        .replace(/&#x([0-9A-Fa-f]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+        .replace(/&#([0-9]+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&nbsp;/g, ' ');
+}
+
 function decodeBase64Field(s) {
     if (!s || s.length % 4 !== 0 || !_RE_B64.test(s)) return s || '';
     try {
-        const r = atob(s);
+        const bytes = Uint8Array.from(atob(s), c => c.charCodeAt(0));
+        // Try UTF-8 first — atob() gives raw bytes as Latin-1 chars, which
+        // produces mojibake when the actual content is multi-byte UTF-8.
+        try {
+            const r = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+            if (r.length > 0 && _RE_B64_ALPHA.test(r)) return r;
+        } catch (_) { /* not valid UTF-8 */ }
+        // Fallback: treat as Latin-1
+        const r = String.fromCharCode(...bytes);
         let ok = r.length > 0;
         for (let ci = 0; ok && ci < r.length; ci++) {
             const c = r.charCodeAt(ci);
@@ -1458,8 +1479,8 @@ async function loadXtreamEPG(base, username, password) {
                     const pStop = parseInt(ep.stop_timestamp) * 1000;
                     if (isNaN(pStart) || isNaN(pStop)) continue;
                     if (pStart > windowEnd || pStop < windowStart) continue;
-                    const title = decodeBase64Field(ep.title || '').trim();
-                    const rawDesc = decodeBase64Field(ep.description || '').trim();
+                    const title = unescapeXml(decodeBase64Field(ep.title || '').trim());
+                    const rawDesc = unescapeXml(decodeBase64Field(ep.description || '').trim());
                     const desc = rawDesc.replace(_RE_TS_INJECT, '').trim();
                     progs.push({ start: pStart, stop: pStop, title, desc });
                 }
