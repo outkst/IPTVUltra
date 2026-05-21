@@ -34,6 +34,7 @@ let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
 let _epgWinEnd = 0;
 let _epgTotalGuideW = 0;
+let _epgSkeletonWinStart = 0;  // tracks which hour window the time strip was built for
 
 // Precompiled regexes reused across many XMLTV parse iterations
 const _RE_CHAN_ID = /id="([^"]*)"/;
@@ -595,7 +596,7 @@ function renderGroupsList() {
             currentGroup = group;
             if (currentSearchQuery) { currentSearchQuery = ''; searchInput.value = ''; }
             renderGroupsList();
-            refreshCurrentView();
+            requestAnimationFrame(refreshCurrentView);
         };
         if ((group === 'favorites' || group === 'all') && pinnedDiv) {
             pinnedDiv.appendChild(div);
@@ -1076,8 +1077,6 @@ function toggleGroupsColumn() {
     if (currentPlaylistType === 'xtream') requestAnimationFrame(updateEPGNowMarker);
 }
 
-// Stub for Task 7 (Step 8.2 removes this)
-function updateEPGNowMarker() {}
 
 
 // ----- Tab switching -----
@@ -1282,25 +1281,25 @@ function renderEPGVisibleRows() {
     }
 }
 
-function renderEPGGuide() {
-    const guideWrap = document.getElementById('epgGuideWrap');
-    const scrollOuter = document.getElementById('epgScrollOuter');
-    const corner = document.getElementById('epgChCorner');
-    const timeMarks = document.getElementById('epgTimeMarks');
+function updateEPGNowMarker() {
     const body = document.getElementById('epgBody');
-    if (!guideWrap || !corner || !timeMarks || !body) return;
-    if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
+    const timeMarks = document.getElementById('epgTimeMarks');
+    if (!body || !timeMarks || !_epgWinStart) return;
+    const fullMarker = body.querySelector('.epg-now-fullmarker');
+    if (!fullMarker) return;
+    const nowOffsetPx = ((Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+    fullMarker.style.left = `${timeMarks.offsetLeft + parseFloat(nowOffsetPx)}px`;
+}
 
-    const now = Date.now();
-    const HOUR_MS = 3600000;
-    // Last whole hour that is at least 60 min in the past (e.g. at 2:45PM → 1:00PM)
-    const winStart = Math.floor((now - HOUR_MS) / HOUR_MS) * HOUR_MS;
-    const winEnd = winStart + EPG_WIN_HOURS * 3600000;          // 24h window
-    const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;   // 11520px
+function rebuildEPGSkeleton(winStart, winEnd) {
+    const timeMarks = document.getElementById('epgTimeMarks');
+    if (!timeMarks) return;
+    const totalGuideW = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN;
+    _epgWinStart = winStart;
+    _epgWinEnd = winEnd;
+    _epgTotalGuideW = totalGuideW;
+    _epgSkeletonWinStart = winStart;
 
-    // Floating groups button visibility is managed by toggleGroupsColumn / enterEPGMode
-
-    // Time markers — hour labels with 15-min tick marks between (3 ticks per hour)
     timeMarks.style.width = totalGuideW + 'px';
     const QUARTER_HOUR_MS = 15 * 60000;
     const firstMark = Math.ceil(winStart / QUARTER_HOUR_MS) * QUARTER_HOUR_MS;
@@ -1320,14 +1319,19 @@ function renderEPGGuide() {
             tmHtml += `<span class="epg-time-tick" style="left:${x}px"></span>`;
         }
     }
-    // "NOW" marker at the actual current-time position within the guide
-    const nowOffsetPx = ((now - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
+    const nowOffsetPx = ((Date.now() - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
     tmHtml += `<div class="epg-now-line" style="left:${nowOffsetPx}px"><span class="epg-now-label">NOW</span></div>`;
     timeMarks.innerHTML = tmHtml;
+}
 
-    // Channel rows — virtual scroll setup
+function refreshEPGRows() {
+    const scrollOuter = document.getElementById('epgScrollOuter');
+    const body = document.getElementById('epgBody');
+    if (!body) return;
+
     const prevScrollLeft = scrollOuter ? scrollOuter.scrollLeft : 0;
     const prevScrollTop = scrollOuter ? scrollOuter.scrollTop : 0;
+
     body.innerHTML = '';
     body.style.height = '';
     epgRenderedRows.clear();
@@ -1335,20 +1339,19 @@ function renderEPGGuide() {
         scrollOuter.removeEventListener('scroll', epgVirtualScrollListener);
         epgVirtualScrollListener = null;
     }
+
     if (!currentFilteredChannels.length) {
         body.innerHTML = `<div class="epg-empty-group">📭 No channels exist for this group …</div>`;
         updateEPGNavVisibility();
         return;
     }
-    _epgWinStart = winStart;
-    _epgWinEnd = winEnd;
-    _epgTotalGuideW = totalGuideW;
+
     body.style.height = `${currentFilteredChannels.length * EPG_ROW_H}px`;
     renderEPGVisibleRows();
     epgVirtualScrollListener = () => requestAnimationFrame(renderEPGVisibleRows);
     if (scrollOuter) scrollOuter.addEventListener('scroll', epgVirtualScrollListener);
 
-    // Full-height "now" line — lives inside epgBody so bottom:0 reaches the last row
+    // Full-height "now" line — positioned after layout via rAF so offsetLeft is accurate
     if (scrollOuter) {
         let fullMarker = body.querySelector('.epg-now-fullmarker');
         if (!fullMarker) {
@@ -1356,7 +1359,7 @@ function renderEPGGuide() {
             fullMarker.className = 'epg-now-fullmarker';
             body.appendChild(fullMarker);
         }
-        fullMarker.style.left = `${timeMarks.offsetLeft + parseFloat(nowOffsetPx)}px`;
+        requestAnimationFrame(updateEPGNowMarker);
     }
 
     // Restore or initialise scroll position
@@ -1366,8 +1369,8 @@ function renderEPGGuide() {
             scrollOuter.scrollLeft = prevScrollLeft;
             updateEPGNavVisibility();
         } else {
-            // First render: put "now" ~1/3 from the left so past and future are both visible
             requestAnimationFrame(() => {
+                const nowOffsetPx = ((_epgWinStart ? (Date.now() - _epgWinStart) : 0) / 60000 * EPG_PX_PER_MIN).toFixed(1);
                 const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
                 scrollOuter.scrollLeft = Math.max(0, parseFloat(nowOffsetPx) - Math.floor(visibleW / 3));
                 updateEPGNavVisibility();
@@ -1378,6 +1381,20 @@ function renderEPGGuide() {
     // Clamp focused row and apply highlight
     epgFocusedRowIdx = Math.min(epgFocusedRowIdx, Math.max(0, currentFilteredChannels.length - 1));
     updateEPGRowFocus();
+}
+
+function renderEPGGuide() {
+    const guideWrap = document.getElementById('epgGuideWrap');
+    if (!guideWrap) return;
+    if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
+
+    const now = Date.now();
+    const HOUR_MS = 3600000;
+    const winStart = Math.floor((now - HOUR_MS) / HOUR_MS) * HOUR_MS;
+    const winEnd = winStart + EPG_WIN_HOURS * HOUR_MS;
+
+    if (winStart !== _epgSkeletonWinStart) rebuildEPGSkeleton(winStart, winEnd);
+    refreshEPGRows();
 }
 
 function updateEPGInfoPanel(ch) {
