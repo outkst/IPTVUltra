@@ -13,6 +13,7 @@ let currentSearchQuery = '';
 
 let activeTab = 'xtream'; // 'xtream' | 'm3u'
 let epgMode = false;
+let currentPlaylistType = null; // 'xtream' | 'm3u'
 
 // EPG state
 let epgData = new Map();      // channelId -> [{start, stop, title, desc}]
@@ -491,6 +492,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         currentSearchQuery = '';
         searchInput.value = '';
         currentGroup = 'favorites';
+        currentPlaylistType = 'm3u';
         extractGroups();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
@@ -534,6 +536,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         currentSearchQuery = '';
         searchInput.value = '';
         currentGroup = 'favorites';
+        currentPlaylistType = 'm3u';
         extractGroups();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
@@ -592,7 +595,7 @@ function renderGroupsList() {
             currentGroup = group;
             if (currentSearchQuery) { currentSearchQuery = ''; searchInput.value = ''; }
             renderGroupsList();
-            renderChannelList();
+            refreshCurrentView();
         };
         if ((group === 'favorites' || group === 'all') && pinnedDiv) {
             pinnedDiv.appendChild(div);
@@ -671,7 +674,7 @@ function renderChannelList() {
         filtered = channels.filter(ch => ch.group === currentGroup);
     }
     currentFilteredChannels = filtered;
-    if (epgMode) { renderEPGGuide(); return; }
+    if (currentPlaylistType === 'xtream') return;
     const total = filtered.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
     channelCountSpan.innerText = `${total} channels${info}`;
@@ -1067,9 +1070,12 @@ function toggleGroupsColumn() {
     toggleGroupsBtn.innerHTML = groupsColumnVisible ? '◀ Hide' : '▶ Show';
     showGroupsBtn.style.display = groupsColumnVisible ? 'none' : 'block';
     const floatingBtn = document.getElementById('epgFloatingGroupsBtn');
-    if (floatingBtn) floatingBtn.style.display = (epgMode && !groupsColumnVisible) ? '' : 'none';
-    if (epgMode) renderEPGGuide();
+    if (floatingBtn) floatingBtn.style.display = (currentPlaylistType === 'xtream' && !groupsColumnVisible) ? '' : 'none';
+    if (currentPlaylistType === 'xtream') requestAnimationFrame(updateEPGNowMarker);
 }
+
+// Stub for Task 7 (Step 8.2 removes this)
+function updateEPGNowMarker() {}
 
 
 // ----- Tab switching -----
@@ -1156,6 +1162,7 @@ const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px scre
 const EPG_WIN_HOURS = 7;   // ~1h past + 6h ahead
 
 function enterEPGMode() {
+    if (currentPlaylistType !== 'xtream') return;
     epgMode = true;
     const sv = document.getElementById('standardView');
     const ev = document.getElementById('epgView');
@@ -1184,6 +1191,11 @@ function enterEPGMode() {
     if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
         updateEPGInfoPanel(channels[currentChannelIndex]);
     }
+}
+
+function refreshCurrentView() {
+    renderChannelList();                           // always updates currentFilteredChannels
+    if (currentPlaylistType === 'xtream') renderEPGGuide();
 }
 
 function buildEPGRow(i) {
@@ -1516,7 +1528,7 @@ async function loadXtreamEPG(base, username, password) {
         }
 
         if (epgRefreshTimer) clearInterval(epgRefreshTimer);
-        epgRefreshTimer = setInterval(() => { if (epgMode) renderEPGGuide(); else updateNowNext(); }, 60000);
+        epgRefreshTimer = setInterval(() => { if (currentPlaylistType === 'xtream') renderEPGVisibleRows(); else updateNowNext(); }, 60000);
         enterEPGMode();
         const xtReadyMsg = `${epgData.size.toLocaleString()} channels loaded`;
         statusArea.innerText = `📅 EPG ready — ${xtReadyMsg}`;
@@ -1606,10 +1618,10 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         currentSearchQuery = '';
         searchInput.value = '';
         currentGroup = 'favorites';
+        currentPlaylistType = 'xtream';
         extractGroups();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
-        renderChannelList();
         enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
@@ -1901,9 +1913,9 @@ searchInput.addEventListener('input', () => {
     if (currentSearchQuery.trim()) currentGroup = 'all';
     renderGroupsList();
     clearTimeout(_searchDebounceTimer);
-    _searchDebounceTimer = setTimeout(renderChannelList, 150);
+    _searchDebounceTimer = setTimeout(refreshCurrentView, 150);
 });
-clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); renderChannelList(); });
+clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); refreshCurrentView(); });
 const epgSearchInput = document.getElementById('epgSearchInput');
 const epgClearSearchBtn = document.getElementById('epgClearSearchBtn');
 if (epgSearchInput) {
@@ -1911,7 +1923,7 @@ if (epgSearchInput) {
         currentSearchQuery = epgSearchInput.value;
         searchInput.value = epgSearchInput.value;
         clearTimeout(_searchDebounceTimer);
-        _searchDebounceTimer = setTimeout(renderChannelList, 150);
+        _searchDebounceTimer = setTimeout(refreshCurrentView, 150);
     });
 }
 if (epgClearSearchBtn) {
@@ -1919,7 +1931,7 @@ if (epgClearSearchBtn) {
         currentSearchQuery = '';
         epgSearchInput.value = '';
         searchInput.value = '';
-        renderChannelList();
+        refreshCurrentView();
     });
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
@@ -1986,5 +1998,5 @@ loadSavedPlaylists();
 const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;
 // Force a channel list refresh to show favorites
-if (currentGroup === 'favorites') renderChannelList();
+if (currentGroup === 'favorites') refreshCurrentView();
 setTimeout(() => { updateFocusableElements(); focusElement(0); }, 500);
