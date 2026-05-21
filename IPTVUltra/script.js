@@ -1052,6 +1052,8 @@ function reloadStream() {
 
 function goToHomeScreen() {
     if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
+    epgMode = false;
+    currentPlaylistType = null;
     videoPlayer.pause();
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
