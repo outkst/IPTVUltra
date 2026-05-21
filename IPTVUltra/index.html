@@ -29,11 +29,12 @@
 						<div class="empty-saved">No saved playlists yet. Add one below!</div>
 					</div>
 				</div>
-				<div class="add-source">
+				<div class="add-source-wrap">
 					<div class="tab-bar">
 						<button id="tabXtream" class="tab-btn active" tabindex="1">🔑 Xtream API</button>
 						<button id="tabM3u" class="tab-btn" tabindex="2">📡 Direct URL</button>
 					</div>
+				<div class="add-source">
 					<div id="panelXtream" class="tab-panel">
 						<div class="add-input-group"><input type="text" id="xtreamServer" class="add-input"
 								placeholder="Server URL (e.g. http://server:8080)" tabindex="3"></div>
@@ -56,6 +57,7 @@
 								placeholder="Name (optional)" tabindex="5"><button id="saveNewBtn"
 								class="save-source-btn" tabindex="6">Save Playlist</button></div>
 					</div>
+				</div>
 				</div>
 				<div class="start-buttons"><button id="loadSelectedBtn" class="start-btn primary" disabled
 						tabindex="0">▶ Load Selected</button><button id="startDemoBtn" class="start-btn secondary"
@@ -146,13 +148,17 @@
 							</div>
 						</div>
 						<div class="epg-info-panel" id="epgInfoPanel">
-							<img id="epgInfoLogo" class="epg-info-logo" src="" alt="">
-							<div class="epg-info-name-row">
-								<div id="epgInfoName" class="epg-info-name"></div>
+							<div class="epg-info-header">
+								<img id="epgInfoLogo" class="epg-info-logo" src="" alt="">
+								<div class="epg-info-name-col">
+									<div id="epgInfoName" class="epg-info-name"></div>
+									<div id="epgInfoGroup" class="epg-info-group"></div>
+								</div>
 							</div>
 							<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
-							<div id="epgInfoTime" class="epg-info-time"></div>
+							<div class="epg-info-now-playing-label" id="epgInfoNowPlayingLabel" style="display:none;">Now Playing</div>
 							<div id="epgInfoTitle" class="epg-info-title"></div>
+							<div id="epgInfoTime" class="epg-info-time"></div>
 							<div id="epgInfoDesc" class="epg-info-desc"></div>
 							<div id="epgInfoUpNext" class="epg-info-up-next" style="display:none;">
 								<div class="epg-info-up-next-label">Up Next</div>
@@ -163,6 +169,8 @@
 						</div>
 					</div>
 					<div id="epgGuideWrap" class="epg-guide-wrap">
+						<button id="epgTimePrevBtn" class="epg-time-nav-btn epg-time-nav-prev">◀ Prev</button>
+						<button id="epgTimeNextBtn" class="epg-time-nav-btn epg-time-nav-next">Next ▶</button>
 						<div id="epgScrollOuter" class="epg-scroll-outer">
 							<div id="epgTimeStrip" class="epg-time-strip">
 								<div id="epgChCorner" class="epg-ch-corner">
@@ -172,9 +180,7 @@
 							</div>
 							<div id="epgCornerGroupsBtn"></div>
 						</div>
-								<button id="epgTimePrevBtn" class="epg-time-nav-btn epg-time-nav-prev">◀ Prev</button>
 								<div id="epgTimeMarks" class="epg-time-marks"></div>
-								<button id="epgTimeNextBtn" class="epg-time-nav-btn epg-time-nav-next">Next ▶</button>
 							</div>
 							<div id="epgBody" class="epg-body"></div>
 						</div>
