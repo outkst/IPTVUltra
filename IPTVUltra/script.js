@@ -993,6 +993,8 @@ function goToHomeScreen() {
     if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
     epgMode = false;
     currentPlaylistType = null;
+    playback.destroy();
+    playback.init(videoPlayer);
     videoPlayer.pause();
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
@@ -1781,6 +1783,19 @@ function handleRemoteNav(e) {
         _handleSettingsKey(e);
         return;
     }
+
+    // Up/Down in fullscreen (non-EPG): adjust playback rate
+    if (document.fullscreenElement && !epgMode && !_settingsOpen) {
+        const isUp   = e.key === 'ArrowUp'   || e.keyCode === 38;
+        const isDown = e.key === 'ArrowDown'  || e.keyCode === 40;
+        if (isUp || isDown) {
+            e.preventDefault();
+            playback.changeRate(isUp ? 1 : -1);
+            showTopControls();
+            return;
+        }
+    }
+
     if (epgMode) {
         if (e.key === 'ArrowUp' || e.keyCode === 38) {
             e.preventDefault();
@@ -2003,6 +2018,44 @@ document.addEventListener('fullscreenchange', () => {
     }
 });
 
+// Back/Return button — context-dependent behavior (keyCode 461 on webOS)
+document.addEventListener('keydown', (e) => {
+    if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+
+    // Settings panel: close sub-list first, then panel
+    if (_settingsOpen) {
+        e.preventDefault();
+        if (_settingsFocus === 'subopts') {
+            _settingsFocus = 'categories';
+            _settingsOptIdx = 0;
+            _renderSettingsCategories();
+            if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+        } else {
+            _closeSettings();
+        }
+        return;
+    }
+
+    // Fullscreen: exit fullscreen, keep playing
+    if (document.fullscreenElement) {
+        e.preventDefault();
+        document.exitFullscreen();
+        return;
+    }
+
+    // Main app visible (not start page): confirm return to home
+    if (mainApp && mainApp.style.display !== 'none') {
+        e.preventDefault();
+        if (typeof showConfirmDialog === 'function') {
+            showConfirmDialog('Return to home screen?', goToHomeScreen);
+        } else {
+            goToHomeScreen();
+        }
+        return;
+    }
+
+    // Start page: let webOS handle natively (system shows "Exit app?" prompt)
+});
 
 // ── Settings Panel State ─────────────────────────────────────────
 let _settingsOpen = false;
