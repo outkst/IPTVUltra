@@ -849,6 +849,7 @@ function getSubtitleTracks() {
 }
 
 function updateSubtitleButton() {
+    return; // track selection handled by settings panel
     const subs = getSubtitleTracks();
     if (subs.length > 0) {
         subtitleBtn.style.display = '';
@@ -912,6 +913,7 @@ function getAudioTracks() {
 }
 
 function updateAudioButton() {
+    return; // track selection handled by settings panel
     const tracks = getAudioTracks();
     if (tracks.length > 1) {
         audioBtn.style.display = '';
