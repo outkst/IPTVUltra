@@ -1195,8 +1195,8 @@ function enterEPGMode() {
 }
 
 function refreshCurrentView() {
-    renderChannelList();                           // always updates currentFilteredChannels
     if (currentPlaylistType === 'xtream') renderEPGGuide();
+    else renderChannelList();
 }
 
 function buildEPGRow(i) {
@@ -1387,6 +1387,8 @@ function renderEPGGuide() {
     const guideWrap = document.getElementById('epgGuideWrap');
     if (!guideWrap) return;
     if (guideWrap.clientWidth <= 0) { requestAnimationFrame(renderEPGGuide); return; }
+
+    renderChannelList(); // always updates currentFilteredChannels (exits early for Xtream after filtering)
 
     const now = Date.now();
     const HOUR_MS = 3600000;

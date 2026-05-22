@@ -1479,6 +1479,25 @@ video {
     cursor: pointer;
 }
 
+#infoBtn, #epgInfoBtn {
+    background: rgba(42, 74, 204, 0.55);
+    border: 1px solid #4a6aff;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0 14px;
+    height: 26px;
+    box-shadow: 0 2px 8px rgba(59, 110, 255, 0.35);
+    letter-spacing: 0.3px;
+    backdrop-filter: blur(6px);
+}
+
+#infoBtn:hover, #epgInfoBtn:hover {
+    background: rgba(59, 110, 255, 0.75);
+    border-color: #6c8eff;
+    box-shadow: 0 2px 14px rgba(59, 110, 255, 0.6);
+}
+
 .stream-info-overlay {
     position: absolute;
     bottom: 60px;
