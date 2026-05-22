@@ -2031,9 +2031,46 @@ document.addEventListener('fullscreenchange', () => {
 });
 
 
-// Settings panel functions — implemented in Task 6
-function _openSettings() {}
-function _closeSettings() {}
+// ── Settings Panel State ─────────────────────────────────────────
+let _settingsOpen = false;
+let _settingsFocus = 'categories'; // 'categories' | 'subopts'
+let _settingsCatIdx = 0;           // 0–4
+let _settingsOptIdx = 0;           // index in current sub-list
+let _settingsStatsInterval = null;
+const SETTINGS_CATS = ['audio', 'subtitles', 'quality', 'speed', 'info'];
+
+function _openSettings() {
+    _settingsOpen = true;
+    _settingsFocus = 'categories';
+    _settingsCatIdx = 0;
+    _settingsOptIdx = 0;
+    const sp = document.getElementById('settingsPanel');
+    if (sp) sp.style.display = '';
+    _renderSettingsCategories();
+    _clearSettingsSubopts();
+    // Keep playback panel visible while settings open
+    if (_pbPanelTimer) { clearTimeout(_pbPanelTimer); _pbPanelTimer = null; }
+}
+
+function _closeSettings() {
+    _settingsOpen = false;
+    const sp = document.getElementById('settingsPanel');
+    if (sp) sp.style.display = 'none';
+    if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+}
+
+function _renderSettingsCategories() {
+    const cats = document.querySelectorAll('#spCategories .sp-cat');
+    cats.forEach((el, i) => {
+        el.classList.toggle('active', false);
+        el.classList.toggle('focused', i === _settingsCatIdx);
+    });
+}
+
+function _clearSettingsSubopts() {
+    const sub = document.getElementById('spSubopts');
+    if (sub) sub.innerHTML = '<span style="color:#333;font-size:0.75rem;padding:14px;display:block;">Select a category</span>';
+}
 
 // ----- Initialization -----
 playback.init(videoPlayer);
