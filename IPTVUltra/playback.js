@@ -138,7 +138,7 @@ const playback = (() => {
   }
 
   function startHold(dir) {
-    if (_holdDir) return;
+    if (_holdDir || !_video) return;
     _holdDir = dir;
     _holdStart = Date.now();
     _trickState = dir === 'left' ? 'REWINDING' : 'FAST_FWD';
@@ -169,7 +169,7 @@ const playback = (() => {
   function goToLive() {
     if (!_player || !_video) return;
     _stopTrickPlay();
-    _video.currentTime = _player.seekRange().end;
+    _video.currentTime = _player.seekRange().end - 0.5;
     _video.play().catch(() => {});
     _updateSeekBar();
   }
