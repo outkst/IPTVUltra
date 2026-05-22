@@ -2258,7 +2258,6 @@ function _handleSettingsKey(e) {
     const isLeft  = key === 'ArrowLeft'  || e.keyCode === 37;
     const isRight = key === 'ArrowRight' || e.keyCode === 39;
     const isEnter = key === 'Enter'      || e.keyCode === 13;
-    const isBack  = e.keyCode === 461;
 
     e.preventDefault();
 
@@ -2267,13 +2266,13 @@ function _handleSettingsKey(e) {
         if (isUp)    { _settingsCatIdx = Math.max(0, _settingsCatIdx - 1); _renderSettingsCategories(); }
         if (isDown)  { _settingsCatIdx = Math.min(catCount - 1, _settingsCatIdx + 1); _renderSettingsCategories(); }
         if (isRight || isEnter) { _enterSettingsSubopts(); }
-        if (isLeft || isBack)   { _closeSettings(); }
+        if (isLeft)   { _closeSettings(); }
         return;
     }
 
     // focus === 'subopts'
     const cat = SETTINGS_CATS[_settingsCatIdx];
-    if (isLeft || isBack) {
+    if (isLeft) {
         _settingsFocus = 'categories';
         _settingsOptIdx = 0;
         _renderSettingsCategories();
