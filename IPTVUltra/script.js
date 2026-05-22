@@ -997,6 +997,12 @@ function goToHomeScreen() {
     currentPlaylistType = null;
     playback.destroy();
     playback.init(videoPlayer);
+    // Move panels back to standardView container in case they were moved to EPG
+    const videoArea = document.getElementById('videoArea');
+    const pbPanel = document.getElementById('playbackPanel');
+    const spPanel = document.getElementById('settingsPanel');
+    if (videoArea && pbPanel && pbPanel.parentNode !== videoArea) videoArea.appendChild(pbPanel);
+    if (videoArea && spPanel && spPanel.parentNode !== videoArea) videoArea.appendChild(spPanel);
     videoPlayer.pause();
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
@@ -2014,10 +2020,11 @@ document.addEventListener('keyup', (e) => {
 document.addEventListener('fullscreenchange', () => {
     showTopControls();
     if (!document.fullscreenElement) {
+        _closeSettings();
+        _holdKeyDir = null;
+        playback.stopHold();
         const panel = document.getElementById('playbackPanel');
         if (panel) panel.style.display = 'none';
-        const sp = document.getElementById('settingsPanel');
-        if (sp) sp.style.display = 'none';
     }
 });
 

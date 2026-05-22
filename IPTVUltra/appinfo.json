@@ -20,7 +20,6 @@
   "supportTouchMode": false,
   "allowGlobalLogin": false,
   "supportPreroll": false,
-  "useNativeVideoPlayer": true,
   "requiredPermissions": [
     "INTERNET",
     "DATABASE_STORAGE"
