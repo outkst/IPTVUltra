@@ -778,12 +778,12 @@ function selectChannel(index) {
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
-    videoPlayer.pause();
-    videoPlayer.src = ch.url;
-    videoPlayer.load();
-    videoPlayer.play().catch(e => console.log);
+    playback.loadChannel(ch.url).catch(err => {
+        statusArea.innerText = `⚠️ Failed to load stream: ${err.message || err}`;
+    });
     channelInfoTag.innerText = `📺 ${ch.name}`;
     statusArea.innerText = `▶️ ${ch.name}`;
+    playback.updateMediaSession(ch);
     if (epgMode) {
         // Don't rebuild the EPG grid — just update active row highlighting in-place
         for (const [, el] of epgRenderedRows) el.classList.remove('active');
@@ -1039,16 +1039,9 @@ function toggleAudioPanel() {
 }
 
 function reloadStream() {
-    if (currentChannelIndex < 0) return;
-    const url = channels[currentChannelIndex].url;
-    const wasPlaying = !videoPlayer.paused;
-    videoPlayer.pause();
-    videoPlayer.src = url;
-    videoPlayer.load();
-    if (wasPlaying) videoPlayer.play().catch(e => console.log);
-    statusArea.innerText = '🔄 Reloading ...';
-    setTimeout(() => statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`, 2000);
-    showTopControls();
+    if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
+        playback.loadChannel(channels[currentChannelIndex].url).catch(() => {});
+    }
 }
 
 function goToHomeScreen() {
