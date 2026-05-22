@@ -52,9 +52,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const channelListDiv = document.getElementById('channelList');
 const channelCountSpan = document.getElementById('channelCount');
 const statusArea = document.getElementById('statusArea');
-const streamInfoOverlay = document.getElementById('streamInfoOverlay');
 const channelInfoTag = document.getElementById('channelInfoTag');
-const infoBtn = document.getElementById('infoBtn');
 const reloadBtn = document.getElementById('reloadBtn');
 const videoArea = document.getElementById('videoArea');
 const groupsListDiv = document.getElementById('groupsList');
@@ -84,7 +82,6 @@ const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
-const epgInfoBtn = document.getElementById('epgInfoBtn');
 const newEpgUrl = document.getElementById('newEpgUrl');
 const tabM3u = document.getElementById('tabM3u');
 const tabXtream = document.getElementById('tabXtream');
@@ -96,7 +93,6 @@ const xtreamPassword = document.getElementById('xtreamPassword');
 const xtreamName = document.getElementById('xtreamName');
 const saveXtreamBtn = document.getElementById('saveXtreamBtn');
 
-let infoHideTimeout = null;
 let controlsTimeout = null;
 let _pbPanelTimer = null;
 let subtitlePanelOpen = false;
@@ -842,76 +838,6 @@ function resolveLanguage(code) {
     return LANG_NAMES[short] || code;
 }
 
-function showStreamInfo() {
-    const w = videoPlayer.videoWidth, h = videoPlayer.videoHeight;
-
-    // Video resolution
-    let resText = (w && h) ? (w + '×' + h) : 'Loading ...';
-    if (w >= 3840) resText += ' (4K/UHD)';
-    else if (w >= 1920) resText += ' (FHD 1080p)';
-    else if (w >= 1280) resText += ' (HD 720p)';
-    else if (w >= 720) resText += ' (SD+)';
-    else if (w > 0) resText += ' (SD)';
-
-    // Active audio track
-    let audioLang = '—';
-    if (videoPlayer.audioTracks && videoPlayer.audioTracks.length) {
-        const tracks = Array.from(videoPlayer.audioTracks);
-        const active = tracks.find(function (t) { return t.enabled; }) || tracks[0];
-        if (active) {
-            const resolvedLang = active.language ? resolveLanguage(active.language) : null;
-            if (active.label && active.label.trim()) {
-                audioLang = active.label.trim();
-            } else {
-                audioLang = resolvedLang || 'Unknown';
-            }
-            if (active.kind && active.kind !== 'main' && active.kind !== '') {
-                audioLang += ' [' + active.kind + ']';
-            }
-        }
-    }
-
-    // Subtitle tracks
-    const subTracks = getSubtitleTracks();
-    const subInfo = subTracks.length
-        ? subTracks.length + ' track' + (subTracks.length > 1 ? 's' : '') + ' available'
-        : 'None detected';
-
-    // Audio track count subtitle
-    const audioTracks = getAudioTracks();
-    let audioCountSub = '';
-    if (audioTracks.length > 1) {
-        const uniqueLangs = new Set(audioTracks.map(function (t) { return t.language || ''; }).filter(Boolean));
-        let countText;
-        if (uniqueLangs.size >= audioTracks.length) {
-            countText = audioTracks.length + ' languages available';
-        } else if (uniqueLangs.size <= 1) {
-            countText = audioTracks.length + ' tracks available';
-        } else {
-            countText = audioTracks.length + ' tracks, ' + uniqueLangs.size + ' languages';
-        }
-        audioCountSub = '<span class="si-sub">' + countText + '</span>';
-    }
-
-    streamInfoOverlay.innerHTML =
-        '<div class="si-section">' +
-        '<div class="si-label">Video</div>' +
-        '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Audio</div>' +
-        '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Subtitles</div>' +
-        '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
-        '</div>';
-
-    streamInfoOverlay.style.opacity = '1';
-    if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 3000);
-}
-
 function getSubtitleTracks() {
     if (!videoPlayer.textTracks) return [];
     return Array.from(videoPlayer.textTracks).filter(function (t) {
@@ -1037,7 +963,6 @@ function buildAudioPanel() {
             tracks.forEach(function (t) { t.enabled = false; });
             track.enabled = true;
             buildAudioPanel();
-            if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
             showTopControls();
         };
         listEl.appendChild(item);
@@ -1924,8 +1849,6 @@ clearAllBtn.addEventListener('click', () => {
     confirmYes.addEventListener('click', yesHandler);
     confirmNo.addEventListener('click', noHandler);
 });
-infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
-if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
 if (epgTimePrevBtn) epgTimePrevBtn.addEventListener('click', () => scrollEPGTimeBy(-30));
@@ -1970,8 +1893,7 @@ if (epgClearSearchBtn) {
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
-videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
-videoPlayer.addEventListener('resize', showStreamInfo);
+videoPlayer.addEventListener('loadedmetadata', function () { updateSubtitleButton(); updateAudioButton(); });
 videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
