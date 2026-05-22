@@ -95,6 +95,9 @@ const saveXtreamBtn = document.getElementById('saveXtreamBtn');
 
 let controlsTimeout = null;
 let _pbPanelTimer = null;
+let _holdKeyDir   = null;  // 'left' | 'right' | null
+let _holdKeyStart = 0;
+const HOLD_THRESHOLD_MS = 500;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
 
@@ -1945,6 +1948,49 @@ document.addEventListener('keyup', (e) => {
         else videoPlayer.pause();
         showTopControls();
     }
+});
+
+// Hold ◀/▶ in fullscreen: hold-to-rewind / hold-to-FF
+document.addEventListener('keydown', (e) => {
+    if (!document.fullscreenElement) return;
+    if (_settingsOpen) return;
+    if (e.repeat) return; // ignore key-repeat; we drive timing ourselves
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    e.preventDefault();
+    if (_holdKeyDir) return; // already tracking a hold
+    _holdKeyDir   = isLeft ? 'left' : 'right';
+    _holdKeyStart = Date.now();
+    showTopControls();
+    // After hold threshold, start trick play
+    const capturedDir = _holdKeyDir;
+    setTimeout(() => {
+        if (_holdKeyDir === capturedDir) {
+            playback.startHold(capturedDir);
+        }
+    }, HOLD_THRESHOLD_MS);
+});
+
+document.addEventListener('keyup', (e) => {
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    if (!document.fullscreenElement || _settingsOpen) { _holdKeyDir = null; return; }
+
+    e.preventDefault();
+    const held = Date.now() - _holdKeyStart;
+    const dir  = _holdKeyDir;
+    _holdKeyDir = null;
+
+    if (playback.isHolding()) {
+        // Was in trick play — stop and resume
+        playback.stopHold();
+    } else if (held < HOLD_THRESHOLD_MS) {
+        // Short press — single ±3s seek
+        playback.seekBy(dir === 'left' ? -3 : 3);
+    }
+    showTopControls();
 });
 
 document.addEventListener('fullscreenchange', () => {
