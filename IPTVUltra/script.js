@@ -2146,9 +2146,84 @@ function _selectCurrentSettingsOpt() {
     if (opts[_settingsOptIdx]) opts[_settingsOptIdx].click();
 }
 
-// Stubs for speed and info — implemented in Tasks 8 and 9
-function _buildSpeedSublist() {}
-function _buildStreamInfoSublist() {}
+function _buildSpeedSublist() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    sub.innerHTML = '';
+    const h = document.createElement('span');
+    h.className = 'sp-subheader';
+    h.textContent = 'Playback Speed';
+    sub.appendChild(h);
+    const wrap = document.createElement('div');
+    wrap.className = 'sp-speeds';
+    const rates = playback.getPlaybackRates();
+    const currentIdx = playback.getRateIndex();
+    rates.forEach((rate, i) => {
+        const chip = document.createElement('div');
+        chip.className = 'sp-chip' + (i === currentIdx ? ' active' : '') + (i === _settingsOptIdx ? ' focused' : '');
+        chip.textContent = rate + '×';
+        chip.addEventListener('click', () => {
+            playback.setRate(rate);
+            _buildSpeedSublist(); // refresh to show new active chip
+        });
+        wrap.appendChild(chip);
+    });
+    sub.appendChild(wrap);
+    const hint = document.createElement('div');
+    hint.style.cssText = 'padding:4px 14px;font-size:0.68rem;color:#444;';
+    hint.textContent = '▲/▼ also changes speed when not in settings';
+    sub.appendChild(hint);
+}
+
+function _buildStreamInfoSublist() {
+    if (_settingsStatsInterval) clearInterval(_settingsStatsInterval);
+    _renderStreamInfo();
+    _settingsStatsInterval = setInterval(_renderStreamInfo, 1000);
+}
+
+function _renderStreamInfo() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const s = playback.getStats();
+    if (!s) {
+        sub.innerHTML = '<span style="color:#555;padding:14px;display:block;font-size:0.75rem;">No stream loaded</span>';
+        return;
+    }
+
+    function row(key, val, cls) {
+        return `<div class="si-row-sp"><span class="si-key-sp">${escapeHtml(key)}</span><span class="si-val-sp ${cls || ''}">${escapeHtml(String(val))}</span></div>`;
+    }
+    function section(title, rows) {
+        return `<div class="si-section-sp"><span class="si-label-sp">${escapeHtml(title)}</span>${rows}</div>`;
+    }
+    function divider() { return '<div class="si-divider-sp"></div>'; }
+    function valCls(n) { return Number(n) === 0 ? 'good' : 'warn'; }
+
+    const res = s.width && s.height ? `${s.width} × ${s.height}` : '—';
+    sub.innerHTML =
+        section('Video',
+            row('Resolution', res) +
+            row('Frame Rate', s.frameRate) +
+            row('Codec', s.videoCodec) +
+            row('Bitrate', s.bandwidth)
+        ) +
+        divider() +
+        section('Audio',
+            row('Codec', s.audioCodec)
+        ) +
+        divider() +
+        section('Network',
+            row('Est. Bandwidth', s.estimatedBandwidth, 'good') +
+            row('Live Latency', s.liveLatency) +
+            row('Buffer Ahead', s.bufferAhead)
+        ) +
+        divider() +
+        section('Playback',
+            row('Dropped Frames', s.droppedFrames, valCls(s.droppedFrames)) +
+            row('Corrupted', s.corruptedFrames, valCls(s.corruptedFrames)) +
+            row('Load Time', s.loadLatency)
+        );
+}
 
 // ----- Initialization -----
 playback.init(videoPlayer);
