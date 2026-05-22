@@ -204,102 +204,123 @@ Values color-coded: green if healthy (dropped frames = 0, buffer > 10s, latency 
 
 ### States
 
-| State | Video | Interval |
+| State | Video | Ends when |
 |---|---|---|
-| `NORMAL` | Playing at 1× rate | None |
-| `SEEK_SINGLE` | Seeks ±3s then resumes | None (transient) |
-| `REWINDING` | Paused | Fires every 250ms, seeks backward |
-| `FAST_FWD` | 2×/4×: `playbackRate`; 8×: paused | 8× only |
-| `TRICK_PAUSED` | Paused | None |
+| `NORMAL` | Playing at 1× rate | — |
+| `SEEK_SINGLE` | Seeks ±3s then resumes | Auto (transient) |
+| `REWINDING` | Paused; interval seeks backward | `keyup` ◀ |
+| `FAST_FWD` | Paused; interval seeks forward | `keyup` ▶ |
 
-### Speed Indices
+`TRICK_PAUSED` is removed. Enter is play/pause toggle in NORMAL only.
 
-- Rewind: `[-1, -2, -4, -8]` — index 0–3
-- Fast-forward: `[2, 4, 8]` — index 0–2
+### Speed Ramp — Duration-Based
+
+Speed is determined by how long the button has been held. Checked every 100ms inside the seek interval.
+
+**Rewind (hold ◀):**
+
+| Hold duration | Speed |
+|---|---|
+| 0 – 1.5s | −1× |
+| 1.5s – 4s | −2× |
+| 4s – 8s | −4× |
+| 8s+ | −8× |
+
+**Fast-forward (hold ▶):**
+
+| Hold duration | Speed |
+|---|---|
+| 0 – 1.5s | 2× |
+| 1.5s – 4s | 4× |
+| 4s+ | 8× |
 
 ### Hold Detection
 
-Hold threshold: 500ms. Uses the same `keydown`/`keyup` pattern already in the codebase for Enter long-press:
+Short press threshold: 500ms. On `keydown` (first, not repeat), record start time and begin the seek loop. On `keyup`, if held < 500ms treat as short press (±3s seek); otherwise stop the loop and resume.
 
 ```js
-let _leftDown = false, _leftDownTime = 0;
-let _rightDown = false, _rightDownTime = 0;
+const REWIND_RAMP = [
+  { after: 0,    speed: -1 },
+  { after: 1500, speed: -2 },
+  { after: 4000, speed: -4 },
+  { after: 8000, speed: -8 },
+];
+const FF_RAMP = [
+  { after: 0,    speed: 2 },
+  { after: 1500, speed: 4 },
+  { after: 4000, speed: 8 },
+];
+
+function getRampSpeed(ramp, heldMs) {
+  let speed = ramp[0].speed;
+  for (const step of ramp) {
+    if (heldMs >= step.after) speed = step.speed;
+  }
+  return speed;
+}
+
+let _holdStart = 0;
+let _holdDir = null;   // 'left' | 'right' | null
+let _holdInterval = null;
 
 document.addEventListener('keydown', e => {
   if (!document.fullscreenElement || settingsOpen) return;
-  if (e.key === 'ArrowLeft' && !_leftDown) { _leftDown = true; _leftDownTime = Date.now(); }
-  if (e.key === 'ArrowRight' && !_rightDown) { _rightDown = true; _rightDownTime = Date.now(); }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.repeat && !_holdDir) {
+    _holdDir = e.key === 'ArrowLeft' ? 'left' : 'right';
+    _holdStart = Date.now();
+    videoElement.pause();
+    _trickState = _holdDir === 'left' ? 'REWINDING' : 'FAST_FWD';
+    _holdInterval = setInterval(() => {
+      const heldMs = Date.now() - _holdStart;
+      const ramp = _holdDir === 'left' ? REWIND_RAMP : FF_RAMP;
+      const speed = getRampSpeed(ramp, heldMs);
+      const range = player.seekRange();
+      if (_holdDir === 'left') {
+        videoElement.currentTime = Math.max(range.start, videoElement.currentTime + speed * 0.1);
+      } else {
+        videoElement.currentTime = Math.min(range.end - 2, videoElement.currentTime + speed * 0.1);
+      }
+      updateSeekBar();
+      showTrickBadge(_holdDir === 'left' ? `◀◀ ${Math.abs(speed)}×` : `▶▶ ${speed}×`);
+    }, 100);
+  }
 });
 
 document.addEventListener('keyup', e => {
-  if (e.key === 'ArrowLeft' && _leftDown) {
-    const held = Date.now() - _leftDownTime;
-    _leftDown = false;
-    if (held < 500) handleShortLeft(); else handleHoldLeft();
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && _holdDir) {
+    const held = Date.now() - _holdStart;
+    clearInterval(_holdInterval);
+    _holdInterval = null;
+    _trickState = 'NORMAL';
+    hideTrickBadge();
+    if (held < 500) {
+      // Short press — single seek
+      const dir = e.key === 'ArrowLeft' ? -3 : 3;
+      videoElement.currentTime = Math.max(player.seekRange().start,
+        Math.min(player.seekRange().end - 1, videoElement.currentTime + dir));
+    }
+    videoElement.play();
+    _holdDir = null;
+    _holdStart = 0;
   }
-  // mirror for Right
 });
 ```
 
-### Rewind Interval
-
-```js
-function startRewind(speedIndex) {
-  stopTrickPlay();
-  _trickState = 'REWINDING';
-  _trickSpeedIndex = speedIndex;
-  videoElement.pause();
-  _trickInterval = setInterval(() => {
-    const speed = REWIND_SPEEDS[_trickSpeedIndex]; // -1, -2, -4, -8
-    const range = player.seekRange();
-    videoElement.currentTime = Math.max(range.start, videoElement.currentTime + speed * 0.25);
-    updateSeekBar();
-  }, 250);
-  showTrickBadge(`◀◀ ${REWIND_SPEEDS[_trickSpeedIndex]}×`);
-}
-```
-
-### Fast-Forward
-
-```js
-function startFF(speedIndex) {
-  stopTrickPlay();
-  _trickState = 'FAST_FWD';
-  _trickSpeedIndex = speedIndex;
-  const speed = FF_SPEEDS[speedIndex]; // 2, 4, 8
-  if (speed <= 4) {
-    videoElement.playbackRate = speed;
-    videoElement.play();
-  } else {
-    videoElement.pause();
-    _trickInterval = setInterval(() => {
-      const range = player.seekRange();
-      videoElement.currentTime = Math.min(range.end - 2, videoElement.currentTime + speed * 0.25);
-      updateSeekBar();
-      if (videoElement.currentTime >= range.end - 2) stopTrickPlay();
-    }, 250);
-  }
-  showTrickBadge(`▶▶ ${speed}×`);
-}
-```
+> The seek interval fires every 100ms and moves `speed × 0.1s` per tick. At −1× that is 0.1s backward every 100ms (real-time). At −8× that is 0.8s backward every 100ms (8× faster than live).
 
 ### Key Transitions (fullscreen, settings closed)
 
-| Current state | Key | Action |
+| Key event | State | Action |
 |---|---|---|
-| NORMAL | Short ◀ | seekBy(−3), resume |
-| NORMAL | Short ▶ | seekBy(+3), resume |
-| NORMAL | Hold ◀ | startRewind(0) → −1× |
-| NORMAL | Hold ▶ | startFF(0) → 2× |
-| NORMAL | ▲ | increment rate index (max 2×), setRate() |
-| NORMAL | ▼ | decrement rate index (min 0.5×), setRate() |
-| REWINDING | ◀ | speedIndex = min(3, index+1) → increase rewind |
-| REWINDING | ▶ | speedIndex > 0 → decrease; speedIndex = 0 → stopTrickPlay(), resume |
-| REWINDING | Enter | pause, enter TRICK_PAUSED |
-| FAST_FWD | ▶ | speedIndex = min(2, index+1) → increase FF |
-| FAST_FWD | ◀ | speedIndex > 0 → decrease; speedIndex = 0 → stopTrickPlay(), resume |
-| FAST_FWD | Enter | pause, enter TRICK_PAUSED |
-| TRICK_PAUSED | Enter | stopTrickPlay(), setRate(1), resume |
+| Short ◀ press + release (< 500ms) | Any | Seek −3s, resume |
+| Short ▶ press + release (< 500ms) | Any | Seek +3s, resume |
+| Hold ◀ (≥ 500ms) | NORMAL | Enter REWINDING; speed ramps with hold duration |
+| Hold ▶ (≥ 500ms) | NORMAL | Enter FAST_FWD; speed ramps with hold duration |
+| `keyup` ◀ | REWINDING | Stop loop, resume at 1× |
+| `keyup` ▶ | FAST_FWD | Stop loop, resume at 1× |
+| ▲ | NORMAL | Increment playback rate (max 2×) |
+| ▼ | NORMAL | Decrement playback rate (min 0.5×) |
+| Enter | NORMAL | Toggle play/pause |
 
 ---
 
@@ -310,7 +331,7 @@ function startFF(speedIndex) {
 | Button | keyCode | Notes |
 |---|---|---|
 | Back/Return | `461` | To be verified via `ares-inspect` during implementation |
-| OK/Enter | `13` | Play/pause toggle; also trick-play pause/resume |
+| OK/Enter | `13` | Play/pause toggle in NORMAL (trick play stops on button release, not Enter) |
 | Arrow keys | `37/38/39/40` | Navigation and trick play |
 
 ### Back/Return Handler (priority order)
