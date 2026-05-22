@@ -98,6 +98,7 @@ const saveXtreamBtn = document.getElementById('saveXtreamBtn');
 
 let infoHideTimeout = null;
 let controlsTimeout = null;
+let _pbPanelTimer = null;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
 
@@ -817,6 +818,22 @@ function showTopControls() {
         if (cr) cr.classList.remove('visible');
         if (ec) ec.classList.remove('visible');
     }, 3000);
+
+    // Show playback panel only when fullscreen
+    if (document.fullscreenElement) {
+        const panel = document.getElementById('playbackPanel');
+        if (panel) {
+            panel.style.display = '';
+            if (_pbPanelTimer) { clearTimeout(_pbPanelTimer); _pbPanelTimer = null; }
+            _pbPanelTimer = setTimeout(() => {
+                const sp = document.getElementById('settingsPanel');
+                if (!sp || sp.style.display === 'none') {
+                    const p = document.getElementById('playbackPanel');
+                    if (p) p.style.display = 'none';
+                }
+            }, 3000);
+        }
+    }
 }
 
 function resolveLanguage(code) {
@@ -2005,11 +2022,32 @@ document.addEventListener('keyup', (e) => {
 
 document.addEventListener('fullscreenchange', () => {
     showTopControls();
+    if (!document.fullscreenElement) {
+        const panel = document.getElementById('playbackPanel');
+        if (panel) panel.style.display = 'none';
+        const sp = document.getElementById('settingsPanel');
+        if (sp) sp.style.display = 'none';
+    }
 });
 
 
+// Settings panel functions — implemented in Task 6
+function _openSettings() {}
+function _closeSettings() {}
+
 // ----- Initialization -----
 playback.init(videoPlayer);
+
+// Seek bar update — fires every 500ms while fullscreen
+setInterval(() => {
+    if (document.fullscreenElement) playback.updateSeekBar();
+}, 500);
+
+const pbLiveBtn = document.getElementById('pbLiveBtn');
+if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); showTopControls(); });
+
+const pbGearBtn = document.getElementById('pbGearBtn');
+if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
 loadSavedPlaylists();
