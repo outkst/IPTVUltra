@@ -18,9 +18,10 @@ const playback = (() => {
   const PLAYBACK_RATES = [0.5, 0.75, 1, 1.5, 2];
 
   // ── State ───────────────────────────────────────────────────────────────────
-  let _player   = null;   // shaka.Player
-  let _video    = null;   // <video> element
-  let _isDVR    = false;
+  let _player      = null;   // shaka.Player
+  let _video       = null;   // <video> element
+  let _isDVR       = false;
+  let _nativeMode  = false;  // true when Shaka failed and we fell back to video.src
   let _rateIndex = 2;     // index into PLAYBACK_RATES (default 1×)
   let _trickState = 'NORMAL'; // 'NORMAL' | 'REWINDING' | 'FAST_FWD'
   let _holdDir   = null;  // 'left' | 'right' | null
@@ -63,7 +64,7 @@ const playback = (() => {
     if (!_player || !_video) return;
     const panel = document.getElementById('playbackPanel');
     if (!panel || panel.style.display === 'none') return;
-    const range = _player.seekRange();
+    const range = _seekRange();
     const duration = range.end - range.start;
     if (duration <= 0) return;
     const pct = Math.min(100, Math.max(0, (_video.currentTime - range.start) / duration * 100));
@@ -116,6 +117,7 @@ const playback = (() => {
     if (!_player) return;
     _stopTrickPlay();
     _rateIndex = 2;
+    _nativeMode = false;
     _showRateBadge(1);
     try {
       await _player.load(url);
@@ -124,14 +126,37 @@ const playback = (() => {
       _video.play().catch(() => {});
       _updateSeekBar();
     } catch (err) {
-      console.error('playback.loadChannel error:', err);
-      throw err;
+      // Shaka failed — most likely CORS on IPTV server; fall back to native video.src
+      console.warn('playback: Shaka load failed (code ' + (err.code || err) + '), falling back to native src');
+      try { await _player.unload(); } catch (_) {}
+      _nativeMode = true;
+      _isDVR = false;
+      _video.src = url;
+      _video.load();
+      _video.play().catch(() => {});
+      // Detect DVR window via native seekable range after metadata loads
+      _video.addEventListener('loadedmetadata', function onMeta() {
+        _video.removeEventListener('loadedmetadata', onMeta);
+        if (_video.seekable && _video.seekable.length > 0) {
+          _isDVR = (_video.seekable.end(0) - _video.seekable.start(0)) > 30;
+        }
+        _updateSeekBar();
+      }, { once: true });
     }
   }
 
+  function _seekRange() {
+    if (_nativeMode || !_player) {
+      if (_video && _video.seekable && _video.seekable.length > 0)
+        return { start: _video.seekable.start(0), end: _video.seekable.end(0) };
+      return { start: 0, end: _video ? (_video.duration || 0) : 0 };
+    }
+    return _player.seekRange();
+  }
+
   function seekBy(seconds) {
-    if (!_player || !_video) return;
-    const range = _player.seekRange();
+    if (!_video) return;
+    const range = _seekRange();
     _video.currentTime = Math.max(range.start, Math.min(range.end - 1, _video.currentTime + seconds));
     _video.play().catch(() => {});
     _updateSeekBar();
@@ -145,10 +170,10 @@ const playback = (() => {
     _video.pause();
     const ramp = dir === 'left' ? REWIND_RAMP : FF_RAMP;
     _holdInterval = setInterval(() => {
-      if (!_player || !_video) return;
+      if (!_video) return;
       const heldMs = Date.now() - _holdStart;
       const speed  = _getRampSpeed(ramp, heldMs);
-      const range  = _player.seekRange();
+      const range  = _seekRange();
       if (dir === 'left') {
         _video.currentTime = Math.max(range.start, _video.currentTime + speed * 0.1);
         _showTrickBadge('◀◀ ' + Math.abs(speed) + '×');
@@ -167,9 +192,9 @@ const playback = (() => {
   }
 
   function goToLive() {
-    if (!_player || !_video) return;
+    if (!_video) return;
     _stopTrickPlay();
-    _video.currentTime = _player.seekRange().end - 0.5;
+    _video.currentTime = _seekRange().end - 0.5;
     _video.play().catch(() => {});
     _updateSeekBar();
   }
@@ -188,15 +213,17 @@ const playback = (() => {
   }
 
   function getSeekInfo() {
-    if (!_player || !_video) return { pct: 100, behindSeconds: 0, isDVR: _isDVR };
-    const range = _player.seekRange();
+    if (!_video) return { pct: 100, behindSeconds: 0, isDVR: _isDVR };
+    const range = _seekRange();
     const dur = range.end - range.start;
     const pct = dur > 0 ? Math.min(100, Math.max(0, (_video.currentTime - range.start) / dur * 100)) : 100;
     return { pct, behindSeconds: Math.max(0, range.end - _video.currentTime), isDVR: _isDVR };
   }
 
   function getStats() {
-    if (!_player || !_video) return null;
+    if (!_video) return null;
+    if (_nativeMode) return { width: _video.videoWidth, height: _video.videoHeight, frameRate: '—', videoCodec: '— (native)', audioCodec: '—', bandwidth: '—', estimatedBandwidth: '—', liveLatency: '—', bufferAhead: '—', droppedFrames: 0, corruptedFrames: 0, loadLatency: '—' };
+    if (!_player) return null;
     const stats  = _player.getStats();
     const tracks = _player.getVariantTracks();
     const active = tracks.find(t => t.active) || {};
@@ -225,7 +252,7 @@ const playback = (() => {
   }
 
   function getTrackLists() {
-    if (!_player) return { audio: [], subtitles: [], quality: [] };
+    if (_nativeMode || !_player) return { audio: [], subtitles: [], quality: [] };
     const variantTracks = _player.getVariantTracks();
 
     // Audio — deduplicate by audioId
@@ -303,6 +330,7 @@ const playback = (() => {
     if (_player) { _player.destroy(); _player = null; }
     _video = null;
     _isDVR = false;
+    _nativeMode = false;
     _rateIndex = 2;
   }
 
