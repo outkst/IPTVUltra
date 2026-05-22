@@ -1166,11 +1166,14 @@ function enterEPGMode() {
     // Sync EPG search input with current query
     const epgSI = document.getElementById('epgSearchInput');
     if (epgSI) epgSI.value = currentSearchQuery;
-    // Move <video> and stream-info overlay into the EPG video container
+    // Move <video> and panels into the EPG video container
     const wrap = document.getElementById('epgVideoWrap');
+    const pbPanel = document.getElementById('playbackPanel');
+    const spPanel = document.getElementById('settingsPanel');
     if (wrap) {
         if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
-        if (streamInfoOverlay.parentNode !== wrap) wrap.appendChild(streamInfoOverlay);
+        if (pbPanel && pbPanel.parentNode !== wrap) wrap.appendChild(pbPanel);
+        if (spPanel && spPanel.parentNode !== wrap) wrap.appendChild(spPanel);
     }
     // Start focus cursor at the currently playing channel
     if (currentChannelIndex >= 0) {

@@ -1823,3 +1823,119 @@ video {
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
 }
+
+/* ── Playback Panel ──────────────────────────────── */
+.playback-panel {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.92) 28%);
+    padding: 32px 22px 16px;
+    z-index: 50;
+    pointer-events: auto;
+}
+
+.pb-toprow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.pb-trick-badge {
+    background: rgba(42, 74, 204, 0.65);
+    border: 1.5px solid #4a6aff;
+    color: #a3c0ff;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    backdrop-filter: blur(6px);
+}
+
+.pb-rate-badge {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.pb-live-btn {
+    background: #e74c3c;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.pb-live-btn.at-live {
+    background: #555;
+    color: #aaa;
+}
+
+.pb-gear-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(42, 74, 204, 0.5);
+    border: 1.5px solid #6c8eff;
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.pb-gear-btn:focus,
+.pb-gear-btn.focused {
+    outline: 2px solid #6c8eff;
+    outline-offset: 2px;
+}
+
+.pb-seek-row {
+    margin-bottom: 5px;
+}
+
+.pb-seek-track {
+    height: 5px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    position: relative;
+    cursor: pointer;
+}
+
+.pb-seek-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: #6c8eff;
+    border-radius: 3px;
+    width: 100%;
+}
+
+.pb-seek-thumb {
+    position: absolute;
+    top: 50%;
+    width: 15px;
+    height: 15px;
+    background: #fff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+    left: 100%;
+}
+
+.pb-timerow {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.68rem;
+    color: rgba(255, 255, 255, 0.4);
+}

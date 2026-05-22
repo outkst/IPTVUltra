@@ -137,6 +137,25 @@
 						<div id="streamInfoOverlay" class="stream-info-overlay" style="opacity:0;"></div>
 						<div id="epgNowNext" class="epg-now-next" style="display:none;"></div>
 						<div id="channelInfoTag" class="channel-info-tag"></div>
+						<div id="playbackPanel" class="playback-panel" style="display:none;">
+						  <div class="pb-toprow">
+						    <div id="pbTrickBadge" class="pb-trick-badge" style="display:none;"></div>
+						    <div id="pbRateBadge" class="pb-rate-badge" style="display:none;"></div>
+						    <div style="flex:1;"></div>
+						    <button id="pbLiveBtn" class="pb-live-btn">● LIVE</button>
+						    <button id="pbGearBtn" class="pb-gear-btn">⚙</button>
+						  </div>
+						  <div class="pb-seek-row">
+						    <div id="pbSeekTrack" class="pb-seek-track">
+						      <div id="pbSeekFill" class="pb-seek-fill"></div>
+						      <div id="pbSeekThumb" class="pb-seek-thumb"></div>
+						    </div>
+						  </div>
+						  <div class="pb-timerow">
+						    <span id="pbTimeOffset">At live edge</span>
+						    <span>Live</span>
+						  </div>
+						</div>
 					</div>
 				</div>
 				<!-- EPG guide view: video+info panel on top, guide grid below -->
