@@ -1773,6 +1773,11 @@ function selectEPGFocusedChannel() {
 }
 
 function handleRemoteNav(e) {
+    // Settings panel takes over all remote nav when open in fullscreen
+    if (_settingsOpen && document.fullscreenElement) {
+        _handleSettingsKey(e);
+        return;
+    }
     if (epgMode) {
         if (e.key === 'ArrowUp' || e.keyCode === 38) {
             e.preventDefault();
@@ -2145,6 +2150,55 @@ function _renderStreamInfo() {
             row('Corrupted', s.corruptedFrames, valCls(s.corruptedFrames)) +
             row('Load Time', s.loadLatency)
         );
+}
+
+function _handleSettingsKey(e) {
+    const key = e.key;
+    const isUp    = key === 'ArrowUp'    || e.keyCode === 38;
+    const isDown  = key === 'ArrowDown'  || e.keyCode === 40;
+    const isLeft  = key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = key === 'ArrowRight' || e.keyCode === 39;
+    const isEnter = key === 'Enter'      || e.keyCode === 13;
+    const isBack  = e.keyCode === 461;
+
+    e.preventDefault();
+
+    if (_settingsFocus === 'categories') {
+        const catCount = SETTINGS_CATS.length;
+        if (isUp)    { _settingsCatIdx = Math.max(0, _settingsCatIdx - 1); _renderSettingsCategories(); }
+        if (isDown)  { _settingsCatIdx = Math.min(catCount - 1, _settingsCatIdx + 1); _renderSettingsCategories(); }
+        if (isRight || isEnter) { _enterSettingsSubopts(); }
+        if (isLeft || isBack)   { _closeSettings(); }
+        return;
+    }
+
+    // focus === 'subopts'
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (isLeft || isBack) {
+        _settingsFocus = 'categories';
+        _settingsOptIdx = 0;
+        _renderSettingsCategories();
+        if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+        return;
+    }
+    if (cat === 'info') return; // read-only, no selection
+
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const isSpeed = cat === 'speed';
+    const items = isSpeed ? sub.querySelectorAll('.sp-chip') : sub.querySelectorAll('.sp-opt');
+    const count = items.length;
+    if (count === 0) return;
+
+    if (isUp || (isSpeed && isLeft)) {
+        _settingsOptIdx = Math.max(0, _settingsOptIdx - 1);
+        _updateSettingsOptFocus();
+    }
+    if (isDown || (isSpeed && isRight)) {
+        _settingsOptIdx = Math.min(count - 1, _settingsOptIdx + 1);
+        _updateSettingsOptFocus();
+    }
+    if (isEnter) { _selectCurrentSettingsOpt(); }
 }
 
 // ----- Initialization -----
