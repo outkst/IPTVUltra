@@ -2013,6 +2013,7 @@ document.addEventListener('fullscreenchange', () => {
 
 
 // ----- Initialization -----
+playback.init(videoPlayer);
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
 loadSavedPlaylists();
