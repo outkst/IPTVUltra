@@ -2072,6 +2072,84 @@ function _clearSettingsSubopts() {
     if (sub) sub.innerHTML = '<span style="color:#333;font-size:0.75rem;padding:14px;display:block;">Select a category</span>';
 }
 
+function _enterSettingsSubopts() {
+    _settingsFocus = 'subopts';
+    _settingsOptIdx = 0;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'audio')     _buildAudioSublist();
+    if (cat === 'subtitles') _buildSubtitleSublist();
+    if (cat === 'quality')   _buildQualitySublist();
+    if (cat === 'speed')     _buildSpeedSublist();
+    if (cat === 'info')      _buildStreamInfoSublist();
+    // Mark active category
+    document.querySelectorAll('#spCategories .sp-cat').forEach((el, i) => {
+        el.classList.toggle('active', i === _settingsCatIdx);
+        el.classList.toggle('focused', false);
+    });
+}
+
+function _buildTrackSublist(header, items, onSelect) {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    sub.innerHTML = '';
+    const h = document.createElement('span');
+    h.className = 'sp-subheader';
+    h.textContent = header;
+    sub.appendChild(h);
+    items.forEach((item, i) => {
+        const div = document.createElement('div');
+        div.className = 'sp-opt' + (item.active ? ' active' : '') + (i === _settingsOptIdx ? ' focused' : '');
+        div.innerHTML = `<span>${escapeHtml(item.label)}</span><span class="sp-check">${item.active ? '✓' : ''}</span>`;
+        div.addEventListener('click', () => { onSelect(item); _enterSettingsSubopts(); });
+        sub.appendChild(div);
+    });
+}
+
+function _buildAudioSublist() {
+    const { audio } = playback.getTrackLists();
+    _buildTrackSublist('Audio Track', audio, item => playback.setAudioTrack(item.id));
+}
+
+function _buildSubtitleSublist() {
+    const { subtitles } = playback.getTrackLists();
+    _buildTrackSublist('Subtitle Track', subtitles, item => playback.setSubtitleTrack(item.id));
+}
+
+function _buildQualitySublist() {
+    const { quality } = playback.getTrackLists();
+    _buildTrackSublist('Video Quality', quality, item => playback.setQuality(item.id));
+}
+
+function _updateSettingsOptFocus() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'speed') {
+        sub.querySelectorAll('.sp-chip').forEach((el, i) => el.classList.toggle('focused', i === _settingsOptIdx));
+    } else if (cat === 'info') {
+        // info is read-only, no focus update needed
+    } else {
+        sub.querySelectorAll('.sp-opt').forEach((el, i) => el.classList.toggle('focused', i === _settingsOptIdx));
+    }
+}
+
+function _selectCurrentSettingsOpt() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'speed') {
+        const chips = sub.querySelectorAll('.sp-chip');
+        if (chips[_settingsOptIdx]) chips[_settingsOptIdx].click();
+        return;
+    }
+    const opts = sub.querySelectorAll('.sp-opt');
+    if (opts[_settingsOptIdx]) opts[_settingsOptIdx].click();
+}
+
+// Stubs for speed and info — implemented in Tasks 8 and 9
+function _buildSpeedSublist() {}
+function _buildStreamInfoSublist() {}
+
 // ----- Initialization -----
 playback.init(videoPlayer);
 
