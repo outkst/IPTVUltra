@@ -1961,6 +1961,7 @@ document.addEventListener('keyup', (e) => {
     } else {
         if (videoPlayer.paused) videoPlayer.play().catch(e => console.log);
         else videoPlayer.pause();
+        if (channels[currentChannelIndex]) playback.updateMediaSession(channels[currentChannelIndex]);
         showTopControls();
     }
 });
@@ -2312,6 +2313,9 @@ if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); 
 
 const pbGearBtn = document.getElementById('pbGearBtn');
 if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
+// Audio/Subtitle buttons are superseded by the settings panel
+if (typeof audioBtn !== 'undefined' && audioBtn) audioBtn.style.display = 'none';
+if (typeof subtitleBtn !== 'undefined' && subtitleBtn) subtitleBtn.style.display = 'none';
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
 loadSavedPlaylists();
