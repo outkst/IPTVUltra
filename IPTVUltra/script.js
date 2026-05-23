@@ -2128,6 +2128,38 @@ document.addEventListener('keyup', (e) => {
     showTopControls();
 });
 
+// Back/Return button (webOS keyCode 461) — context-dependent
+document.addEventListener('keydown', (e) => {
+    if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+
+    if (document.fullscreenElement) {
+        e.preventDefault();
+        document.exitFullscreen();
+        return;
+    }
+
+    if (mainApp && mainApp.style.display !== 'none') {
+        e.preventDefault();
+        confirmDialog.classList.remove('hidden');
+        const yesHandler = () => {
+            goToHomeScreen();
+            confirmDialog.classList.add('hidden');
+            confirmYes.removeEventListener('click', yesHandler);
+            confirmNo.removeEventListener('click', noHandler);
+        };
+        const noHandler = () => {
+            confirmDialog.classList.add('hidden');
+            confirmYes.removeEventListener('click', yesHandler);
+            confirmNo.removeEventListener('click', noHandler);
+        };
+        confirmYes.addEventListener('click', yesHandler);
+        confirmNo.addEventListener('click', noHandler);
+        return;
+    }
+
+    // Start page: fall through — webOS handles natively ("Exit app?" prompt)
+});
+
 
 // ----- Initialization -----
 const savedFavs = localStorage.getItem('iptv_favorites');
