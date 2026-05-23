@@ -2093,6 +2093,41 @@ document.addEventListener('fullscreenchange', () => {
     showTopControls();
 });
 
+// Hold Left/Right in fullscreen: short-press = ±3s seek; hold = trick play
+document.addEventListener('keydown', (e) => {
+    if (!document.fullscreenElement) return;
+    if (e.repeat) return;
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    e.preventDefault();
+    if (_holdKeyDir) return;
+    _holdKeyDir   = isLeft ? 'left' : 'right';
+    _holdKeyStart = Date.now();
+    showTopControls();
+    const capturedDir = _holdKeyDir;
+    setTimeout(() => {
+        if (_holdKeyDir === capturedDir) _startHold(capturedDir);
+    }, HOLD_THRESHOLD_MS);
+});
+
+document.addEventListener('keyup', (e) => {
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    if (!document.fullscreenElement) { _holdKeyDir = null; return; }
+    e.preventDefault();
+    const held = Date.now() - _holdKeyStart;
+    const dir  = _holdKeyDir;
+    _holdKeyDir = null;
+    if (_isHolding()) {
+        _stopHold();
+    } else if (held < HOLD_THRESHOLD_MS) {
+        _seekBy(dir === 'left' ? -3 : 3);
+    }
+    showTopControls();
+});
+
 
 // ----- Initialization -----
 const savedFavs = localStorage.getItem('iptv_favorites');
