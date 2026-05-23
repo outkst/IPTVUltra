@@ -2140,6 +2140,7 @@ document.addEventListener('keydown', (e) => {
 
     if (mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
+        if (!confirmDialog.classList.contains('hidden')) return;
         confirmDialog.classList.remove('hidden');
         const yesHandler = () => {
             goToHomeScreen();
