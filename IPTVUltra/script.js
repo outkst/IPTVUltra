@@ -2091,6 +2091,10 @@ document.addEventListener('keyup', (e) => {
 
 document.addEventListener('fullscreenchange', () => {
     showTopControls();
+    if (!document.fullscreenElement) {
+        _holdKeyDir = null;
+        if (_isHolding()) _stopHold();
+    }
 });
 
 // Hold Left/Right in fullscreen: short-press = ±3s seek; hold = trick play
