@@ -2122,7 +2122,7 @@ document.addEventListener('keyup', (e) => {
     _holdKeyDir = null;
     if (_isHolding()) {
         _stopHold();
-    } else if (held < HOLD_THRESHOLD_MS) {
+    } else if (dir && held < HOLD_THRESHOLD_MS) {
         _seekBy(dir === 'left' ? -3 : 3);
     }
     showTopControls();
