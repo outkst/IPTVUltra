@@ -101,6 +101,88 @@ let controlsTimeout = null;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
 
+let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
+let _holdKeyStart = 0;
+const HOLD_THRESHOLD_MS = 500;
+
+// Trick-play (hold-to-rewind / hold-to-FF)
+const _REWIND_RAMP = [
+    { after: 0,    speed: -1 },
+    { after: 1500, speed: -2 },
+    { after: 4000, speed: -4 },
+    { after: 8000, speed: -8 },
+];
+const _FF_RAMP = [
+    { after: 0,    speed: 2 },
+    { after: 1500, speed: 4 },
+    { after: 4000, speed: 8 },
+];
+let _trickInterval  = null;
+let _trickHoldStart = 0;
+let _trickHoldDir   = null;  // 'left' | 'right' | null — null means not in trick play
+
+function _seekRange() {
+    if (videoPlayer.seekable && videoPlayer.seekable.length > 0)
+        return { start: videoPlayer.seekable.start(0), end: videoPlayer.seekable.end(0) };
+    return { start: 0, end: videoPlayer.duration || 0 };
+}
+
+function _seekBy(seconds) {
+    const range = _seekRange();
+    videoPlayer.currentTime = Math.max(range.start, Math.min(range.end - 1, videoPlayer.currentTime + seconds));
+    videoPlayer.play().catch(() => {});
+}
+
+function _getRampSpeed(ramp, heldMs) {
+    let speed = ramp[0].speed;
+    for (const step of ramp) { if (heldMs >= step.after) speed = step.speed; }
+    return speed;
+}
+
+function _showTrickBadge(text) {
+    const el = document.getElementById('pbTrickBadge');
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = '';
+}
+
+function _hideTrickBadge() {
+    const el = document.getElementById('pbTrickBadge');
+    if (el) el.style.display = 'none';
+}
+
+function _startHold(dir) {
+    if (_trickHoldDir) return;
+    _trickHoldDir   = dir;
+    _trickHoldStart = Date.now();
+    videoPlayer.pause();
+    const ramp = dir === 'left' ? _REWIND_RAMP : _FF_RAMP;
+    _trickInterval = setInterval(() => {
+        const heldMs = Date.now() - _trickHoldStart;
+        const speed  = _getRampSpeed(ramp, heldMs);
+        const range  = _seekRange();
+        if (dir === 'left') {
+            videoPlayer.currentTime = Math.max(range.start, videoPlayer.currentTime + speed * 0.1);
+            _showTrickBadge('◀◀ ' + Math.abs(speed) + '×');
+        } else {
+            videoPlayer.currentTime = Math.min(range.end - 1, videoPlayer.currentTime + speed * 0.1);
+            _showTrickBadge('▶▶ ' + speed + '×');
+            if (videoPlayer.currentTime >= range.end - 1) _stopHold();
+        }
+    }, 100);
+}
+
+function _stopHold() {
+    if (_trickInterval) { clearInterval(_trickInterval); _trickInterval = null; }
+    videoPlayer.playbackRate = 1;
+    _trickHoldDir   = null;
+    _trickHoldStart = 0;
+    _hideTrickBadge();
+    videoPlayer.play().catch(() => {});
+}
+
+function _isHolding() { return _trickHoldDir !== null; }
+
 const LANG_NAMES = {
     // Western Europe
     en: 'English', fr: 'French', de: 'German', it: 'Italian', es: 'Spanish', pt: 'Portuguese',
