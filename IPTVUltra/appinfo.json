@@ -14,7 +14,7 @@
   "resolution": "1920x1080",
   "handlesRelaunch": false,
   "transparent": false,
-  "disableBackHistoryAPI": false,
+  "disableBackHistoryAPI": true,
   "noSplashOnLaunch": false,
   "fullscreen": true,
   "supportTouchMode": false,

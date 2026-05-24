@@ -2113,7 +2113,7 @@ document.addEventListener('keydown', (e) => {
     setTimeout(() => {
         if (_holdKeyDir === capturedDir) _startHold(capturedDir);
     }, HOLD_THRESHOLD_MS);
-});
+}, true);
 
 document.addEventListener('keyup', (e) => {
     const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
@@ -2132,7 +2132,7 @@ document.addEventListener('keyup', (e) => {
     showTopControls();
 });
 
-// Back/Return button (webOS keyCode 461) — context-dependent
+// Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
 
@@ -2162,11 +2162,18 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
-    // Start page: fall through — webOS handles natively ("Exit app?" prompt)
-});
+    // Start page: show platform exit prompt (disableBackHistoryAPI=true so we must call explicitly)
+    if (typeof webOS !== 'undefined' && webOS.platformBack) webOS.platformBack();
+}, true);
 
 
 // ----- Initialization -----
+// Redirect native <video> fullscreen requests to videoArea so sibling overlays
+// (trick-play badge, channel info tag, controls) remain visible in fullscreen.
+videoPlayer.requestFullscreen = () => videoArea.requestFullscreen().catch(() => {});
+if ('webkitRequestFullscreen' in videoPlayer)
+    videoPlayer.webkitRequestFullscreen = () => videoArea.requestFullscreen().catch(() => {});
+
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
 loadSavedPlaylists();
