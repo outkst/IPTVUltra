@@ -21,7 +21,6 @@ const playback = (() => {
   let _player      = null;   // shaka.Player
   let _video       = null;   // <video> element
   let _isDVR       = false;
-  let _nativeMode  = false;  // true when Shaka failed and we fell back to video.src
   let _rateIndex = 2;     // index into PLAYBACK_RATES (default 1×)
   let _trickState = 'NORMAL'; // 'NORMAL' | 'REWINDING' | 'FAST_FWD'
   let _holdDir   = null;  // 'left' | 'right' | null
@@ -117,40 +116,16 @@ const playback = (() => {
     if (!_player) return;
     _stopTrickPlay();
     _rateIndex = 2;
-    _nativeMode = false;
     _showRateBadge(1);
-    try {
-      await _player.load(url);
-      const range = _player.seekRange();
-      _isDVR = (range.end - range.start) > 30;
-      _video.play().catch(() => {});
-      _updateSeekBar();
-    } catch (err) {
-      // Shaka failed — most likely CORS on IPTV server; fall back to native video.src
-      console.warn('playback: Shaka load failed (code ' + (err.code || err) + '), falling back to native src');
-      try { await _player.unload(); } catch (_) {}
-      _nativeMode = true;
-      _isDVR = false;
-      _video.src = url;
-      _video.load();
-      _video.play().catch(() => {});
-      // Detect DVR window via native seekable range after metadata loads
-      _video.addEventListener('loadedmetadata', function onMeta() {
-        _video.removeEventListener('loadedmetadata', onMeta);
-        if (_video.seekable && _video.seekable.length > 0) {
-          _isDVR = (_video.seekable.end(0) - _video.seekable.start(0)) > 30;
-        }
-        _updateSeekBar();
-      }, { once: true });
-    }
+    await _player.load(url);
+    const range = _player.seekRange();
+    _isDVR = (range.end - range.start) > 30;
+    _video.play().catch(() => {});
+    _updateSeekBar();
   }
 
   function _seekRange() {
-    if (_nativeMode || !_player) {
-      if (_video && _video.seekable && _video.seekable.length > 0)
-        return { start: _video.seekable.start(0), end: _video.seekable.end(0) };
-      return { start: 0, end: _video ? (_video.duration || 0) : 0 };
-    }
+    if (!_player) return { start: 0, end: _video ? (_video.duration || 0) : 0 };
     return _player.seekRange();
   }
 
@@ -221,9 +196,7 @@ const playback = (() => {
   }
 
   function getStats() {
-    if (!_video) return null;
-    if (_nativeMode) return { width: _video.videoWidth, height: _video.videoHeight, frameRate: '—', videoCodec: '— (native)', audioCodec: '—', bandwidth: '—', estimatedBandwidth: '—', liveLatency: '—', bufferAhead: '—', droppedFrames: 0, corruptedFrames: 0, loadLatency: '—' };
-    if (!_player) return null;
+    if (!_video || !_player) return null;
     const stats  = _player.getStats();
     const tracks = _player.getVariantTracks();
     const active = tracks.find(t => t.active) || {};
@@ -252,7 +225,7 @@ const playback = (() => {
   }
 
   function getTrackLists() {
-    if (_nativeMode || !_player) return { audio: [], subtitles: [], quality: [] };
+    if (!_player) return { audio: [], subtitles: [], quality: [] };
     const variantTracks = _player.getVariantTracks();
 
     // Audio — deduplicate by audioId
@@ -330,7 +303,6 @@ const playback = (() => {
     if (_player) { _player.destroy(); _player = null; }
     _video = null;
     _isDVR = false;
-    _nativeMode = false;
     _rateIndex = 2;
   }
 
