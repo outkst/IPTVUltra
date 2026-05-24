@@ -21,6 +21,8 @@ let epgIdMap = new Map();     // lowercase string -> actual channelId key in epg
 let epgLoading = false;
 let currentEpgUrl = '';
 let epgRefreshTimer = null;
+let _epgAbortController = null;
+let _m3uAbortController = null;
 let epgFocusedRowIdx = 0;     // remote-cursor row in EPG guide (independent of playing channel)
 
 let channelIndexMap = new Map(); // channel object → its index in channels[]
@@ -80,6 +82,8 @@ const clearAllBtn = document.getElementById('clearAllBtn');
 const startDemoBtn = document.getElementById('startDemoBtn');
 const confirmYes = document.getElementById('confirmYes');
 const confirmNo = document.getElementById('confirmNo');
+const confirmTitle = document.getElementById('confirmTitle');
+const confirmMessage = document.getElementById('confirmMessage');
 const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
@@ -294,6 +298,8 @@ function getNextProgramme(tvgId) {
 async function loadEPG(url) {
     if (epgLoading) return;
     epgLoading = true;
+    if (_epgAbortController) _epgAbortController.abort();
+    _epgAbortController = new AbortController();
     epgData.clear();
     epgIdMap.clear();
     currentEpgUrl = url;
@@ -312,7 +318,7 @@ async function loadEPG(url) {
 
     showEPGToast('Downloading EPG data …', 'loading');
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: _epgAbortController.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const reader = response.body.getReader();
 
@@ -422,6 +428,7 @@ async function loadEPG(url) {
         }, 3000);
     } finally {
         epgLoading = false;
+        _epgAbortController = null;
         buffer = null;
     }
 }
@@ -554,6 +561,8 @@ async function parseM3UStreaming(content) {
 async function loadM3UFromUrl(url, epgUrl = '') {
     if (isLoading) return;
     isLoading = true;
+    if (_m3uAbortController) _m3uAbortController.abort();
+    _m3uAbortController = new AbortController();
     epgData.clear();
     epgIdMap.clear();
     currentEpgUrl = epgUrl;
@@ -561,7 +570,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
     updateStartStatus(`Fetching playlist...`, false, false, true, 0);
     showLoading(true, 'Fetching playlist...');
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: _m3uAbortController.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         let content = await response.text();
         updateStartStatus(`Downloaded ${(content.length / 1024 / 1024).toFixed(1)} MB, parsing...`, false, false, true, 20);
@@ -588,10 +597,13 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         // Start EPG load in background after playlist is ready
         if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
     } catch (err) {
-        updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
-        setLoadSelectedButtonEnabled(true);
+        if (err.name !== 'AbortError') {
+            updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
+            setLoadSelectedButtonEnabled(true);
+        }
     } finally {
         isLoading = false;
+        _m3uAbortController = null;
         showLoading(false);
         setTimeout(() => { if (!startPage.classList.contains('hidden')) updateStartStatus('Ready', false, false, false, 0); }, 3000);
     }
@@ -1133,18 +1145,84 @@ function reloadStream() {
     showTopControls();
 }
 
+function showConfirmDialog(title, message, onYes) {
+    if (!confirmDialog.classList.contains('hidden')) return;
+    confirmTitle.textContent = title;
+    confirmMessage.textContent = message;
+    confirmYes.textContent = 'Yes';
+    confirmNo.textContent = 'Cancel';
+    confirmDialog.classList.remove('hidden');
+    setTimeout(() => confirmNo.focus(), 50);
+    const yesHandler = () => { onYes(); confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
+    const noHandler = () => { confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
+    confirmYes.addEventListener('click', yesHandler);
+    confirmNo.addEventListener('click', noHandler);
+}
+
 function goToHomeScreen() {
+    // Abort any in-flight fetches
+    if (_epgAbortController) { _epgAbortController.abort(); _epgAbortController = null; }
+    if (_m3uAbortController) { _m3uAbortController.abort(); _m3uAbortController = null; }
+
+    // Stop all timers
     if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
+    if (controlsTimeout) { clearTimeout(controlsTimeout); controlsTimeout = null; }
+    if (infoHideTimeout) { clearTimeout(infoHideTimeout); infoHideTimeout = null; }
+    if (_epgToastTimer) { clearTimeout(_epgToastTimer); _epgToastTimer = null; }
+
+    // Dismiss EPG toast immediately
+    const _toast = document.getElementById('epgToast');
+    if (_toast) _toast.classList.remove('epg-toast--visible');
+
+    // Clear EPG guide virtual scroll
+    epgRenderedRows.clear();
+    const _scrollOuter = document.getElementById('epgScrollOuter');
+    if (epgVirtualScrollListener && _scrollOuter) {
+        _scrollOuter.removeEventListener('scroll', epgVirtualScrollListener);
+        epgVirtualScrollListener = null;
+    }
+    _epgWinStart = 0; _epgWinEnd = 0; _epgTotalGuideW = 0; _epgSkeletonWinStart = 0;
+
+    // Clear all data
+    epgData.clear();
+    epgIdMap.clear();
+    epgLoading = false;
+    currentEpgUrl = '';
+    channels = [];
+    currentFilteredChannels = [];
+    groupsList = [];
+    channelIndexMap.clear();
+    _searchCache = { query: null, result: null };
+    currentChannelIndex = -1;
+    lastChannelIndex = -1;
+    currentSearchQuery = '';
+    selectedPlaylistId = null;
+
+    // Reset app state
     epgMode = false;
     currentPlaylistType = null;
+    isLoading = false;
+
+    // Stop and clear video
     videoPlayer.pause();
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
+
+    // Clear DOM lists so stale content isn't briefly visible on next load
+    const _chanList = document.getElementById('channelList');
+    if (_chanList) _chanList.innerHTML = '';
+    const _grpList = document.getElementById('groupsList');
+    if (_grpList) _grpList.innerHTML = '';
+    const _grpPinned = document.getElementById('groupsPinned');
+    if (_grpPinned) _grpPinned.innerHTML = '';
+    const _epgBody = document.getElementById('epgBody');
+    if (_epgBody) _epgBody.innerHTML = '';
+
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
-    renderSavedPlaylists();
-    statusArea.innerText = '✨ Ready';
-    setLoadSelectedButtonEnabled(true);
-    isLoading = false;
     showLoading(false);
+    renderSavedPlaylists();
+    setLoadSelectedButtonEnabled(true);
     updateStartStatus('Ready', false, false, false, 0);
     setTimeout(() => { updateFocusableElements(); focusElement(0); }, 100);
 }
@@ -1987,14 +2065,11 @@ tabM3u.addEventListener('click', () => switchTab('m3u'));
 tabXtream.addEventListener('click', () => switchTab('xtream'));
 startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
-    confirmDialog.classList.remove('hidden');
-    const yesHandler = () => { clearAllPlaylists(); confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
-    const noHandler = () => { confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
-    confirmYes.addEventListener('click', yesHandler);
-    confirmNo.addEventListener('click', noHandler);
+    showConfirmDialog('⚠️ Clear All Playlists', 'Are you sure you want to clear all saved playlists?', clearAllPlaylists);
 });
 infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
+
 const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
 if (epgTimePrevBtn) epgTimePrevBtn.addEventListener('click', () => scrollEPGTimeBy(-30));
@@ -2135,7 +2210,6 @@ document.addEventListener('keyup', (e) => {
 // Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
-    console.log('[Back] fullscreenElement:', document.fullscreenElement, 'id:', document.fullscreenElement && document.fullscreenElement.id);
 
     if (document.fullscreenElement) {
         e.preventDefault();
@@ -2145,7 +2219,7 @@ document.addEventListener('keydown', (e) => {
 
     if (mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
-        goToHomeScreen();
+        showConfirmDialog('🏠 Return to Home', 'Return to the home screen?', goToHomeScreen);
         return;
     }
 
@@ -2155,21 +2229,6 @@ document.addEventListener('keydown', (e) => {
 
 
 // ----- Initialization -----
-// Redirect native <video> fullscreen requests to videoArea so sibling overlays
-// (trick-play badge, channel info tag, controls) remain visible in fullscreen.
-// Intercept all fullscreen entry paths on the video element so videoArea becomes
-// the fullscreen element, keeping sibling overlays (badge, controls) visible.
-['requestFullscreen', 'webkitRequestFullscreen', 'webkitEnterFullScreen', 'mozRequestFullScreen', 'msRequestFullscreen'].forEach(method => {
-    if (method in videoPlayer || method in HTMLVideoElement.prototype) {
-        Object.defineProperty(videoPlayer, method, {
-            configurable: true,
-            value: function () {
-                console.log('[FS] intercepted:', method);
-                return videoArea.requestFullscreen().catch(e => console.error('[FS] videoArea.requestFullscreen failed:', e));
-            }
-        });
-    }
-});
 
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
