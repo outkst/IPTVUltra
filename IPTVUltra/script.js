@@ -2135,6 +2135,7 @@ document.addEventListener('keyup', (e) => {
 // Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+    console.log('[Back] fullscreenElement:', document.fullscreenElement, 'id:', document.fullscreenElement && document.fullscreenElement.id);
 
     if (document.fullscreenElement) {
         e.preventDefault();
@@ -2144,21 +2145,7 @@ document.addEventListener('keydown', (e) => {
 
     if (mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
-        if (!confirmDialog.classList.contains('hidden')) return;
-        confirmDialog.classList.remove('hidden');
-        const yesHandler = () => {
-            goToHomeScreen();
-            confirmDialog.classList.add('hidden');
-            confirmYes.removeEventListener('click', yesHandler);
-            confirmNo.removeEventListener('click', noHandler);
-        };
-        const noHandler = () => {
-            confirmDialog.classList.add('hidden');
-            confirmYes.removeEventListener('click', yesHandler);
-            confirmNo.removeEventListener('click', noHandler);
-        };
-        confirmYes.addEventListener('click', yesHandler);
-        confirmNo.addEventListener('click', noHandler);
+        goToHomeScreen();
         return;
     }
 
@@ -2170,9 +2157,19 @@ document.addEventListener('keydown', (e) => {
 // ----- Initialization -----
 // Redirect native <video> fullscreen requests to videoArea so sibling overlays
 // (trick-play badge, channel info tag, controls) remain visible in fullscreen.
-videoPlayer.requestFullscreen = () => videoArea.requestFullscreen().catch(() => {});
-if ('webkitRequestFullscreen' in videoPlayer)
-    videoPlayer.webkitRequestFullscreen = () => videoArea.requestFullscreen().catch(() => {});
+// Intercept all fullscreen entry paths on the video element so videoArea becomes
+// the fullscreen element, keeping sibling overlays (badge, controls) visible.
+['requestFullscreen', 'webkitRequestFullscreen', 'webkitEnterFullScreen', 'mozRequestFullScreen', 'msRequestFullscreen'].forEach(method => {
+    if (method in videoPlayer || method in HTMLVideoElement.prototype) {
+        Object.defineProperty(videoPlayer, method, {
+            configurable: true,
+            value: function () {
+                console.log('[FS] intercepted:', method);
+                return videoArea.requestFullscreen().catch(e => console.error('[FS] videoArea.requestFullscreen failed:', e));
+            }
+        });
+    }
+});
 
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
