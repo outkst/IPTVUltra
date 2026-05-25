@@ -1374,10 +1374,7 @@ function buildEPGRow(i) {
     const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
     const favId = ch.tvgId || `idx_${origIdx}`;
     const isFav = favoriteIds.has(favId);
-    const labelHtml = `<div class="epg-ch-label">${logoSrc
-        ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
-        : '<span class="epg-ch-no-logo">📺</span>'
-        }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
     const resolvedId = resolveEpgId(ch.tvgId);
     const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
