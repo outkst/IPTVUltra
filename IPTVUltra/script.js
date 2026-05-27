@@ -113,10 +113,6 @@ const STALL_CHECK_INTERVAL_MS = 2000;
 const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
 
 
-let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
-let _holdKeyStart = 0;
-const HOLD_THRESHOLD_MS = 500;
-
 // Trick-play (hold-to-rewind / hold-to-FF)
 const _REWIND_RAMP = [
     { after: 0,    speed: -1 },
