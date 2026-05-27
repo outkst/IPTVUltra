@@ -118,6 +118,22 @@ const playback = (() => {
       },
     });
     _player.addEventListener('error', e => console.error('Shaka error:', e.detail));
+
+    // Proxy sessions are created asynchronously — a 404 on a manifest means
+    // the session isn't ready yet. Wait briefly and let Shaka retry.
+    _player.getNetworkingEngine().registerResponseFilter((type, response) => {
+      const MANIFEST = shaka.net.NetworkingEngine.RequestType.MANIFEST;
+      if (type === MANIFEST && response.status === 404) {
+        return new Promise((_, reject) => setTimeout(() => {
+          reject(new shaka.util.Error(
+            shaka.util.Error.Severity.RECOVERABLE,
+            shaka.util.Error.Category.NETWORK,
+            shaka.util.Error.Code.BAD_HTTP_STATUS,
+            response.uri, response.status
+          ));
+        }, 1500));
+      }
+    });
   }
 
   function isActive() { return _player !== null; }
