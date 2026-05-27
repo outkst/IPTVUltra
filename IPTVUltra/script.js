@@ -904,7 +904,12 @@ function selectChannel(index) {
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
+    showLoading(true, `Loading ${ch.name}…`);
+    const onCanPlay = () => { showLoading(false); videoPlayer.removeEventListener('canplay', onCanPlay); };
+    videoPlayer.addEventListener('canplay', onCanPlay);
     playback.loadChannel(ch.url).catch(err => {
+        showLoading(false);
+        videoPlayer.removeEventListener('canplay', onCanPlay);
         statusArea.innerText = `⚠️ Failed to load stream: ${err.message || err}`;
     });
     channelInfoTag.innerText = `📺 ${ch.name}`;
@@ -1176,10 +1181,13 @@ function goToHomeScreen() {
     isLoading = false;
     playback.destroy();
     playback.init(videoPlayer);
-    // Move panels back to standardView container in case they were moved to EPG
+    // Move video container and panels back to standardView in case they were moved to EPG
     const videoArea = document.getElementById('videoArea');
     const pbPanel = document.getElementById('playbackPanel');
     const spPanel = document.getElementById('settingsPanel');
+    const _sc = document.getElementById('shakaContainer');
+    const _videoToRestore = _sc || videoPlayer;
+    if (videoArea && _videoToRestore && _videoToRestore.parentNode !== videoArea) videoArea.appendChild(_videoToRestore);
     if (videoArea && pbPanel && pbPanel.parentNode !== videoArea) videoArea.appendChild(pbPanel);
     if (videoArea && spPanel && spPanel.parentNode !== videoArea) videoArea.appendChild(spPanel);
     videoPlayer.pause();
@@ -1311,12 +1319,14 @@ function enterEPGMode() {
     // Sync EPG search input with current query
     const epgSI = document.getElementById('epgSearchInput');
     if (epgSI) epgSI.value = currentSearchQuery;
-    // Move <video> and panels into the EPG video container
+    // Move video (inside shakaContainer) and panels into the EPG video container
     const wrap = document.getElementById('epgVideoWrap');
     const pbPanel = document.getElementById('playbackPanel');
     const spPanel = document.getElementById('settingsPanel');
+    const _sc = document.getElementById('shakaContainer');
     if (wrap) {
-        if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
+        const videoToMove = _sc || videoPlayer;
+        if (videoToMove.parentNode !== wrap) wrap.appendChild(videoToMove);
         if (pbPanel && pbPanel.parentNode !== wrap) wrap.appendChild(pbPanel);
         if (spPanel && spPanel.parentNode !== wrap) wrap.appendChild(spPanel);
     }
@@ -1973,8 +1983,11 @@ function selectEPGFocusedChannel() {
 }
 
 function handleRemoteNav(e) {
-    // Settings panel takes over all remote nav when open in fullscreen
-    if (_settingsOpen && document.fullscreenElement) {
+    // Confirm dialog is open — let the focused button receive the event natively
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
+
+    // Settings panel takes over all remote nav whenever it is open
+    if (_settingsOpen) {
         _handleSettingsKey(e);
         return;
     }
@@ -2444,7 +2457,7 @@ function _renderStreamInfo() {
         ) +
         divider() +
         section('Player',
-            row('Engine', playback.isActive() ? 'Shaka v5.1.6' : 'Native (Shaka unavailable)', playback.isActive() ? 'good' : 'warn')
+            row('Engine', playback.isActive() ? ('Shaka v5.1.6' + (playback.isUiActive() ? ' + UI' : '')) : 'Native (Shaka unavailable)', playback.isActive() ? 'good' : 'warn')
         );
 }
 
@@ -2513,8 +2526,6 @@ if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); 
 
 const pbGearBtn = document.getElementById('pbGearBtn');
 if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
-const epgGearBtn = document.getElementById('epgGearBtn');
-if (epgGearBtn) epgGearBtn.addEventListener('click', () => { _openSettings(); });
 // Audio/Subtitle buttons are superseded by the settings panel
 if (typeof audioBtn !== 'undefined' && audioBtn) audioBtn.style.display = 'none';
 if (typeof subtitleBtn !== 'undefined' && subtitleBtn) subtitleBtn.style.display = 'none';

@@ -1525,11 +1525,149 @@ body {
     position: relative;
 }
 
+/* Shaka UI container — fills video-area or epg-video-wrap absolutely */
+#shakaContainer {
+    position: absolute;
+    inset: 0;
+}
+
 video {
     width: 100%;
     height: 100%;
     object-fit: contain;
     background: black;
+}
+
+/* ── Shaka built-in UI overrides ─────────────────────────── */
+
+/* Only show the overflow (⋮) button strip, hide Shaka's seek bar */
+.shaka-controls-container[shown="true"],
+.shaka-controls-container[casting="true"] {
+    background: transparent !important;
+}
+
+/* Control bar sits below our playback-panel (z-index 50) */
+.shaka-bottom-controls {
+    z-index: 30 !important;
+    padding: 0 12px 10px !important;
+}
+
+/* Button panel — play/pause left, overflow + fullscreen right */
+.shaka-controls-button-panel {
+    padding: 4px 0 !important;
+    gap: 12px !important;
+}
+
+/* All icon buttons */
+.shaka-controls-button-panel button {
+    color: rgba(255, 255, 255, 0.85) !important;
+    background: transparent !important;
+    border: none !important;
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 50% !important;
+    font-size: 1.25rem !important;
+    cursor: pointer !important;
+}
+
+.shaka-controls-button-panel button:focus,
+.shaka-controls-button-panel button:hover {
+    color: #fff !important;
+    background: rgba(44, 80, 220, 0.65) !important;
+    outline: 2px solid #6c8eff !important;
+    outline-offset: 2px !important;
+}
+
+/* Overflow / sub-menu panels */
+.shaka-overflow-menu,
+.shaka-audio-languages-menu,
+.shaka-text-languages-menu,
+.shaka-resolutions-menu,
+.shaka-playback-rates-menu,
+.shaka-statistics-container {
+    background: #1a1a2e !important;
+    border: 1px solid #333 !important;
+    border-radius: 6px !important;
+    min-width: 220px !important;
+    padding: 4px 0 !important;
+    bottom: 52px !important;
+    right: 8px !important;
+}
+
+.shaka-overflow-menu button,
+.shaka-audio-languages-menu button,
+.shaka-text-languages-menu button,
+.shaka-resolutions-menu button,
+.shaka-playback-rates-menu button {
+    color: #ddd !important;
+    font-size: 0.95rem !important;
+    padding: 11px 18px !important;
+    text-align: left !important;
+    width: 100% !important;
+    background: transparent !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+}
+
+.shaka-overflow-menu button:focus,
+.shaka-overflow-menu button:hover,
+.shaka-audio-languages-menu button:focus,
+.shaka-audio-languages-menu button:hover,
+.shaka-text-languages-menu button:focus,
+.shaka-text-languages-menu button:hover,
+.shaka-resolutions-menu button:focus,
+.shaka-resolutions-menu button:hover,
+.shaka-playback-rates-menu button:focus,
+.shaka-playback-rates-menu button:hover {
+    background: rgba(44, 80, 220, 0.5) !important;
+    color: #fff !important;
+    outline: none !important;
+}
+
+.shaka-current-selection-span {
+    color: #8bb !important;
+    font-size: 0.82rem !important;
+    margin-left: auto !important;
+}
+
+/* Back arrow button in sub-menus */
+.shaka-back-to-overflow-button {
+    border-bottom: 1px solid #333 !important;
+    margin-bottom: 2px !important;
+    color: #aaa !important;
+    font-size: 0.9rem !important;
+    padding: 10px 14px !important;
+    background: transparent !important;
+    width: 100% !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important;
+    cursor: pointer !important;
+}
+
+/* Statistics table inside the overflow stats view */
+.shaka-statistics-container {
+    padding: 10px 14px !important;
+    color: #ccc !important;
+    font-size: 0.82rem !important;
+    min-width: 260px !important;
+}
+
+.shaka-statistics-container .shaka-stat-value {
+    color: #8ec5fc !important;
+}
+
+/* Remove the large centered play/pause overlay button */
+.shaka-play-button {
+    display: none !important;
+}
+
+/* Spinner / muted styles for empty tracks */
+.shaka-controls-container .material-icons-round {
+    font-size: 1.1rem !important;
 }
 
 .video-controls-top {

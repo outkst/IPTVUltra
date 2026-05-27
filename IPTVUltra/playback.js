@@ -19,6 +19,7 @@ const playback = (() => {
 
   // ── State ───────────────────────────────────────────────────────────────────
   let _player      = null;   // shaka.Player
+  let _ui          = null;   // shaka.ui.Overlay
   let _video       = null;   // <video> element
   let _isDVR       = false;
   let _rateIndex = 2;     // index into PLAYBACK_RATES (default 1×)
@@ -102,23 +103,64 @@ const playback = (() => {
     _video = videoElement;
     _player = new shaka.Player();
     await _player.attach(_video);
+    // m3u-editor proxy spins up FFmpeg on first request and returns 503 while
+    // it starts. Configure both manifest and segment retry params to wait it out.
+    const retryParams = {
+      maxAttempts: 8,
+      baseDelay: 2000,
+      backoffFactor: 1.5,
+      fuzzFactor: 0.1,
+      timeout: 90000,
+    };
     _player.configure({
+      manifest: {
+        retryParameters: retryParams,
+      },
       streaming: {
-        preferNativeHls: true,
-        bufferingGoal: 30,
-        bufferBehind: 30,
+        bufferingGoal: 10,
+        bufferBehind: 5,
         rebufferingGoal: 2,
         stallEnabled: true,
         stallThreshold: 5,
-        retryParameters: {
-          maxAttempts: 4,
-          baseDelay: 1000,
-          backoffFactor: 2,
-          timeout: 30000,
-        },
+        retryParameters: retryParams,
+      },
+      abr: {
+        defaultBandwidthEstimate: 2e6,
+        switchInterval: 8,
+        bandwidthUpgradeTarget: 0.85,
+        bandwidthDowngradeTarget: 0.95,
+        restrictions: { maxHeight: 1080 },
       },
     });
-    _player.addEventListener('error', e => console.error('Shaka error:', e.detail));
+    _player.addEventListener('error', e => {
+      const d = e.detail || {};
+      console.error('[DBG] Shaka error cat=', d.category, 'code=', d.code, 'data=', JSON.stringify(d.data), d.message);
+    });
+    _video.addEventListener('error', () => {
+      const ve = _video.error;
+      console.error('[DBG] video.error code=', ve && ve.code, 'msg=', ve && ve.message);
+    });
+
+    // Shaka built-in UI — overflow menu for audio/subtitle/quality/speed/stats
+    if (shaka.ui && shaka.ui.Overlay && _video.parentElement) {
+      try {
+        _ui = new shaka.ui.Overlay(_player, _video.parentElement, _video);
+        _ui.configure({
+          addSeekBar: false,
+          controlPanelElements: ['play_pause', 'spacer', 'overflow_menu', 'fullscreen'],
+          overflowMenuButtons: ['language', 'quality', 'captions', 'playback_rate', 'statistics'],
+          enableTooltips: false,
+          doubleClickForFullscreen: true,
+          singleClickForPlayAndPause: true,
+        });
+      } catch (uiErr) {
+        console.warn('playback: Shaka UI init failed', uiErr);
+        _ui = null;
+      }
+    }
+
+    // Apply after UI init — webOS hardware decoder, no JS transmuxing overhead
+    _player.configure({ streaming: { preferNativeHls: true } });
   }
 
   function isActive() { return _player !== null; }
@@ -130,24 +172,38 @@ const playback = (() => {
     return '';
   }
 
+  // Poll url with fetch() until it stops returning 503, then resolve.
+  // m3u-editor proxy returns 503 while FFmpeg is starting; Shaka v5 treats
+  // BAD_HTTP_STATUS as non-retriable so we must gate the load() ourselves.
+  async function _waitForProxy(url, timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(url, { cache: 'no-cache' });
+        console.log('[DBG] proxy warm status=', r.status);
+        if (r.status !== 503) return;
+      } catch (e) {
+        console.log('[DBG] proxy warm fetch error', e.message);
+      }
+      await new Promise(res => setTimeout(res, 500));
+    }
+    console.warn('[DBG] proxy warm timed out after', timeoutMs, 'ms');
+  }
+
   async function loadChannel(url) {
     if (!_player) return;
     _stopTrickPlay();
     _rateIndex = 2;
     _showRateBadge(1);
+    // Stop current playback immediately so the old channel doesn't keep
+    // playing while we wait for the proxy and Shaka to load the new one.
+    _video.pause();
     const mime = _mimeType(url);
-    // Proxy sessions are created asynchronously — retry the initial load a few
-    // times with a short delay to let the session initialize before giving up.
-    for (let attempt = 0; attempt < 4; attempt++) {
-      if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
-      try {
-        await _player.load(url, null, mime || undefined);
-        break;
-      } catch (err) {
-        if (attempt === 3) throw err;
-        console.warn('loadChannel attempt', attempt + 1, 'failed, retrying...', err.code);
-      }
+    // Wait for the proxy to be ready before handing the URL to Shaka.
+    if (mime === 'application/x-mpegurl') {
+      await _waitForProxy(url, 30000);
     }
+    await _player.load(url, null, mime || undefined);
     const range = _player.seekRange();
     _isDVR = (range.end - range.start) > 30;
     _video.play().catch(() => {});
@@ -258,13 +314,20 @@ const playback = (() => {
     if (!_player) return { audio: [], subtitles: [], quality: [] };
     const variantTracks = _player.getVariantTracks();
 
-    // Audio — deduplicate by audioId
+    // Audio — deduplicate by audioId (Shaka tracks)
     const seenAudio = new Set();
     const audio = [];
     for (const t of variantTracks) {
       if (t.audioId != null && !seenAudio.has(t.audioId)) {
         seenAudio.add(t.audioId);
         audio.push({ id: t.audioId, label: _audioLabel(t), active: t.active });
+      }
+    }
+    // Fallback: native audioTracks when preferNativeHls leaves Shaka with no audio info
+    if (audio.length === 0 && _video && _video.audioTracks && _video.audioTracks.length > 0) {
+      for (let i = 0; i < _video.audioTracks.length; i++) {
+        const t = _video.audioTracks[i];
+        audio.push({ id: 'nat_a_' + i, label: t.label || t.language || ('Audio ' + (i + 1)), active: t.enabled });
       }
     }
 
@@ -274,6 +337,18 @@ const playback = (() => {
     const subtitles = [{ id: null, label: 'Off', active: !anySubActive }];
     for (const t of textTracks) {
       subtitles.push({ id: t.id, label: t.label || t.language || 'Unknown', active: t.active && anySubActive });
+    }
+    // Fallback: native textTracks when preferNativeHls leaves Shaka with no text info
+    if (subtitles.length === 1 && _video && _video.textTracks && _video.textTracks.length > 0) {
+      for (let i = 0; i < _video.textTracks.length; i++) {
+        const t = _video.textTracks[i];
+        if (t.kind === 'subtitles' || t.kind === 'captions') {
+          subtitles.push({ id: 'nat_t_' + i, label: t.label || t.language || ('Sub ' + (i + 1)), active: t.mode === 'showing' });
+        }
+      }
+      // Recalculate active state for "Off"
+      const anyNatSubActive = subtitles.slice(1).some(s => s.active);
+      subtitles[0].active = !anyNatSubActive;
     }
 
     // Quality — sorted by height desc, Auto at top
@@ -294,13 +369,35 @@ const playback = (() => {
 
   function setAudioTrack(audioId) {
     if (!_player) return;
+    if (typeof audioId === 'string' && audioId.startsWith('nat_a_')) {
+      const idx = parseInt(audioId.slice(6), 10);
+      if (_video && _video.audioTracks) {
+        for (let i = 0; i < _video.audioTracks.length; i++) _video.audioTracks[i].enabled = (i === idx);
+      }
+      return;
+    }
     const match = _player.getVariantTracks().filter(t => t.audioId === audioId);
     if (match.length) _player.selectVariantTrack(match[0], true);
   }
 
   function setSubtitleTrack(id) {
     if (!_player) return;
-    if (id === null) { _player.setTextTrackVisibility(false); return; }
+    if (id === null) {
+      _player.setTextTrackVisibility(false);
+      if (_video && _video.textTracks) {
+        for (let i = 0; i < _video.textTracks.length; i++) _video.textTracks[i].mode = 'hidden';
+      }
+      return;
+    }
+    if (typeof id === 'string' && id.startsWith('nat_t_')) {
+      const idx = parseInt(id.slice(6), 10);
+      if (_video && _video.textTracks) {
+        for (let i = 0; i < _video.textTracks.length; i++) {
+          _video.textTracks[i].mode = (i === idx) ? 'showing' : 'hidden';
+        }
+      }
+      return;
+    }
     const track = _player.getTextTracks().find(t => t.id === id);
     if (track) { _player.selectTextTrack(track); _player.setTextTrackVisibility(true); }
   }
@@ -330,6 +427,7 @@ const playback = (() => {
 
   function destroy() {
     _stopTrickPlay();
+    if (_ui)     { _ui.destroy();     _ui = null; }
     if (_player) { _player.destroy(); _player = null; }
     _video = null;
     _isDVR = false;
@@ -342,6 +440,7 @@ const playback = (() => {
   function getRateIndex()      { return _rateIndex; }
   function getPlaybackRates()  { return [...PLAYBACK_RATES]; }
   function updateSeekBar()     { _updateSeekBar(); }
+  function isUiActive()        { return _ui !== null; }
 
   return {
     init, loadChannel, seekBy,
@@ -349,7 +448,7 @@ const playback = (() => {
     setRate, changeRate,
     getSeekInfo, getStats, getTrackLists,
     setAudioTrack, setSubtitleTrack, setQuality,
-    updateMediaSession, destroy, isActive,
+    updateMediaSession, destroy, isActive, isUiActive,
     getTrickState, isHolding, getRateIndex, getPlaybackRates, updateSeekBar,
   };
 })();

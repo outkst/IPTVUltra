@@ -114,7 +114,9 @@
 						</div>
 					</div>
 					<div class="video-area" id="videoArea">
-						<video id="videoPlayer" controls autoplay playsinline crossorigin="anonymous"></video>
+						<div id="shakaContainer">
+							<video id="videoPlayer" autoplay playsinline crossorigin="anonymous"></video>
+						</div>
 						<div id="loadingOverlay" class="loading-overlay hidden">
 							<div class="loading-spinner"></div>
 							<div class="loading-text">Loading playlist...</div>
@@ -172,9 +174,7 @@
 					<button id="epgFloatingGroupsBtn" class="epg-floating-groups-btn" style="display:none;" onclick="toggleGroupsColumn()">▶ Groups</button>
 					<div class="epg-top">
 						<div class="epg-video-wrap" id="epgVideoWrap">
-							<div class="video-controls-top-right" id="epgTopControls">
-								<button id="epgGearBtn" class="pb-gear-btn" style="position:absolute;top:8px;right:8px;">⚙</button>
-							</div>
+							<div class="video-controls-top-right" id="epgTopControls"></div>
 						</div>
 						<div class="epg-info-panel" id="epgInfoPanel">
 							<div class="epg-info-header">
