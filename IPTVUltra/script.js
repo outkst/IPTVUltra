@@ -21,6 +21,8 @@ let epgIdMap = new Map();     // lowercase string -> actual channelId key in epg
 let epgLoading = false;
 let currentEpgUrl = '';
 let epgRefreshTimer = null;
+let _epgAbortController = null;
+let _m3uAbortController = null;
 let epgFocusedRowIdx = 0;     // remote-cursor row in EPG guide (independent of playing channel)
 
 let channelIndexMap = new Map(); // channel object → its index in channels[]
@@ -78,6 +80,8 @@ const clearAllBtn = document.getElementById('clearAllBtn');
 const startDemoBtn = document.getElementById('startDemoBtn');
 const confirmYes = document.getElementById('confirmYes');
 const confirmNo = document.getElementById('confirmNo');
+const confirmTitle = document.getElementById('confirmTitle');
+const confirmMessage = document.getElementById('confirmMessage');
 const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
@@ -100,6 +104,96 @@ let _holdKeyStart = 0;
 const HOLD_THRESHOLD_MS = 500;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
+
+// Stall watchdog — detects frozen streams and auto-reloads
+let stallWatchdogTimer = null;
+let stallLastTime = -1;
+let stallCount = 0;
+const STALL_CHECK_INTERVAL_MS = 2000;
+const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
+
+
+let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
+let _holdKeyStart = 0;
+const HOLD_THRESHOLD_MS = 500;
+
+// Trick-play (hold-to-rewind / hold-to-FF)
+const _REWIND_RAMP = [
+    { after: 0,    speed: -1 },
+    { after: 1500, speed: -2 },
+    { after: 4000, speed: -4 },
+    { after: 8000, speed: -8 },
+];
+const _FF_RAMP = [
+    { after: 0,    speed: 2 },
+    { after: 1500, speed: 4 },
+    { after: 4000, speed: 8 },
+];
+let _trickInterval  = null;
+let _trickHoldStart = 0;
+let _trickHoldDir   = null;  // 'left' | 'right' | null — null means not in trick play
+
+function _seekRange() {
+    if (videoPlayer.seekable && videoPlayer.seekable.length > 0)
+        return { start: videoPlayer.seekable.start(0), end: videoPlayer.seekable.end(0) };
+    return { start: 0, end: videoPlayer.duration || 0 };
+}
+
+function _seekBy(seconds) {
+    const range = _seekRange();
+    videoPlayer.currentTime = Math.max(range.start, Math.min(range.end - 1, videoPlayer.currentTime + seconds));
+    videoPlayer.play().catch(() => {});
+}
+
+function _getRampSpeed(ramp, heldMs) {
+    let speed = ramp[0].speed;
+    for (const step of ramp) { if (heldMs >= step.after) speed = step.speed; }
+    return speed;
+}
+
+function _showTrickBadge(text) {
+    const el = document.getElementById('pbTrickBadge');
+    if (!el) return;
+    el.textContent = text;
+    el.style.display = '';
+}
+
+function _hideTrickBadge() {
+    const el = document.getElementById('pbTrickBadge');
+    if (el) el.style.display = 'none';
+}
+
+function _startHold(dir) {
+    if (_trickHoldDir) return;
+    _trickHoldDir   = dir;
+    _trickHoldStart = Date.now();
+    videoPlayer.pause();
+    const ramp = dir === 'left' ? _REWIND_RAMP : _FF_RAMP;
+    _trickInterval = setInterval(() => {
+        const heldMs = Date.now() - _trickHoldStart;
+        const speed  = _getRampSpeed(ramp, heldMs);
+        const range  = _seekRange();
+        if (dir === 'left') {
+            videoPlayer.currentTime = Math.max(range.start, videoPlayer.currentTime + speed * 0.1);
+            _showTrickBadge('◀◀ ' + Math.abs(speed) + '×');
+        } else {
+            videoPlayer.currentTime = Math.min(range.end - 1, videoPlayer.currentTime + speed * 0.1);
+            _showTrickBadge('▶▶ ' + speed + '×');
+            if (videoPlayer.currentTime >= range.end - 1) _stopHold();
+        }
+    }, 100);
+}
+
+function _stopHold() {
+    if (_trickInterval) { clearInterval(_trickInterval); _trickInterval = null; }
+    videoPlayer.playbackRate = 1;
+    _trickHoldDir   = null;
+    _trickHoldStart = 0;
+    _hideTrickBadge();
+    videoPlayer.play().catch(() => {});
+}
+
+function _isHolding() { return _trickHoldDir !== null; }
 
 const LANG_NAMES = {
     // Western Europe
@@ -212,6 +306,8 @@ function getNextProgramme(tvgId) {
 async function loadEPG(url) {
     if (epgLoading) return;
     epgLoading = true;
+    if (_epgAbortController) _epgAbortController.abort();
+    _epgAbortController = new AbortController();
     epgData.clear();
     epgIdMap.clear();
     currentEpgUrl = url;
@@ -230,7 +326,7 @@ async function loadEPG(url) {
 
     showEPGToast('Downloading EPG data …', 'loading');
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: _epgAbortController.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const reader = response.body.getReader();
 
@@ -340,6 +436,7 @@ async function loadEPG(url) {
         }, 3000);
     } finally {
         epgLoading = false;
+        _epgAbortController = null;
         buffer = null;
     }
 }
@@ -472,6 +569,8 @@ async function parseM3UStreaming(content) {
 async function loadM3UFromUrl(url, epgUrl = '') {
     if (isLoading) return;
     isLoading = true;
+    if (_m3uAbortController) _m3uAbortController.abort();
+    _m3uAbortController = new AbortController();
     epgData.clear();
     epgIdMap.clear();
     currentEpgUrl = epgUrl;
@@ -479,7 +578,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
     updateStartStatus(`Fetching playlist...`, false, false, true, 0);
     showLoading(true, 'Fetching playlist...');
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: _m3uAbortController.signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         let content = await response.text();
         updateStartStatus(`Downloaded ${(content.length / 1024 / 1024).toFixed(1)} MB, parsing...`, false, false, true, 20);
@@ -506,10 +605,13 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         // Start EPG load in background after playlist is ready
         if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
     } catch (err) {
-        updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
-        setLoadSelectedButtonEnabled(true);
+        if (err.name !== 'AbortError') {
+            updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
+            setLoadSelectedButtonEnabled(true);
+        }
     } finally {
         isLoading = false;
+        _m3uAbortController = null;
         showLoading(false);
         setTimeout(() => { if (!startPage.classList.contains('hidden')) updateStartStatus('Ready', false, false, false, 0); }, 3000);
     }
@@ -772,9 +874,37 @@ function renderChannelList() {
     renderVisible();
 }
 
+// ----- Stall Watchdog -----
+function startStallWatchdog() {
+    stopStallWatchdog();
+    stallLastTime = -1;
+    stallCount = 0;
+    stallWatchdogTimer = setInterval(function () {
+        if (videoPlayer.paused || currentChannelIndex < 0) { stallCount = 0; return; }
+        const t = videoPlayer.currentTime;
+        if (t === stallLastTime && videoPlayer.readyState < 3) {
+            stallCount++;
+            if (stallCount >= STALL_THRESHOLD_CHECKS) {
+                stallCount = 0;
+                stallLastTime = -1;
+                statusArea.innerText = '🔄 Buffering ...';
+                reloadStream();
+            }
+        } else {
+            stallCount = 0;
+            stallLastTime = t;
+        }
+    }, STALL_CHECK_INTERVAL_MS);
+}
+
+function stopStallWatchdog() {
+    if (stallWatchdogTimer) { clearInterval(stallWatchdogTimer); stallWatchdogTimer = null; }
+}
+
 // ----- Video Control -----
 function selectChannel(index) {
     if (!channels[index]) return;
+    stopStallWatchdog();
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
@@ -991,10 +1121,63 @@ function reloadStream() {
     }
 }
 
+function showConfirmDialog(title, message, onYes) {
+    if (!confirmDialog.classList.contains('hidden')) return;
+    confirmTitle.textContent = title;
+    confirmMessage.textContent = message;
+    confirmYes.textContent = 'Yes';
+    confirmNo.textContent = 'Cancel';
+    confirmDialog.classList.remove('hidden');
+    setTimeout(() => confirmNo.focus(), 50);
+    const yesHandler = () => { onYes(); confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
+    const noHandler = () => { confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
+    confirmYes.addEventListener('click', yesHandler);
+    confirmNo.addEventListener('click', noHandler);
+}
+
 function goToHomeScreen() {
+    // Abort any in-flight fetches
+    if (_epgAbortController) { _epgAbortController.abort(); _epgAbortController = null; }
+    if (_m3uAbortController) { _m3uAbortController.abort(); _m3uAbortController = null; }
+
+    // Stop all timers
     if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
+    if (controlsTimeout) { clearTimeout(controlsTimeout); controlsTimeout = null; }
+    if (infoHideTimeout) { clearTimeout(infoHideTimeout); infoHideTimeout = null; }
+    if (_epgToastTimer) { clearTimeout(_epgToastTimer); _epgToastTimer = null; }
+
+    // Dismiss EPG toast immediately
+    const _toast = document.getElementById('epgToast');
+    if (_toast) _toast.classList.remove('epg-toast--visible');
+
+    // Clear EPG guide virtual scroll
+    epgRenderedRows.clear();
+    const _scrollOuter = document.getElementById('epgScrollOuter');
+    if (epgVirtualScrollListener && _scrollOuter) {
+        _scrollOuter.removeEventListener('scroll', epgVirtualScrollListener);
+        epgVirtualScrollListener = null;
+    }
+    _epgWinStart = 0; _epgWinEnd = 0; _epgTotalGuideW = 0; _epgSkeletonWinStart = 0;
+
+    // Clear all data
+    epgData.clear();
+    epgIdMap.clear();
+    epgLoading = false;
+    currentEpgUrl = '';
+    channels = [];
+    currentFilteredChannels = [];
+    groupsList = [];
+    channelIndexMap.clear();
+    _searchCache = { query: null, result: null };
+    currentChannelIndex = -1;
+    lastChannelIndex = -1;
+    currentSearchQuery = '';
+    selectedPlaylistId = null;
+
+    // Reset app state
     epgMode = false;
     currentPlaylistType = null;
+    isLoading = false;
     playback.destroy();
     playback.init(videoPlayer);
     // Move panels back to standardView container in case they were moved to EPG
@@ -1004,13 +1187,24 @@ function goToHomeScreen() {
     if (videoArea && pbPanel && pbPanel.parentNode !== videoArea) videoArea.appendChild(pbPanel);
     if (videoArea && spPanel && spPanel.parentNode !== videoArea) videoArea.appendChild(spPanel);
     videoPlayer.pause();
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
+
+    // Clear DOM lists so stale content isn't briefly visible on next load
+    const _chanList = document.getElementById('channelList');
+    if (_chanList) _chanList.innerHTML = '';
+    const _grpList = document.getElementById('groupsList');
+    if (_grpList) _grpList.innerHTML = '';
+    const _grpPinned = document.getElementById('groupsPinned');
+    if (_grpPinned) _grpPinned.innerHTML = '';
+    const _epgBody = document.getElementById('epgBody');
+    if (_epgBody) _epgBody.innerHTML = '';
+
     startPage.classList.remove('hidden');
     mainApp.style.display = 'none';
-    renderSavedPlaylists();
-    statusArea.innerText = '✨ Ready';
-    setLoadSelectedButtonEnabled(true);
-    isLoading = false;
     showLoading(false);
+    renderSavedPlaylists();
+    setLoadSelectedButtonEnabled(true);
     updateStartStatus('Ready', false, false, false, 0);
     setTimeout(() => { updateFocusableElements(); focusElement(0); }, 100);
 }
@@ -1165,10 +1359,7 @@ function buildEPGRow(i) {
     const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
     const favId = ch.tvgId || `idx_${origIdx}`;
     const isFav = favoriteIds.has(favId);
-    const labelHtml = `<div class="epg-ch-label">${logoSrc
-        ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none'" onload="this.nextElementSibling.style.display='none'"><span class="epg-ch-no-logo">📺</span>`
-        : '<span class="epg-ch-no-logo">📺</span>'
-        }<span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
     const resolvedId = resolveEpgId(ch.tvgId);
     const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
@@ -1874,11 +2065,7 @@ tabM3u.addEventListener('click', () => switchTab('m3u'));
 tabXtream.addEventListener('click', () => switchTab('xtream'));
 startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
-    confirmDialog.classList.remove('hidden');
-    const yesHandler = () => { clearAllPlaylists(); confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
-    const noHandler = () => { confirmDialog.classList.add('hidden'); confirmYes.removeEventListener('click', yesHandler); confirmNo.removeEventListener('click', noHandler); };
-    confirmYes.addEventListener('click', yesHandler);
-    confirmNo.addEventListener('click', noHandler);
+    showConfirmDialog('⚠️ Clear All Playlists', 'Are you sure you want to clear all saved playlists?', clearAllPlaylists);
 });
 const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
@@ -2015,6 +2202,10 @@ document.addEventListener('keyup', (e) => {
         playback.seekBy(dir === 'left' ? -3 : 3);
     }
     showTopControls();
+    if (!document.fullscreenElement) {
+        _holdKeyDir = null;
+        if (_isHolding()) _stopHold();
+    }
 });
 
 document.addEventListener('fullscreenchange', () => {
@@ -2046,7 +2237,6 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
-    // Fullscreen: exit fullscreen, keep playing
     if (document.fullscreenElement) {
         e.preventDefault();
         document.exitFullscreen();
@@ -2056,16 +2246,13 @@ document.addEventListener('keydown', (e) => {
     // Main app visible (not start page): confirm return to home
     if (mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
-        if (typeof showConfirmDialog === 'function') {
-            showConfirmDialog('Return to home screen?', goToHomeScreen);
-        } else {
-            goToHomeScreen();
-        }
+        showConfirmDialog('🏠 Return to Home', 'Return to the home screen?', goToHomeScreen);
         return;
     }
 
-    // Start page: let webOS handle natively (system shows "Exit app?" prompt)
-});
+    // Start page: show platform exit prompt
+    if (typeof webOS !== 'undefined' && webOS.platformBack) webOS.platformBack();
+}, true);
 
 // ── Settings Panel State ─────────────────────────────────────────
 let _settingsOpen = false;

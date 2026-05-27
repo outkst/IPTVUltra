@@ -43,6 +43,86 @@ body {
     display: none;
 }
 
+.confirm-dialog {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.72);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.confirm-card {
+    background: #1a1d2e;
+    border: 1px solid rgba(108, 142, 255, 0.4);
+    border-radius: 24px;
+    padding: 52px 64px;
+    min-width: 500px;
+    max-width: 640px;
+    text-align: center;
+    box-shadow: 0 32px 64px rgba(0, 0, 0, 0.6);
+}
+
+.confirm-title {
+    font-size: 1.6rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 16px;
+}
+
+.confirm-message {
+    font-size: 1.1rem;
+    color: #99a;
+    margin-bottom: 44px;
+    line-height: 1.6;
+}
+
+.confirm-buttons {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+}
+
+.confirm-btn {
+    font-size: 1.1rem;
+    font-weight: 600;
+    padding: 16px 44px;
+    border-radius: 12px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    min-width: 150px;
+    outline: none;
+}
+
+.confirm-btn.yes {
+    background: transparent;
+    color: #99a;
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.confirm-btn.yes:hover,
+.confirm-btn.yes:focus {
+    background: rgba(255, 70, 70, 0.2);
+    border-color: #ff5555;
+    color: #fff;
+}
+
+.confirm-btn.no {
+    background: #6c8eff;
+    color: #fff;
+    border-color: #6c8eff;
+}
+
+.confirm-btn.no:hover,
+.confirm-btn.no:focus {
+    background: #8aa3ff;
+    border-color: #8aa3ff;
+}
+
 .start-card {
     background: rgba(30, 31, 36, 0.95);
     backdrop-filter: blur(20px);
@@ -944,16 +1024,34 @@ body {
     flex-shrink: 0;
 }
 
-.epg-ch-logo {
+.epg-ch-logo-wrap {
+    position: relative;
     width: 44px;
     height: 34px;
-    object-fit: contain;
     flex-shrink: 0;
 }
 
+.epg-ch-logo {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    z-index: 1;
+}
+
 .epg-ch-no-logo {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     font-size: 1.1rem;
-    flex-shrink: 0;
+}
+
+/* Hide placeholder when logo img is present and hasn't errored */
+.epg-ch-logo-wrap:has(.epg-ch-logo:not(.failed)) .epg-ch-no-logo {
+    opacity: 0;
 }
 
 .epg-ch-name {
@@ -1634,6 +1732,22 @@ video {
     font-size: 0.8rem;
     pointer-events: none;
     z-index: 16;
+}
+
+#pbTrickBadge {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.72);
+    color: #fff;
+    font-size: 2.4rem;
+    font-weight: 700;
+    padding: 18px 36px;
+    border-radius: 14px;
+    pointer-events: none;
+    z-index: 20;
+    letter-spacing: 0.05em;
 }
 
 .loading-overlay {
