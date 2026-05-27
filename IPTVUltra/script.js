@@ -105,6 +105,14 @@ let controlsTimeout = null;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
 
+// Stall watchdog — detects frozen streams and auto-reloads
+let stallWatchdogTimer = null;
+let stallLastTime = -1;
+let stallCount = 0;
+const STALL_CHECK_INTERVAL_MS = 2000;
+const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
+
+
 let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
 let _holdKeyStart = 0;
 const HOLD_THRESHOLD_MS = 500;
@@ -866,9 +874,37 @@ function renderChannelList() {
     renderVisible();
 }
 
+// ----- Stall Watchdog -----
+function startStallWatchdog() {
+    stopStallWatchdog();
+    stallLastTime = -1;
+    stallCount = 0;
+    stallWatchdogTimer = setInterval(function () {
+        if (videoPlayer.paused || currentChannelIndex < 0) { stallCount = 0; return; }
+        const t = videoPlayer.currentTime;
+        if (t === stallLastTime && videoPlayer.readyState < 3) {
+            stallCount++;
+            if (stallCount >= STALL_THRESHOLD_CHECKS) {
+                stallCount = 0;
+                stallLastTime = -1;
+                statusArea.innerText = '🔄 Buffering ...';
+                reloadStream();
+            }
+        } else {
+            stallCount = 0;
+            stallLastTime = t;
+        }
+    }, STALL_CHECK_INTERVAL_MS);
+}
+
+function stopStallWatchdog() {
+    if (stallWatchdogTimer) { clearInterval(stallWatchdogTimer); stallWatchdogTimer = null; }
+}
+
 // ----- Video Control -----
 function selectChannel(index) {
     if (!channels[index]) return;
+    stopStallWatchdog();
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
@@ -876,6 +912,7 @@ function selectChannel(index) {
     videoPlayer.src = ch.url;
     videoPlayer.load();
     videoPlayer.play().catch(e => console.log);
+    startStallWatchdog();
     channelInfoTag.innerText = `📺 ${ch.name}`;
     statusArea.innerText = `▶️ ${ch.name}`;
     if (epgMode) {
@@ -1134,12 +1171,14 @@ function toggleAudioPanel() {
 
 function reloadStream() {
     if (currentChannelIndex < 0) return;
+    stopStallWatchdog();
     const url = channels[currentChannelIndex].url;
     const wasPlaying = !videoPlayer.paused;
     videoPlayer.pause();
     videoPlayer.src = url;
     videoPlayer.load();
     if (wasPlaying) videoPlayer.play().catch(e => console.log);
+    startStallWatchdog();
     statusArea.innerText = '🔄 Reloading ...';
     setTimeout(() => statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`, 2000);
     showTopControls();
