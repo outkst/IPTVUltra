@@ -2441,6 +2441,10 @@ function _renderStreamInfo() {
             row('Dropped Frames', s.droppedFrames, valCls(s.droppedFrames)) +
             row('Corrupted', s.corruptedFrames, valCls(s.corruptedFrames)) +
             row('Load Time', s.loadLatency)
+        ) +
+        divider() +
+        section('Player',
+            row('Engine', playback.isActive() ? 'Shaka v5.1.6' : 'Native (Shaka unavailable)', playback.isActive() ? 'good' : 'warn')
         );
 }
 
@@ -2493,7 +2497,11 @@ function _handleSettingsKey(e) {
 }
 
 // ----- Initialization -----
-playback.init(videoPlayer);
+playback.init(videoPlayer).then(() => {
+    const engine = playback.isActive() ? 'Shaka v5.1.6' : 'Native player (Shaka unavailable)';
+    statusArea.innerText = engine;
+    setTimeout(() => { if (statusArea.innerText === engine) statusArea.innerText = ''; }, 3000);
+});
 
 // Seek bar update — fires every 500ms while fullscreen
 setInterval(() => {

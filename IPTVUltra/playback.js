@@ -95,7 +95,8 @@ const playback = (() => {
   async function init(videoElement) {
     shaka.polyfill.installAll();
     if (!shaka.Player.isBrowserSupported()) {
-      console.warn('playback: Shaka not supported on this browser');
+      console.warn('playback: Shaka not supported on this browser — falling back to native');
+      _video = videoElement;
       return;
     }
     _video = videoElement;
@@ -111,6 +112,8 @@ const playback = (() => {
     });
     _player.addEventListener('error', e => console.error('Shaka error:', e.detail));
   }
+
+  function isActive() { return _player !== null; }
 
   async function loadChannel(url) {
     if (!_player) return;
@@ -319,7 +322,7 @@ const playback = (() => {
     setRate, changeRate,
     getSeekInfo, getStats, getTrackLists,
     setAudioTrack, setSubtitleTrack, setQuality,
-    updateMediaSession, destroy,
+    updateMediaSession, destroy, isActive,
     getTrickState, isHolding, getRateIndex, getPlaybackRates, updateSeekBar,
   };
 })();
