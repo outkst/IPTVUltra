@@ -108,7 +108,7 @@ const playback = (() => {
         bufferBehind: 30,
         rebufferingGoal: 2,
         stallEnabled: true,
-        stallThreshold: 1,
+        stallThreshold: 5,
         retryParameters: {
           maxAttempts: 4,
           baseDelay: 1000,
@@ -118,22 +118,6 @@ const playback = (() => {
       },
     });
     _player.addEventListener('error', e => console.error('Shaka error:', e.detail));
-
-    // Proxy sessions are created asynchronously — a 404 on a manifest means
-    // the session isn't ready yet. Wait briefly and let Shaka retry.
-    _player.getNetworkingEngine().registerResponseFilter((type, response) => {
-      const MANIFEST = shaka.net.NetworkingEngine.RequestType.MANIFEST;
-      if (type === MANIFEST && response.status === 404) {
-        return new Promise((_, reject) => setTimeout(() => {
-          reject(new shaka.util.Error(
-            shaka.util.Error.Severity.RECOVERABLE,
-            shaka.util.Error.Category.NETWORK,
-            shaka.util.Error.Code.BAD_HTTP_STATUS,
-            response.uri, response.status
-          ));
-        }, 1500));
-      }
-    });
   }
 
   function isActive() { return _player !== null; }
@@ -151,7 +135,18 @@ const playback = (() => {
     _rateIndex = 2;
     _showRateBadge(1);
     const mime = _mimeType(url);
-    await _player.load(url, null, mime || undefined);
+    // Proxy sessions are created asynchronously — retry the initial load a few
+    // times with a short delay to let the session initialize before giving up.
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 1500));
+      try {
+        await _player.load(url, null, mime || undefined);
+        break;
+      } catch (err) {
+        if (attempt === 3) throw err;
+        console.warn('loadChannel attempt', attempt + 1, 'failed, retrying...', err.code);
+      }
+    }
     const range = _player.seekRange();
     _isDVR = (range.end - range.start) > 30;
     _video.play().catch(() => {});
