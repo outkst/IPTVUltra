@@ -2513,6 +2513,8 @@ if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); 
 
 const pbGearBtn = document.getElementById('pbGearBtn');
 if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
+const epgGearBtn = document.getElementById('epgGearBtn');
+if (epgGearBtn) epgGearBtn.addEventListener('click', () => { _openSettings(); });
 // Audio/Subtitle buttons are superseded by the settings panel
 if (typeof audioBtn !== 'undefined' && audioBtn) audioBtn.style.display = 'none';
 if (typeof subtitleBtn !== 'undefined' && subtitleBtn) subtitleBtn.style.display = 'none';
