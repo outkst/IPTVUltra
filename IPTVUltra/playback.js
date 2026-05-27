@@ -104,10 +104,17 @@ const playback = (() => {
     await _player.attach(_video);
     _player.configure({
       streaming: {
-        bufferingGoal: 120,
-        bufferBehind: 120,
+        bufferingGoal: 30,
+        bufferBehind: 30,
         rebufferingGoal: 2,
         stallEnabled: true,
+        stallThreshold: 1,
+        retryParameters: {
+          maxAttempts: 4,
+          baseDelay: 1000,
+          backoffFactor: 2,
+          timeout: 30000,
+        },
       },
     });
     _player.addEventListener('error', e => console.error('Shaka error:', e.detail));
@@ -115,12 +122,20 @@ const playback = (() => {
 
   function isActive() { return _player !== null; }
 
+  function _mimeType(url) {
+    const u = url.split('?')[0].toLowerCase();
+    if (u.includes('.m3u8') || u.includes('m3u8'))  return 'application/x-mpegurl';
+    if (u.includes('.ts')   || u.endsWith('/ts'))    return 'video/mp2t';
+    return '';
+  }
+
   async function loadChannel(url) {
     if (!_player) return;
     _stopTrickPlay();
     _rateIndex = 2;
     _showRateBadge(1);
-    await _player.load(url);
+    const mime = _mimeType(url);
+    await _player.load(url, null, mime || undefined);
     const range = _player.seekRange();
     _isDVR = (range.end - range.start) > 30;
     _video.play().catch(() => {});
