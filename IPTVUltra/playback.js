@@ -104,6 +104,7 @@ const playback = (() => {
     await _player.attach(_video);
     _player.configure({
       streaming: {
+        preferNativeHls: true,
         bufferingGoal: 30,
         bufferBehind: 30,
         rebufferingGoal: 2,
