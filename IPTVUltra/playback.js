@@ -22,6 +22,7 @@ const playback = (() => {
   let _ui          = null;   // shaka.ui.Overlay
   let _video       = null;   // <video> element
   let _isDVR       = false;
+  let _loadNonce   = 0;      // incremented on each loadChannel; stale loads bail out
   let _rateIndex = 2;     // index into PLAYBACK_RATES (default 1×)
   let _trickState = 'NORMAL'; // 'NORMAL' | 'REWINDING' | 'FAST_FWD'
   let _holdDir   = null;  // 'left' | 'right' | null
@@ -175,19 +176,16 @@ const playback = (() => {
   // Poll url with fetch() until it stops returning 503, then resolve.
   // m3u-editor proxy returns 503 while FFmpeg is starting; Shaka v5 treats
   // BAD_HTTP_STATUS as non-retriable so we must gate the load() ourselves.
-  async function _waitForProxy(url, timeoutMs) {
+  async function _waitForProxy(url, timeoutMs, nonce) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (_loadNonce !== nonce) return;
       try {
         const r = await fetch(url, { cache: 'no-cache' });
-        console.log('[DBG] proxy warm status=', r.status);
         if (r.status !== 503) return;
-      } catch (e) {
-        console.log('[DBG] proxy warm fetch error', e.message);
-      }
+      } catch (e) { /* network error — keep polling */ }
       await new Promise(res => setTimeout(res, 500));
     }
-    console.warn('[DBG] proxy warm timed out after', timeoutMs, 'ms');
   }
 
   async function loadChannel(url) {
@@ -195,20 +193,24 @@ const playback = (() => {
     _stopTrickPlay();
     _rateIndex = 2;
     _showRateBadge(1);
+    const nonce = ++_loadNonce;
     // Stop current playback immediately so the old channel doesn't keep
     // playing while we wait for the proxy and Shaka to load the new one.
     _video.pause();
     const mime = _mimeType(url);
     // Wait for the proxy to be ready before handing the URL to Shaka.
     if (mime === 'application/x-mpegurl') {
-      await _waitForProxy(url, 30000);
+      await _waitForProxy(url, 30000, nonce);
     }
+    if (_loadNonce !== nonce) return; // superseded by a newer selectChannel
     await _player.load(url, null, mime || undefined);
+    if (_loadNonce !== nonce) return;
     const range = _player.seekRange();
     _isDVR = (range.end - range.start) > 30;
     _video.play().catch(() => {});
     _updateSeekBar();
   }
+
 
   function _seekRange() {
     if (!_player) return { start: 0, end: _video ? (_video.duration || 0) : 0 };
