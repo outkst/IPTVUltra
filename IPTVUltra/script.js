@@ -2521,6 +2521,20 @@ setInterval(() => {
     if (document.fullscreenElement) playback.updateSeekBar();
 }, 500);
 
+// Double-click the video surface to toggle fullscreen.
+// Uses the native dblclick event — browser handles timing, no manual counting.
+// All Shaka UI controls live inside .shaka-controls-container; clicks there
+// are ignored so menu/button interactions never accidentally trigger fullscreen.
+(function () {
+    const container = document.getElementById('shakaContainer');
+    if (!container) return;
+    container.addEventListener('dblclick', (e) => {
+        if (e.target.closest('button, .shaka-bottom-controls, .shaka-overflow-menu, .shaka-settings-menu')) return;
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else container.requestFullscreen().catch(() => {});
+    });
+}());
+
 const pbLiveBtn = document.getElementById('pbLiveBtn');
 if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); showTopControls(); });
 

@@ -151,7 +151,7 @@ const playback = (() => {
           controlPanelElements: ['play_pause', 'spacer', 'overflow_menu', 'fullscreen'],
           overflowMenuButtons: ['language', 'quality', 'captions', 'playback_rate', 'statistics'],
           enableTooltips: false,
-          doubleClickForFullscreen: true,
+          doubleClickForFullscreen: false,
           singleClickForPlayAndPause: true,
         });
       } catch (uiErr) {
