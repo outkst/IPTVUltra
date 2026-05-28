@@ -98,7 +98,7 @@
 				<!-- Standard view: channel list + video side-by-side -->
 				<div id="standardView" style="display:flex;flex:1;min-width:0;">
 					<div class="channels-column">
-						<div class="channels-header"><span id="channelsHeaderTitle">📡 Channels</span><button
+						<div class="channels-header"><span id="channelsHeaderTitle">📡 Channels</span><button id="reorderBtn" class="reorder-btn" style="display:none;">↕ Reorder</button><button
 								id="showGroupsBtn" class="show-groups-btn">▶ Groups</button></div>
 						<div class="search-container">
 							<div class="search-input-wrapper"><span class="search-icon">🔍</span><input type="text"
@@ -172,6 +172,7 @@
 				<!-- EPG guide view: video+info panel on top, guide grid below -->
 				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;position:relative;">
 					<button id="epgFloatingGroupsBtn" class="epg-floating-groups-btn" style="display:none;" onclick="toggleGroupsColumn()">▶ Groups</button>
+					<button id="epgReorderBtn" class="epg-floating-reorder-btn" style="display:none;">↕ Reorder</button>
 					<div class="epg-top">
 						<div class="epg-video-wrap" id="epgVideoWrap">
 							<div class="video-controls-top-right" id="epgTopControls"></div>
@@ -182,6 +183,7 @@
 								<div class="epg-info-name-col">
 									<div id="epgInfoName" class="epg-info-name"></div>
 									<div id="epgInfoGroup" class="epg-info-group"></div>
+									<div id="epgInfoChNum" class="epg-info-ch-num"></div>
 								</div>
 							</div>
 							<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>

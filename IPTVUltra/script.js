@@ -29,6 +29,17 @@ let channelIndexMap = new Map(); // channel object → its index in channels[]
 let _searchCache = { query: null, result: null }; // invalidated on every channels reload
 let _searchDebounceTimer = null;
 
+// Recently watched, custom channel order, auto-resume, channel-number jump
+let recentChannels = [];
+let customOrders = {};
+let _currentPlaylistKey = '';
+let _reorderMode = false;
+let _reorderFromEPG = false;
+let _reorderGrabIdx = null;
+let _reorderFocusIdx = 0;
+let _chanNumBuf = '';
+let _chanNumTimer = null;
+
 // EPG virtual scroll state
 const EPG_ROW_H = 63;           // 62px row height + 1px border-bottom
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
@@ -96,6 +107,7 @@ const xtreamUsername = document.getElementById('xtreamUsername');
 const xtreamPassword = document.getElementById('xtreamPassword');
 const xtreamName = document.getElementById('xtreamName');
 const saveXtreamBtn = document.getElementById('saveXtreamBtn');
+const reorderBtn = document.getElementById('reorderBtn');
 
 let controlsTimeout = null;
 let _pbPanelTimer = null;
@@ -229,6 +241,26 @@ function buildChannelIndexMap() {
 function getChannelIndex(ch) {
     const i = channelIndexMap.get(ch);
     return i !== undefined ? i : -1;
+}
+
+function _getResumeIndex() {
+    try {
+        const saved = JSON.parse(localStorage.getItem('iptv_resume') || 'null');
+        if (!saved || saved.key !== _currentPlaylistKey) return -1;
+        return channels.findIndex(ch => ch.url === saved.url);
+    } catch { return -1; }
+}
+
+function updateRecentChannels(ch) {
+    recentChannels = recentChannels.filter(r => r.url !== ch.url);
+    recentChannels.unshift({ url: ch.url, name: ch.name, logo: ch.tvgLogo || '' });
+    if (recentChannels.length > 10) recentChannels.length = 10;
+    localStorage.setItem('iptv_recent', JSON.stringify(recentChannels));
+    if (!groupsList.includes('recent') && channels.length) {
+        const favIdx = groupsList.indexOf('favorites');
+        groupsList.splice(favIdx + 1, 0, 'recent');
+        renderGroupsList();
+    }
 }
 
 // Binary search: index of rightmost programme with start <= target, or -1
@@ -540,11 +572,14 @@ async function parseM3UStreaming(content) {
                 const tvgIdMatch = line.match(/tvg-id=["']([^"']*)["']/i);
                 const tvgLogoMatch = line.match(/tvg-logo=["']([^"']*)["']/i);
                 const groupMatch = line.match(/group-title=["']([^"']*)["']/i);
+                const chnoMatch = line.match(/tvg-chno=["']([^"']*)["']/i);
+                const chnoVal = chnoMatch ? parseInt(chnoMatch[1], 10) : 0;
                 current = {
                     name: nameMatch ? nameMatch[1].trim() : "Unknown",
                     tvgId: tvgIdMatch ? tvgIdMatch[1] : '',
                     tvgLogo: tvgLogoMatch ? tvgLogoMatch[1] : '',
                     group: groupMatch ? groupMatch[1] : '',
+                    chno: chnoVal > 0 ? chnoVal : 0,
                     url: ''
                 };
             } else if (!line.startsWith('#') && current && (line.startsWith('http') || line.startsWith('https') || line.startsWith('//'))) {
@@ -583,6 +618,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         if (!parsed.length) throw new Error('No channels found');
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'm3u:' + url;
         localStorage.setItem('last_m3u_url', url);
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
@@ -595,8 +631,9 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         renderChannelList();
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
         // Start EPG load in background after playlist is ready
         if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
@@ -631,6 +668,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         const parsed = await parseM3UStreaming(demoContent);
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'demo';
         updateStartStatus(`Demo loaded: ${channels.length} channels`, false, true, false, 100);
         currentSearchQuery = '';
         searchInput.value = '';
@@ -642,8 +680,9 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         renderChannelList();
         statusArea.innerText = `🎬 Demo: ${channels.length} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
         isLoading = false;
         setLoadSelectedButtonEnabled(true);
@@ -653,15 +692,17 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
 
 // ----- Groups & Channels -----
 function extractGroups() {
-    const groups = new Set(['favorites', 'all']);
+    const groups = new Set(['favorites']);
+    const recentUrls = new Set(recentChannels.map(r => r.url));
+    if (channels.some(ch => recentUrls.has(ch.url))) groups.add('recent');
+    groups.add('all');
     for (const ch of channels) {
         if (ch.group && ch.group.trim()) groups.add(ch.group.trim());
     }
     groupsList = Array.from(groups).sort((a, b) => {
-        if (a === 'favorites') return -1;
-        if (b === 'favorites') return 1;
-        if (a === 'all') return -1;
-        if (b === 'all') return 1;
+        if (a === 'favorites') return -1; if (b === 'favorites') return 1;
+        if (a === 'recent')    return -1; if (b === 'recent')    return 1;
+        if (a === 'all')       return -1; if (b === 'all')       return 1;
         return a.localeCompare(b);
     });
     renderGroupsList();
@@ -679,6 +720,9 @@ function renderGroupsList() {
         if (group === 'favorites') {
             folderIcon = '⭐';
             displayName = 'Favorites';
+        } else if (group === 'recent') {
+            folderIcon = '🕐';
+            displayName = 'Recently Watched';
         } else if (group === 'all') {
             folderIcon = '📺';
             displayName = 'All Channels';
@@ -696,7 +740,7 @@ function renderGroupsList() {
             renderGroupsList();
             requestAnimationFrame(refreshCurrentView);
         };
-        if ((group === 'favorites' || group === 'all') && pinnedDiv) {
+        if ((group === 'favorites' || group === 'recent' || group === 'all') && pinnedDiv) {
             pinnedDiv.appendChild(div);
         } else {
             groupsListDiv.appendChild(div);
@@ -743,6 +787,34 @@ function searchChannels(query) {
 
 // ----- Virtual Scrolling Channel List -----
 function renderChannelList() {
+    // In reorder mode keep the manually-ordered currentFilteredChannels unchanged
+    if (!_reorderMode) {
+        let filtered = [];
+        if (currentSearchQuery && currentSearchQuery.trim()) {
+            filtered = searchChannels(currentSearchQuery);
+        } else if (currentGroup === 'favorites') {
+            filtered = channels.filter((ch, idx) => favoriteIds.has(ch.tvgId || `idx_${idx}`));
+        } else if (currentGroup === 'recent') {
+            const urlToOrder = new Map(recentChannels.map((r, i) => [r.url, i]));
+            filtered = channels.filter(ch => urlToOrder.has(ch.url));
+            filtered.sort((a, b) => (urlToOrder.get(a.url) ?? 999) - (urlToOrder.get(b.url) ?? 999));
+        } else if (currentGroup === 'all') {
+            filtered = [...channels];
+        } else {
+            filtered = channels.filter(ch => ch.group === currentGroup);
+            const orderKey = _currentPlaylistKey + '::' + currentGroup;
+            if (customOrders[orderKey]) {
+                const urlOrderMap = new Map(customOrders[orderKey].map((url, i) => [url, i]));
+                filtered.sort((a, b) => (urlOrderMap.has(a.url) ? urlOrderMap.get(a.url) : Infinity) - (urlOrderMap.has(b.url) ? urlOrderMap.get(b.url) : Infinity));
+            }
+        }
+        currentFilteredChannels = filtered;
+    }
+
+    _updateReorderBtn();
+    if (_reorderMode) { _renderReorderList(); return; }
+    if (currentPlaylistType === 'xtream') return;
+
     // Update channels header title
     const headerTitle = document.getElementById('channelsHeaderTitle');
     if (headerTitle) {
@@ -753,6 +825,8 @@ function renderChannelList() {
             title = '🔍 Search Results';
         } else if (currentGroup === 'favorites') {
             title = '⭐ Favorites';
+        } else if (currentGroup === 'recent') {
+            title = '🕐 Recently Watched';
         } else if (currentGroup === 'all') {
             title = '📺 All Channels';
         } else {
@@ -760,21 +834,7 @@ function renderChannelList() {
         }
         headerTitle.textContent = title;
     }
-
-    // Determine filtered channels
-    let filtered = [];
-    if (currentSearchQuery && currentSearchQuery.trim()) {
-        filtered = searchChannels(currentSearchQuery);
-    } else if (currentGroup === 'favorites') {
-        filtered = channels.filter((ch, idx) => favoriteIds.has(ch.tvgId || `idx_${idx}`));
-    } else if (currentGroup === 'all') {
-        filtered = [...channels];
-    } else {
-        filtered = channels.filter(ch => ch.group === currentGroup);
-    }
-    currentFilteredChannels = filtered;
-    if (currentPlaylistType === 'xtream') return;
-    const total = filtered.length;
+    const total = currentFilteredChannels.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
     channelCountSpan.innerText = `${total} channels${info}`;
     if (!total) {
@@ -818,7 +878,7 @@ function renderChannelList() {
         // Add missing items
         for (let i = startIdx; i <= endIdx; i++) {
             if (renderedItems.has(i)) continue;
-            const ch = filtered[i];
+            const ch = currentFilteredChannels[i];
             const originalIndex = getChannelIndex(ch);
             const fav = favoriteIds.has(ch.tvgId || `idx_${originalIndex}`);
             const div = document.createElement('div');
@@ -842,7 +902,7 @@ function renderChannelList() {
                 : (epgData.size > 0 ? '<span class="channel-epg"></span>' : '');
             div.innerHTML = `
                 <div class="channel-logo">
-                    <span class="channel-num">${originalIndex + 1}</span>
+                    <span class="channel-num">${ch.chno || ''}</span>
                     <div class="channel-logo-img">${logoHtml}</div>
                 </div>
                 <div class="channel-info"><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span>${epgLine}</div>
@@ -868,6 +928,119 @@ function renderChannelList() {
     currentScrollListener = onScroll;
     channelListDiv.scrollTop = savedScrollTop;
     renderVisible();
+}
+
+// ----- Reorder Mode -----
+function _updateReorderBtn() {
+    const canReorder = !_reorderMode && !currentSearchQuery &&
+        currentGroup !== 'favorites' && currentGroup !== 'all' &&
+        currentGroup !== 'recent' && channels.length > 0;
+    // Standard view button (visible when not in EPG mode)
+    if (reorderBtn) {
+        const showStd = !epgMode && ((_reorderMode && !_reorderFromEPG) || canReorder);
+        reorderBtn.style.display = showStd ? '' : 'none';
+        reorderBtn.textContent = _reorderMode ? '✓ Done' : '↕ Reorder';
+        reorderBtn.classList.toggle('active', _reorderMode && !_reorderFromEPG);
+    }
+    // EPG floating button (visible when in EPG mode)
+    const epgRBtn = document.getElementById('epgReorderBtn');
+    if (epgRBtn) {
+        const showEpg = epgMode && ((_reorderMode && _reorderFromEPG) || canReorder);
+        epgRBtn.style.display = showEpg ? '' : 'none';
+        epgRBtn.textContent = (_reorderMode && _reorderFromEPG) ? '✓ Done' : '↕ Reorder';
+        epgRBtn.classList.toggle('active', _reorderMode && _reorderFromEPG);
+    }
+}
+
+function _renderReorderList() {
+    const headerTitle = document.getElementById('channelsHeaderTitle');
+    if (headerTitle) headerTitle.textContent = '↕ ' + currentGroup;
+    channelCountSpan.innerText = _reorderGrabIdx !== null
+        ? 'Use ▲▼ to move · OK to drop'
+        : 'OK to grab · ▲▼ to navigate · Back to save';
+    channelListDiv.innerHTML = '';
+    channelListDiv.style.position = '';
+    const hint = document.createElement('div');
+    hint.className = 'reorder-hint';
+    hint.textContent = _reorderGrabIdx !== null ? '✦ Moving — press OK to drop' : 'Press OK on a channel to pick it up';
+    channelListDiv.appendChild(hint);
+    currentFilteredChannels.forEach((ch, i) => {
+        const isGrabbed = i === _reorderGrabIdx;
+        const isFocused = i === _reorderFocusIdx;
+        const div = document.createElement('div');
+        div.className = 'reorder-item' +
+            (isFocused ? ' reorder-focused' : '') +
+            (isGrabbed ? ' reorder-grabbed' : '');
+        div.innerHTML = `<span class="reorder-handle">${isGrabbed ? '✦' : '⠿'}</span><span class="reorder-name">${escapeHtml(ch.name.length > 44 ? ch.name.substring(0, 41) + '…' : ch.name)}</span>`;
+        div.addEventListener('click', () => {
+            if (_reorderGrabIdx === null) {
+                _reorderGrabIdx = i; _reorderFocusIdx = i;
+            } else if (_reorderGrabIdx === i) {
+                _reorderGrabIdx = null;
+            } else {
+                const [item] = currentFilteredChannels.splice(_reorderGrabIdx, 1);
+                currentFilteredChannels.splice(i, 0, item);
+                _reorderFocusIdx = i; _reorderGrabIdx = null;
+            }
+            _renderReorderList();
+        });
+        channelListDiv.appendChild(div);
+    });
+    const focusedEl = channelListDiv.children[_reorderFocusIdx + 1]; // +1 for hint
+    if (focusedEl) focusedEl.scrollIntoView({ block: 'nearest' });
+}
+
+function _enterReorderMode() {
+    if (_reorderMode) return;
+    _reorderFromEPG = epgMode;
+    if (epgMode) {
+        // Temporarily leave EPG view so the channel list renders for reordering
+        epgMode = false;
+        const sv = document.getElementById('standardView');
+        const ev = document.getElementById('epgView');
+        if (sv) sv.style.display = 'flex';
+        if (ev) ev.style.display = 'none';
+        const destWrap = document.getElementById('videoArea');
+        const _sc = document.getElementById('shakaContainer');
+        const pbPanel = document.getElementById('playbackPanel');
+        const spPanel = document.getElementById('settingsPanel');
+        if (destWrap && _sc && _sc.parentNode !== destWrap) destWrap.appendChild(_sc);
+        if (destWrap && pbPanel && pbPanel.parentNode !== destWrap) destWrap.appendChild(pbPanel);
+        if (destWrap && spPanel && spPanel.parentNode !== destWrap) destWrap.appendChild(spPanel);
+    }
+    _reorderMode = true;
+    _reorderGrabIdx = null;
+    _reorderFocusIdx = Math.max(0, currentFilteredChannels.indexOf(channels[currentChannelIndex]));
+    renderChannelList();
+}
+
+function _exitReorderMode() {
+    if (_currentPlaylistKey && currentGroup && currentGroup !== 'all' && currentGroup !== 'favorites' && currentGroup !== 'recent') {
+        const key = _currentPlaylistKey + '::' + currentGroup;
+        customOrders[key] = currentFilteredChannels.map(ch => ch.url);
+        localStorage.setItem('iptv_orders', JSON.stringify(customOrders));
+    }
+    _reorderMode = false;
+    _reorderGrabIdx = null;
+    if (_reorderFromEPG) {
+        _reorderFromEPG = false;
+        epgMode = true;
+        const sv = document.getElementById('standardView');
+        const ev = document.getElementById('epgView');
+        if (sv) sv.style.display = 'none';
+        if (ev) ev.style.display = 'flex';
+        const destWrap = document.getElementById('epgVideoWrap');
+        const _sc = document.getElementById('shakaContainer');
+        const pbPanel = document.getElementById('playbackPanel');
+        const spPanel = document.getElementById('settingsPanel');
+        if (destWrap && _sc && _sc.parentNode !== destWrap) destWrap.appendChild(_sc);
+        if (destWrap && pbPanel && pbPanel.parentNode !== destWrap) destWrap.appendChild(pbPanel);
+        if (destWrap && spPanel && spPanel.parentNode !== destWrap) destWrap.appendChild(spPanel);
+        renderEPGGuide();
+        if (currentChannelIndex >= 0 && channels[currentChannelIndex]) updateEPGInfoPanel(channels[currentChannelIndex]);
+    } else {
+        renderChannelList();
+    }
 }
 
 // ----- Stall Watchdog -----
@@ -904,6 +1077,8 @@ function selectChannel(index) {
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
+    updateRecentChannels(ch);
+    if (_currentPlaylistKey) localStorage.setItem('iptv_resume', JSON.stringify({ key: _currentPlaylistKey, url: ch.url }));
     showLoading(true, `Loading ${ch.name}…`);
     const onCanPlay = () => { showLoading(false); videoPlayer.removeEventListener('canplay', onCanPlay); };
     videoPlayer.addEventListener('canplay', onCanPlay);
@@ -1365,7 +1540,7 @@ function buildEPGRow(i) {
     const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
     const favId = ch.tvgId || `idx_${origIdx}`;
     const isFav = favoriteIds.has(favId);
-    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+    const labelHtml = `<div class="epg-ch-label"><span class="epg-ch-row-num">${ch.chno || ''}</span><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 20 ? ch.name.slice(0, 18) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
     const resolvedId = resolveEpgId(ch.tvgId);
     const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
@@ -1562,6 +1737,8 @@ function updateEPGInfoPanel(ch) {
     name.textContent = ch.name;
     const groupEl = document.getElementById('epgInfoGroup');
     if (groupEl) groupEl.textContent = ch.group || '';
+    const chNumEl = document.getElementById('epgInfoChNum');
+    if (chNumEl) chNumEl.textContent = ch.chno ? 'Ch. ' + ch.chno : '';
 
     if (favBtn) {
         const favId = ch.tvgId || `idx_${getChannelIndex(ch)}`;
@@ -1771,6 +1948,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
                     tvgId: s.epg_channel_id || String(s.stream_id),
                     tvgLogo: s.stream_icon || '',
                     group: catMap[String(s.category_id)] || '',
+                    chno: s.num > 0 ? s.num : 0,
                     url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`,
                     streamId: s.stream_id
                 });
@@ -1782,6 +1960,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
 
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'xtream:' + base + '|' + username;
         localStorage.setItem('last_m3u_url', ''); // clear M3U cache; Xtream uses its own auth
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
@@ -1794,8 +1973,9 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
 
         // 5. Load EPG via per-channel JSON API (avoids downloading the full XMLTV)
@@ -2002,6 +2182,36 @@ function handleRemoteNav(e) {
             showTopControls();
             return;
         }
+    }
+
+    if (_reorderMode) {
+        const isUp    = e.key === 'ArrowUp'   || e.keyCode === 38;
+        const isDown  = e.key === 'ArrowDown'  || e.keyCode === 40;
+        const isEnter = e.key === 'Enter'      || e.keyCode === 13;
+        if (!isUp && !isDown && !isEnter) return;
+        e.preventDefault();
+        if (_reorderGrabIdx !== null) {
+            if (isUp && _reorderGrabIdx > 0) {
+                const tmp = currentFilteredChannels[_reorderGrabIdx - 1];
+                currentFilteredChannels[_reorderGrabIdx - 1] = currentFilteredChannels[_reorderGrabIdx];
+                currentFilteredChannels[_reorderGrabIdx] = tmp;
+                _reorderGrabIdx--; _reorderFocusIdx = _reorderGrabIdx;
+                _renderReorderList();
+            } else if (isDown && _reorderGrabIdx < currentFilteredChannels.length - 1) {
+                const tmp = currentFilteredChannels[_reorderGrabIdx + 1];
+                currentFilteredChannels[_reorderGrabIdx + 1] = currentFilteredChannels[_reorderGrabIdx];
+                currentFilteredChannels[_reorderGrabIdx] = tmp;
+                _reorderGrabIdx++; _reorderFocusIdx = _reorderGrabIdx;
+                _renderReorderList();
+            } else if (isEnter) {
+                _reorderGrabIdx = null; _renderReorderList();
+            }
+        } else {
+            if (isUp)    { _reorderFocusIdx = Math.max(0, _reorderFocusIdx - 1); _renderReorderList(); }
+            else if (isDown) { _reorderFocusIdx = Math.min(currentFilteredChannels.length - 1, _reorderFocusIdx + 1); _renderReorderList(); }
+            else if (isEnter) { _reorderGrabIdx = _reorderFocusIdx; _renderReorderList(); }
+        }
+        return;
     }
 
     if (epgMode) {
@@ -2231,6 +2441,8 @@ document.addEventListener('fullscreenchange', () => {
 // Back/Return button — context-dependent behavior (keyCode 461 on webOS)
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+
+    if (_reorderMode) { e.preventDefault(); _exitReorderMode(); return; }
 
     // Settings panel: close sub-list first, then panel
     if (_settingsOpen) {
@@ -2538,6 +2750,55 @@ setInterval(() => {
 const pbLiveBtn = document.getElementById('pbLiveBtn');
 if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); showTopControls(); });
 
+if (reorderBtn) reorderBtn.addEventListener('click', () => { _reorderMode ? _exitReorderMode() : _enterReorderMode(); });
+const _epgReorderBtn = document.getElementById('epgReorderBtn');
+if (_epgReorderBtn) _epgReorderBtn.addEventListener('click', () => { _reorderMode ? _exitReorderMode() : _enterReorderMode(); });
+
+// Channel number jump — type digits to jump to channel N in the current view
+const _chanNumOverlay = (() => {
+    const el = document.createElement('div');
+    el.className = 'chan-num-overlay';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    return el;
+})();
+document.addEventListener('keydown', (e) => {
+    if (!channels.length || (startPage && !startPage.classList.contains('hidden'))) return;
+    if (_reorderMode || _settingsOpen) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+    let digit = null;
+    if (e.keyCode >= 48 && e.keyCode <= 57) digit = String(e.keyCode - 48);
+    else if (e.keyCode >= 96 && e.keyCode <= 105) digit = String(e.keyCode - 96);
+    if (digit === null) return;
+    e.preventDefault();
+    _chanNumBuf += digit;
+    _chanNumOverlay.textContent = _chanNumBuf;
+    _chanNumOverlay.style.display = '';
+    clearTimeout(_chanNumTimer);
+    _chanNumTimer = setTimeout(() => {
+        const num = parseInt(_chanNumBuf, 10);
+        _chanNumBuf = '';
+        _chanNumOverlay.style.display = 'none';
+        if (currentFilteredChannels.length && num >= 1) {
+            // Prefer ch.chno match; fall back to positional (1-indexed)
+            let targetCh = currentFilteredChannels.find(c => c.chno === num);
+            if (!targetCh && num <= currentFilteredChannels.length) targetCh = currentFilteredChannels[num - 1];
+            if (targetCh) {
+                if (epgMode) {
+                    const rowIdx = currentFilteredChannels.indexOf(targetCh);
+                    epgFocusedRowIdx = rowIdx;
+                    updateEPGRowFocus();
+                    selectChannel(getChannelIndex(targetCh));
+                    updateEPGInfoPanel(targetCh);
+                } else {
+                    selectChannel(getChannelIndex(targetCh));
+                }
+            }
+        }
+    }, 2000);
+});
+
 const pbGearBtn = document.getElementById('pbGearBtn');
 if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
 // Audio/Subtitle buttons are superseded by the settings panel
@@ -2545,6 +2806,10 @@ if (typeof audioBtn !== 'undefined' && audioBtn) audioBtn.style.display = 'none'
 if (typeof subtitleBtn !== 'undefined' && subtitleBtn) subtitleBtn.style.display = 'none';
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
+const _savedRecent = localStorage.getItem('iptv_recent');
+if (_savedRecent) try { recentChannels = JSON.parse(_savedRecent); } catch (e) { }
+const _savedOrders = localStorage.getItem('iptv_orders');
+if (_savedOrders) try { customOrders = JSON.parse(_savedOrders); } catch (e) { }
 loadSavedPlaylists();
 const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;

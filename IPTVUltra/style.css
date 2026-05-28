@@ -660,6 +660,13 @@ body {
     text-overflow: ellipsis;
 }
 
+.epg-info-ch-num {
+    font-size: 0.68rem;
+    color: #6c8eff;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
 .epg-info-group {
     font-size: 0.72rem;
     color: #6c7a93;
@@ -1006,6 +1013,15 @@ body {
     pointer-events: none;
 }
 
+.epg-ch-row-num {
+    font-size: 0.6rem;
+    color: #5a6a8a;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: right;
+    padding-right: 4px;
+}
+
 /* Channel label — sticks to the left as you scroll horizontally */
 .epg-ch-label {
     width: 300px;
@@ -1177,6 +1193,59 @@ body {
     border-bottom: 1px solid #262a33;
     font-weight: 600;
     font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.channels-header span { flex: 1; }
+
+.reorder-btn {
+    background: #2a2c35;
+    border: 1px solid #4a4c5a;
+    color: #c0c8e0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.reorder-btn:hover, .reorder-btn:focus { background: #3a3c50; border-color: #6c8eff; outline: none; }
+.reorder-btn.active { background: #1a3a20; border-color: #4adf80; color: #4adf80; }
+
+.reorder-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #1e2028;
+    cursor: pointer;
+    background: #111316;
+    user-select: none;
+}
+.reorder-item:hover { background: #1a1d24; }
+.reorder-item.reorder-focused { background: #1e2850; border-left: 3px solid #6c8eff; }
+.reorder-item.reorder-grabbed { background: #1a3a20; border-left: 3px solid #4adf80; }
+.reorder-handle { font-size: 1.1rem; color: #555; flex-shrink: 0; }
+.reorder-item.reorder-grabbed .reorder-handle { color: #4adf80; }
+.reorder-name { font-size: 0.82rem; color: #d0d8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reorder-hint { font-size: 0.68rem; color: #6c8eff; padding: 6px 14px 2px; font-style: italic; }
+
+.chan-num-overlay {
+    position: fixed;
+    bottom: 90px;
+    right: 36px;
+    background: rgba(0,0,0,0.82);
+    color: #fff;
+    font-size: 52px;
+    font-weight: 700;
+    padding: 10px 26px;
+    border-radius: 14px;
+    letter-spacing: 6px;
+    z-index: 9999;
+    pointer-events: none;
+    border: 2px solid #6c8eff;
 }
 
 .search-container {
@@ -1287,6 +1356,25 @@ body {
 .epg-floating-groups-btn:focus {
     outline: 2px solid #6c8eff;
 }
+
+.epg-floating-reorder-btn {
+    position: fixed;
+    top: 12px;
+    left: 140px;
+    z-index: 200;
+    background: #2a2c35;
+    border: 1px solid #4a4c5a;
+    color: #c0c8e0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.epg-floating-reorder-btn:hover, .epg-floating-reorder-btn:focus { background: #3a3c50; border-color: #6c8eff; outline: none; }
+.epg-floating-reorder-btn.active { background: #1a3a20; border-color: #4adf80; color: #4adf80; }
 
 .epg-info-now-playing-label {
     font-size: 0.6rem;
