@@ -29,6 +29,17 @@ let channelIndexMap = new Map(); // channel object → its index in channels[]
 let _searchCache = { query: null, result: null }; // invalidated on every channels reload
 let _searchDebounceTimer = null;
 
+// Recently watched, custom channel order, auto-resume, channel-number jump
+let recentChannels = [];
+let customOrders = {};
+let _currentPlaylistKey = '';
+let _reorderMode = false;
+let _reorderFromEPG = false;
+let _reorderGrabIdx = null;
+let _reorderFocusIdx = 0;
+let _chanNumBuf = '';
+let _chanNumTimer = null;
+
 // EPG virtual scroll state
 const EPG_ROW_H = 63;           // 62px row height + 1px border-bottom
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
@@ -54,9 +65,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const channelListDiv = document.getElementById('channelList');
 const channelCountSpan = document.getElementById('channelCount');
 const statusArea = document.getElementById('statusArea');
-const streamInfoOverlay = document.getElementById('streamInfoOverlay');
 const channelInfoTag = document.getElementById('channelInfoTag');
-const infoBtn = document.getElementById('infoBtn');
 const reloadBtn = document.getElementById('reloadBtn');
 const videoArea = document.getElementById('videoArea');
 const groupsListDiv = document.getElementById('groupsList');
@@ -88,7 +97,6 @@ const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
-const epgInfoBtn = document.getElementById('epgInfoBtn');
 const newEpgUrl = document.getElementById('newEpgUrl');
 const tabM3u = document.getElementById('tabM3u');
 const tabXtream = document.getElementById('tabXtream');
@@ -99,9 +107,13 @@ const xtreamUsername = document.getElementById('xtreamUsername');
 const xtreamPassword = document.getElementById('xtreamPassword');
 const xtreamName = document.getElementById('xtreamName');
 const saveXtreamBtn = document.getElementById('saveXtreamBtn');
+const reorderBtn = document.getElementById('reorderBtn');
 
-let infoHideTimeout = null;
 let controlsTimeout = null;
+let _pbPanelTimer = null;
+let _holdKeyDir   = null;  // 'left' | 'right' | null
+let _holdKeyStart = 0;
+const HOLD_THRESHOLD_MS = 500;
 let subtitlePanelOpen = false;
 let audioPanelOpen = false;
 
@@ -112,10 +124,6 @@ let stallCount = 0;
 const STALL_CHECK_INTERVAL_MS = 2000;
 const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
 
-
-let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
-let _holdKeyStart = 0;
-const HOLD_THRESHOLD_MS = 500;
 
 // Trick-play (hold-to-rewind / hold-to-FF)
 const _REWIND_RAMP = [
@@ -233,6 +241,26 @@ function buildChannelIndexMap() {
 function getChannelIndex(ch) {
     const i = channelIndexMap.get(ch);
     return i !== undefined ? i : -1;
+}
+
+function _getResumeIndex() {
+    try {
+        const saved = JSON.parse(localStorage.getItem('iptv_resume') || 'null');
+        if (!saved || saved.key !== _currentPlaylistKey) return -1;
+        return channels.findIndex(ch => ch.url === saved.url);
+    } catch { return -1; }
+}
+
+function updateRecentChannels(ch) {
+    recentChannels = recentChannels.filter(r => r.url !== ch.url);
+    recentChannels.unshift({ url: ch.url, name: ch.name, logo: ch.tvgLogo || '' });
+    if (recentChannels.length > 10) recentChannels.length = 10;
+    localStorage.setItem('iptv_recent', JSON.stringify(recentChannels));
+    if (!groupsList.includes('recent') && channels.length) {
+        const favIdx = groupsList.indexOf('favorites');
+        groupsList.splice(favIdx + 1, 0, 'recent');
+        renderGroupsList();
+    }
 }
 
 // Binary search: index of rightmost programme with start <= target, or -1
@@ -544,11 +572,14 @@ async function parseM3UStreaming(content) {
                 const tvgIdMatch = line.match(/tvg-id=["']([^"']*)["']/i);
                 const tvgLogoMatch = line.match(/tvg-logo=["']([^"']*)["']/i);
                 const groupMatch = line.match(/group-title=["']([^"']*)["']/i);
+                const chnoMatch = line.match(/tvg-chno=["']([^"']*)["']/i);
+                const chnoVal = chnoMatch ? parseInt(chnoMatch[1], 10) : 0;
                 current = {
                     name: nameMatch ? nameMatch[1].trim() : "Unknown",
                     tvgId: tvgIdMatch ? tvgIdMatch[1] : '',
                     tvgLogo: tvgLogoMatch ? tvgLogoMatch[1] : '',
                     group: groupMatch ? groupMatch[1] : '',
+                    chno: chnoVal > 0 ? chnoVal : 0,
                     url: ''
                 };
             } else if (!line.startsWith('#') && current && (line.startsWith('http') || line.startsWith('https') || line.startsWith('//'))) {
@@ -587,6 +618,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         if (!parsed.length) throw new Error('No channels found');
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'm3u:' + url;
         localStorage.setItem('last_m3u_url', url);
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
@@ -599,8 +631,9 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         renderChannelList();
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
         // Start EPG load in background after playlist is ready
         if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
@@ -635,6 +668,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         const parsed = await parseM3UStreaming(demoContent);
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'demo';
         updateStartStatus(`Demo loaded: ${channels.length} channels`, false, true, false, 100);
         currentSearchQuery = '';
         searchInput.value = '';
@@ -646,8 +680,9 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         renderChannelList();
         statusArea.innerText = `🎬 Demo: ${channels.length} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
         isLoading = false;
         setLoadSelectedButtonEnabled(true);
@@ -657,15 +692,17 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
 
 // ----- Groups & Channels -----
 function extractGroups() {
-    const groups = new Set(['favorites', 'all']);
+    const groups = new Set(['favorites']);
+    const recentUrls = new Set(recentChannels.map(r => r.url));
+    if (channels.some(ch => recentUrls.has(ch.url))) groups.add('recent');
+    groups.add('all');
     for (const ch of channels) {
         if (ch.group && ch.group.trim()) groups.add(ch.group.trim());
     }
     groupsList = Array.from(groups).sort((a, b) => {
-        if (a === 'favorites') return -1;
-        if (b === 'favorites') return 1;
-        if (a === 'all') return -1;
-        if (b === 'all') return 1;
+        if (a === 'favorites') return -1; if (b === 'favorites') return 1;
+        if (a === 'recent')    return -1; if (b === 'recent')    return 1;
+        if (a === 'all')       return -1; if (b === 'all')       return 1;
         return a.localeCompare(b);
     });
     renderGroupsList();
@@ -683,6 +720,9 @@ function renderGroupsList() {
         if (group === 'favorites') {
             folderIcon = '⭐';
             displayName = 'Favorites';
+        } else if (group === 'recent') {
+            folderIcon = '🕐';
+            displayName = 'Recently Watched';
         } else if (group === 'all') {
             folderIcon = '📺';
             displayName = 'All Channels';
@@ -700,7 +740,7 @@ function renderGroupsList() {
             renderGroupsList();
             requestAnimationFrame(refreshCurrentView);
         };
-        if ((group === 'favorites' || group === 'all') && pinnedDiv) {
+        if ((group === 'favorites' || group === 'recent' || group === 'all') && pinnedDiv) {
             pinnedDiv.appendChild(div);
         } else {
             groupsListDiv.appendChild(div);
@@ -747,6 +787,34 @@ function searchChannels(query) {
 
 // ----- Virtual Scrolling Channel List -----
 function renderChannelList() {
+    // In reorder mode keep the manually-ordered currentFilteredChannels unchanged
+    if (!_reorderMode) {
+        let filtered = [];
+        if (currentSearchQuery && currentSearchQuery.trim()) {
+            filtered = searchChannels(currentSearchQuery);
+        } else if (currentGroup === 'favorites') {
+            filtered = channels.filter((ch, idx) => favoriteIds.has(ch.tvgId || `idx_${idx}`));
+        } else if (currentGroup === 'recent') {
+            const urlToOrder = new Map(recentChannels.map((r, i) => [r.url, i]));
+            filtered = channels.filter(ch => urlToOrder.has(ch.url));
+            filtered.sort((a, b) => (urlToOrder.get(a.url) ?? 999) - (urlToOrder.get(b.url) ?? 999));
+        } else if (currentGroup === 'all') {
+            filtered = [...channels];
+        } else {
+            filtered = channels.filter(ch => ch.group === currentGroup);
+            const orderKey = _currentPlaylistKey + '::' + currentGroup;
+            if (customOrders[orderKey]) {
+                const urlOrderMap = new Map(customOrders[orderKey].map((url, i) => [url, i]));
+                filtered.sort((a, b) => (urlOrderMap.has(a.url) ? urlOrderMap.get(a.url) : Infinity) - (urlOrderMap.has(b.url) ? urlOrderMap.get(b.url) : Infinity));
+            }
+        }
+        currentFilteredChannels = filtered;
+    }
+
+    _updateReorderBtn();
+    if (_reorderMode) { _renderReorderList(); return; }
+    if (currentPlaylistType === 'xtream') return;
+
     // Update channels header title
     const headerTitle = document.getElementById('channelsHeaderTitle');
     if (headerTitle) {
@@ -757,6 +825,8 @@ function renderChannelList() {
             title = '🔍 Search Results';
         } else if (currentGroup === 'favorites') {
             title = '⭐ Favorites';
+        } else if (currentGroup === 'recent') {
+            title = '🕐 Recently Watched';
         } else if (currentGroup === 'all') {
             title = '📺 All Channels';
         } else {
@@ -764,21 +834,7 @@ function renderChannelList() {
         }
         headerTitle.textContent = title;
     }
-
-    // Determine filtered channels
-    let filtered = [];
-    if (currentSearchQuery && currentSearchQuery.trim()) {
-        filtered = searchChannels(currentSearchQuery);
-    } else if (currentGroup === 'favorites') {
-        filtered = channels.filter((ch, idx) => favoriteIds.has(ch.tvgId || `idx_${idx}`));
-    } else if (currentGroup === 'all') {
-        filtered = [...channels];
-    } else {
-        filtered = channels.filter(ch => ch.group === currentGroup);
-    }
-    currentFilteredChannels = filtered;
-    if (currentPlaylistType === 'xtream') return;
-    const total = filtered.length;
+    const total = currentFilteredChannels.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
     channelCountSpan.innerText = `${total} channels${info}`;
     if (!total) {
@@ -822,7 +878,7 @@ function renderChannelList() {
         // Add missing items
         for (let i = startIdx; i <= endIdx; i++) {
             if (renderedItems.has(i)) continue;
-            const ch = filtered[i];
+            const ch = currentFilteredChannels[i];
             const originalIndex = getChannelIndex(ch);
             const fav = favoriteIds.has(ch.tvgId || `idx_${originalIndex}`);
             const div = document.createElement('div');
@@ -846,7 +902,7 @@ function renderChannelList() {
                 : (epgData.size > 0 ? '<span class="channel-epg"></span>' : '');
             div.innerHTML = `
                 <div class="channel-logo">
-                    <span class="channel-num">${originalIndex + 1}</span>
+                    <span class="channel-num">${ch.chno || ''}</span>
                     <div class="channel-logo-img">${logoHtml}</div>
                 </div>
                 <div class="channel-info"><span class="channel-name">${escapeHtml(ch.name.length > 40 ? ch.name.substring(0, 37) + '...' : ch.name)}</span>${epgLine}</div>
@@ -872,6 +928,119 @@ function renderChannelList() {
     currentScrollListener = onScroll;
     channelListDiv.scrollTop = savedScrollTop;
     renderVisible();
+}
+
+// ----- Reorder Mode -----
+function _updateReorderBtn() {
+    const canReorder = !_reorderMode && !currentSearchQuery &&
+        currentGroup !== 'favorites' && currentGroup !== 'all' &&
+        currentGroup !== 'recent' && channels.length > 0;
+    // Standard view button (visible when not in EPG mode)
+    if (reorderBtn) {
+        const showStd = !epgMode && ((_reorderMode && !_reorderFromEPG) || canReorder);
+        reorderBtn.style.display = showStd ? '' : 'none';
+        reorderBtn.textContent = _reorderMode ? '✓ Done' : '↕ Reorder';
+        reorderBtn.classList.toggle('active', _reorderMode && !_reorderFromEPG);
+    }
+    // EPG floating button (visible when in EPG mode)
+    const epgRBtn = document.getElementById('epgReorderBtn');
+    if (epgRBtn) {
+        const showEpg = epgMode && ((_reorderMode && _reorderFromEPG) || canReorder);
+        epgRBtn.style.display = showEpg ? '' : 'none';
+        epgRBtn.textContent = (_reorderMode && _reorderFromEPG) ? '✓ Done' : '↕ Reorder';
+        epgRBtn.classList.toggle('active', _reorderMode && _reorderFromEPG);
+    }
+}
+
+function _renderReorderList() {
+    const headerTitle = document.getElementById('channelsHeaderTitle');
+    if (headerTitle) headerTitle.textContent = '↕ ' + currentGroup;
+    channelCountSpan.innerText = _reorderGrabIdx !== null
+        ? 'Use ▲▼ to move · OK to drop'
+        : 'OK to grab · ▲▼ to navigate · Back to save';
+    channelListDiv.innerHTML = '';
+    channelListDiv.style.position = '';
+    const hint = document.createElement('div');
+    hint.className = 'reorder-hint';
+    hint.textContent = _reorderGrabIdx !== null ? '✦ Moving — press OK to drop' : 'Press OK on a channel to pick it up';
+    channelListDiv.appendChild(hint);
+    currentFilteredChannels.forEach((ch, i) => {
+        const isGrabbed = i === _reorderGrabIdx;
+        const isFocused = i === _reorderFocusIdx;
+        const div = document.createElement('div');
+        div.className = 'reorder-item' +
+            (isFocused ? ' reorder-focused' : '') +
+            (isGrabbed ? ' reorder-grabbed' : '');
+        div.innerHTML = `<span class="reorder-handle">${isGrabbed ? '✦' : '⠿'}</span><span class="reorder-name">${escapeHtml(ch.name.length > 44 ? ch.name.substring(0, 41) + '…' : ch.name)}</span>`;
+        div.addEventListener('click', () => {
+            if (_reorderGrabIdx === null) {
+                _reorderGrabIdx = i; _reorderFocusIdx = i;
+            } else if (_reorderGrabIdx === i) {
+                _reorderGrabIdx = null;
+            } else {
+                const [item] = currentFilteredChannels.splice(_reorderGrabIdx, 1);
+                currentFilteredChannels.splice(i, 0, item);
+                _reorderFocusIdx = i; _reorderGrabIdx = null;
+            }
+            _renderReorderList();
+        });
+        channelListDiv.appendChild(div);
+    });
+    const focusedEl = channelListDiv.children[_reorderFocusIdx + 1]; // +1 for hint
+    if (focusedEl) focusedEl.scrollIntoView({ block: 'nearest' });
+}
+
+function _enterReorderMode() {
+    if (_reorderMode) return;
+    _reorderFromEPG = epgMode;
+    if (epgMode) {
+        // Temporarily leave EPG view so the channel list renders for reordering
+        epgMode = false;
+        const sv = document.getElementById('standardView');
+        const ev = document.getElementById('epgView');
+        if (sv) sv.style.display = 'flex';
+        if (ev) ev.style.display = 'none';
+        const destWrap = document.getElementById('videoArea');
+        const _sc = document.getElementById('shakaContainer');
+        const pbPanel = document.getElementById('playbackPanel');
+        const spPanel = document.getElementById('settingsPanel');
+        if (destWrap && _sc && _sc.parentNode !== destWrap) destWrap.appendChild(_sc);
+        if (destWrap && pbPanel && pbPanel.parentNode !== destWrap) destWrap.appendChild(pbPanel);
+        if (destWrap && spPanel && spPanel.parentNode !== destWrap) destWrap.appendChild(spPanel);
+    }
+    _reorderMode = true;
+    _reorderGrabIdx = null;
+    _reorderFocusIdx = Math.max(0, currentFilteredChannels.indexOf(channels[currentChannelIndex]));
+    renderChannelList();
+}
+
+function _exitReorderMode() {
+    if (_currentPlaylistKey && currentGroup && currentGroup !== 'all' && currentGroup !== 'favorites' && currentGroup !== 'recent') {
+        const key = _currentPlaylistKey + '::' + currentGroup;
+        customOrders[key] = currentFilteredChannels.map(ch => ch.url);
+        localStorage.setItem('iptv_orders', JSON.stringify(customOrders));
+    }
+    _reorderMode = false;
+    _reorderGrabIdx = null;
+    if (_reorderFromEPG) {
+        _reorderFromEPG = false;
+        epgMode = true;
+        const sv = document.getElementById('standardView');
+        const ev = document.getElementById('epgView');
+        if (sv) sv.style.display = 'none';
+        if (ev) ev.style.display = 'flex';
+        const destWrap = document.getElementById('epgVideoWrap');
+        const _sc = document.getElementById('shakaContainer');
+        const pbPanel = document.getElementById('playbackPanel');
+        const spPanel = document.getElementById('settingsPanel');
+        if (destWrap && _sc && _sc.parentNode !== destWrap) destWrap.appendChild(_sc);
+        if (destWrap && pbPanel && pbPanel.parentNode !== destWrap) destWrap.appendChild(pbPanel);
+        if (destWrap && spPanel && spPanel.parentNode !== destWrap) destWrap.appendChild(spPanel);
+        renderEPGGuide();
+        if (currentChannelIndex >= 0 && channels[currentChannelIndex]) updateEPGInfoPanel(channels[currentChannelIndex]);
+    } else {
+        renderChannelList();
+    }
 }
 
 // ----- Stall Watchdog -----
@@ -908,13 +1077,19 @@ function selectChannel(index) {
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     const ch = channels[index];
-    videoPlayer.pause();
-    videoPlayer.src = ch.url;
-    videoPlayer.load();
-    videoPlayer.play().catch(e => console.log);
-    startStallWatchdog();
+    updateRecentChannels(ch);
+    if (_currentPlaylistKey) localStorage.setItem('iptv_resume', JSON.stringify({ key: _currentPlaylistKey, url: ch.url }));
+    showLoading(true, `Loading ${ch.name}…`);
+    const onCanPlay = () => { showLoading(false); videoPlayer.removeEventListener('canplay', onCanPlay); };
+    videoPlayer.addEventListener('canplay', onCanPlay);
+    playback.loadChannel(ch.url).catch(err => {
+        showLoading(false);
+        videoPlayer.removeEventListener('canplay', onCanPlay);
+        statusArea.innerText = `⚠️ Failed to load stream: ${err.message || err}`;
+    });
     channelInfoTag.innerText = `📺 ${ch.name}`;
     statusArea.innerText = `▶️ ${ch.name}`;
+    playback.updateMediaSession(ch);
     if (epgMode) {
         // Don't rebuild the EPG grid — just update active row highlighting in-place
         for (const [, el] of epgRenderedRows) el.classList.remove('active');
@@ -948,82 +1123,28 @@ function showTopControls() {
         if (cr) cr.classList.remove('visible');
         if (ec) ec.classList.remove('visible');
     }, 3000);
+
+    // Show playback panel only when fullscreen
+    if (document.fullscreenElement) {
+        const panel = document.getElementById('playbackPanel');
+        if (panel) {
+            panel.style.display = '';
+            if (_pbPanelTimer) { clearTimeout(_pbPanelTimer); _pbPanelTimer = null; }
+            _pbPanelTimer = setTimeout(() => {
+                const sp = document.getElementById('settingsPanel');
+                if (!sp || sp.style.display === 'none') {
+                    const p = document.getElementById('playbackPanel');
+                    if (p) p.style.display = 'none';
+                }
+            }, 3000);
+        }
+    }
 }
 
 function resolveLanguage(code) {
     if (!code) return null;
     const short = code.toLowerCase().substring(0, 2);
     return LANG_NAMES[short] || code;
-}
-
-function showStreamInfo() {
-    const w = videoPlayer.videoWidth, h = videoPlayer.videoHeight;
-
-    // Video resolution
-    let resText = (w && h) ? (w + '×' + h) : 'Loading ...';
-    if (w >= 3840) resText += ' (4K/UHD)';
-    else if (w >= 1920) resText += ' (FHD 1080p)';
-    else if (w >= 1280) resText += ' (HD 720p)';
-    else if (w >= 720) resText += ' (SD+)';
-    else if (w > 0) resText += ' (SD)';
-
-    // Active audio track
-    let audioLang = '—';
-    if (videoPlayer.audioTracks && videoPlayer.audioTracks.length) {
-        const tracks = Array.from(videoPlayer.audioTracks);
-        const active = tracks.find(function (t) { return t.enabled; }) || tracks[0];
-        if (active) {
-            const resolvedLang = active.language ? resolveLanguage(active.language) : null;
-            if (active.label && active.label.trim()) {
-                audioLang = active.label.trim();
-            } else {
-                audioLang = resolvedLang || 'Unknown';
-            }
-            if (active.kind && active.kind !== 'main' && active.kind !== '') {
-                audioLang += ' [' + active.kind + ']';
-            }
-        }
-    }
-
-    // Subtitle tracks
-    const subTracks = getSubtitleTracks();
-    const subInfo = subTracks.length
-        ? subTracks.length + ' track' + (subTracks.length > 1 ? 's' : '') + ' available'
-        : 'None detected';
-
-    // Audio track count subtitle
-    const audioTracks = getAudioTracks();
-    let audioCountSub = '';
-    if (audioTracks.length > 1) {
-        const uniqueLangs = new Set(audioTracks.map(function (t) { return t.language || ''; }).filter(Boolean));
-        let countText;
-        if (uniqueLangs.size >= audioTracks.length) {
-            countText = audioTracks.length + ' languages available';
-        } else if (uniqueLangs.size <= 1) {
-            countText = audioTracks.length + ' tracks available';
-        } else {
-            countText = audioTracks.length + ' tracks, ' + uniqueLangs.size + ' languages';
-        }
-        audioCountSub = '<span class="si-sub">' + countText + '</span>';
-    }
-
-    streamInfoOverlay.innerHTML =
-        '<div class="si-section">' +
-        '<div class="si-label">Video</div>' +
-        '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Audio</div>' +
-        '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Subtitles</div>' +
-        '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
-        '</div>';
-
-    streamInfoOverlay.style.opacity = '1';
-    if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 3000);
 }
 
 function getSubtitleTracks() {
@@ -1034,6 +1155,7 @@ function getSubtitleTracks() {
 }
 
 function updateSubtitleButton() {
+    return; // track selection handled by settings panel
     const subs = getSubtitleTracks();
     if (subs.length > 0) {
         subtitleBtn.style.display = '';
@@ -1097,6 +1219,7 @@ function getAudioTracks() {
 }
 
 function updateAudioButton() {
+    return; // track selection handled by settings panel
     const tracks = getAudioTracks();
     if (tracks.length > 1) {
         audioBtn.style.display = '';
@@ -1151,7 +1274,6 @@ function buildAudioPanel() {
             tracks.forEach(function (t) { t.enabled = false; });
             track.enabled = true;
             buildAudioPanel();
-            if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
             showTopControls();
         };
         listEl.appendChild(item);
@@ -1170,18 +1292,9 @@ function toggleAudioPanel() {
 }
 
 function reloadStream() {
-    if (currentChannelIndex < 0) return;
-    stopStallWatchdog();
-    const url = channels[currentChannelIndex].url;
-    const wasPlaying = !videoPlayer.paused;
-    videoPlayer.pause();
-    videoPlayer.src = url;
-    videoPlayer.load();
-    if (wasPlaying) videoPlayer.play().catch(e => console.log);
-    startStallWatchdog();
-    statusArea.innerText = '🔄 Reloading ...';
-    setTimeout(() => statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`, 2000);
-    showTopControls();
+    if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
+        playback.loadChannel(channels[currentChannelIndex].url).catch(() => {});
+    }
 }
 
 function showConfirmDialog(title, message, onYes) {
@@ -1241,8 +1354,17 @@ function goToHomeScreen() {
     epgMode = false;
     currentPlaylistType = null;
     isLoading = false;
-
-    // Stop and clear video
+    playback.destroy();
+    playback.init(videoPlayer);
+    // Move video container and panels back to standardView in case they were moved to EPG
+    const videoArea = document.getElementById('videoArea');
+    const pbPanel = document.getElementById('playbackPanel');
+    const spPanel = document.getElementById('settingsPanel');
+    const _sc = document.getElementById('shakaContainer');
+    const _videoToRestore = _sc || videoPlayer;
+    if (videoArea && _videoToRestore && _videoToRestore.parentNode !== videoArea) videoArea.appendChild(_videoToRestore);
+    if (videoArea && pbPanel && pbPanel.parentNode !== videoArea) videoArea.appendChild(pbPanel);
+    if (videoArea && spPanel && spPanel.parentNode !== videoArea) videoArea.appendChild(spPanel);
     videoPlayer.pause();
     videoPlayer.removeAttribute('src');
     videoPlayer.load();
@@ -1372,11 +1494,16 @@ function enterEPGMode() {
     // Sync EPG search input with current query
     const epgSI = document.getElementById('epgSearchInput');
     if (epgSI) epgSI.value = currentSearchQuery;
-    // Move <video> and stream-info overlay into the EPG video container
+    // Move video (inside shakaContainer) and panels into the EPG video container
     const wrap = document.getElementById('epgVideoWrap');
+    const pbPanel = document.getElementById('playbackPanel');
+    const spPanel = document.getElementById('settingsPanel');
+    const _sc = document.getElementById('shakaContainer');
     if (wrap) {
-        if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
-        if (streamInfoOverlay.parentNode !== wrap) wrap.appendChild(streamInfoOverlay);
+        const videoToMove = _sc || videoPlayer;
+        if (videoToMove.parentNode !== wrap) wrap.appendChild(videoToMove);
+        if (pbPanel && pbPanel.parentNode !== wrap) wrap.appendChild(pbPanel);
+        if (spPanel && spPanel.parentNode !== wrap) wrap.appendChild(spPanel);
     }
     // Start focus cursor at the currently playing channel
     if (currentChannelIndex >= 0) {
@@ -1413,7 +1540,7 @@ function buildEPGRow(i) {
     const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
     const favId = ch.tvgId || `idx_${origIdx}`;
     const isFav = favoriteIds.has(favId);
-    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+    const labelHtml = `<div class="epg-ch-label"><span class="epg-ch-row-num">${ch.chno || ''}</span><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 20 ? ch.name.slice(0, 18) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
     const resolvedId = resolveEpgId(ch.tvgId);
     const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
@@ -1610,6 +1737,8 @@ function updateEPGInfoPanel(ch) {
     name.textContent = ch.name;
     const groupEl = document.getElementById('epgInfoGroup');
     if (groupEl) groupEl.textContent = ch.group || '';
+    const chNumEl = document.getElementById('epgInfoChNum');
+    if (chNumEl) chNumEl.textContent = ch.chno ? 'Ch. ' + ch.chno : '';
 
     if (favBtn) {
         const favId = ch.tvgId || `idx_${getChannelIndex(ch)}`;
@@ -1819,6 +1948,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
                     tvgId: s.epg_channel_id || String(s.stream_id),
                     tvgLogo: s.stream_icon || '',
                     group: catMap[String(s.category_id)] || '',
+                    chno: s.num > 0 ? s.num : 0,
                     url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`,
                     streamId: s.stream_id
                 });
@@ -1830,6 +1960,7 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
 
         channels = parsed;
         buildChannelIndexMap();
+        _currentPlaylistKey = 'xtream:' + base + '|' + username;
         localStorage.setItem('last_m3u_url', ''); // clear M3U cache; Xtream uses its own auth
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
@@ -1842,8 +1973,9 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
         if (channels.length) setTimeout(() => {
+            const resumeIdx = _getResumeIndex();
             const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
+            selectChannel(resumeIdx >= 0 ? resumeIdx : firstIdx);
         }, 500);
 
         // 5. Load EPG via per-channel JSON API (avoids downloading the full XMLTV)
@@ -2031,6 +2163,57 @@ function selectEPGFocusedChannel() {
 }
 
 function handleRemoteNav(e) {
+    // Confirm dialog is open — let the focused button receive the event natively
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
+
+    // Settings panel takes over all remote nav whenever it is open
+    if (_settingsOpen) {
+        _handleSettingsKey(e);
+        return;
+    }
+
+    // Up/Down in fullscreen (non-EPG): adjust playback rate
+    if (document.fullscreenElement && !epgMode && !_settingsOpen) {
+        const isUp   = e.key === 'ArrowUp'   || e.keyCode === 38;
+        const isDown = e.key === 'ArrowDown'  || e.keyCode === 40;
+        if (isUp || isDown) {
+            e.preventDefault();
+            playback.changeRate(isUp ? 1 : -1);
+            showTopControls();
+            return;
+        }
+    }
+
+    if (_reorderMode) {
+        const isUp    = e.key === 'ArrowUp'   || e.keyCode === 38;
+        const isDown  = e.key === 'ArrowDown'  || e.keyCode === 40;
+        const isEnter = e.key === 'Enter'      || e.keyCode === 13;
+        if (!isUp && !isDown && !isEnter) return;
+        e.preventDefault();
+        if (_reorderGrabIdx !== null) {
+            if (isUp && _reorderGrabIdx > 0) {
+                const tmp = currentFilteredChannels[_reorderGrabIdx - 1];
+                currentFilteredChannels[_reorderGrabIdx - 1] = currentFilteredChannels[_reorderGrabIdx];
+                currentFilteredChannels[_reorderGrabIdx] = tmp;
+                _reorderGrabIdx--; _reorderFocusIdx = _reorderGrabIdx;
+                _renderReorderList();
+            } else if (isDown && _reorderGrabIdx < currentFilteredChannels.length - 1) {
+                const tmp = currentFilteredChannels[_reorderGrabIdx + 1];
+                currentFilteredChannels[_reorderGrabIdx + 1] = currentFilteredChannels[_reorderGrabIdx];
+                currentFilteredChannels[_reorderGrabIdx] = tmp;
+                _reorderGrabIdx++; _reorderFocusIdx = _reorderGrabIdx;
+                _renderReorderList();
+            } else if (isEnter) {
+                _reorderGrabIdx = null; _renderReorderList();
+            }
+        } else {
+            if (isUp)    { _reorderFocusIdx = Math.max(0, _reorderFocusIdx - 1); _renderReorderList(); }
+            else if (isDown) { _reorderFocusIdx = Math.min(currentFilteredChannels.length - 1, _reorderFocusIdx + 1); _renderReorderList(); }
+            else if (isEnter) { _reorderGrabIdx = _reorderFocusIdx; _renderReorderList(); }
+        }
+        return;
+    }
+
     if (epgMode) {
         if (e.key === 'ArrowUp' || e.keyCode === 38) {
             e.preventDefault();
@@ -2103,9 +2286,6 @@ startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
     showConfirmDialog('⚠️ Clear All Playlists', 'Are you sure you want to clear all saved playlists?', clearAllPlaylists);
 });
-infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
-if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
-
 const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
 if (epgTimePrevBtn) epgTimePrevBtn.addEventListener('click', () => scrollEPGTimeBy(-30));
@@ -2150,8 +2330,7 @@ if (epgClearSearchBtn) {
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
-videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
-videoPlayer.addEventListener('resize', showStreamInfo);
+videoPlayer.addEventListener('loadedmetadata', function () { updateSubtitleButton(); updateAudioButton(); });
 videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
@@ -2196,11 +2375,51 @@ document.addEventListener('keyup', (e) => {
     } else {
         if (videoPlayer.paused) videoPlayer.play().catch(e => console.log);
         else videoPlayer.pause();
+        if (channels[currentChannelIndex]) playback.updateMediaSession(channels[currentChannelIndex]);
         showTopControls();
     }
 });
 
-document.addEventListener('fullscreenchange', () => {
+// Hold ◀/▶ in fullscreen: hold-to-rewind / hold-to-FF
+document.addEventListener('keydown', (e) => {
+    if (!document.fullscreenElement) return;
+    if (_settingsOpen) return;
+    if (e.repeat) return; // ignore key-repeat; we drive timing ourselves
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    e.preventDefault();
+    if (_holdKeyDir) return; // already tracking a hold
+    _holdKeyDir   = isLeft ? 'left' : 'right';
+    _holdKeyStart = Date.now();
+    showTopControls();
+    // After hold threshold, start trick play
+    const capturedDir = _holdKeyDir;
+    setTimeout(() => {
+        if (_holdKeyDir === capturedDir) {
+            playback.startHold(capturedDir);
+        }
+    }, HOLD_THRESHOLD_MS);
+});
+
+document.addEventListener('keyup', (e) => {
+    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
+    if (!isLeft && !isRight) return;
+    if (!document.fullscreenElement || _settingsOpen) { _holdKeyDir = null; return; }
+
+    e.preventDefault();
+    const held = Date.now() - _holdKeyStart;
+    const dir  = _holdKeyDir;
+    _holdKeyDir = null;
+
+    if (playback.isHolding()) {
+        // Was in trick play — stop and resume
+        playback.stopHold();
+    } else if (held < HOLD_THRESHOLD_MS) {
+        // Short press — single ±3s seek
+        playback.seekBy(dir === 'left' ? -3 : 3);
+    }
     showTopControls();
     if (!document.fullscreenElement) {
         _holdKeyDir = null;
@@ -2208,44 +2427,36 @@ document.addEventListener('fullscreenchange', () => {
     }
 });
 
-// Hold Left/Right in fullscreen: short-press = ±3s seek; hold = trick play
-document.addEventListener('keydown', (e) => {
-    if (!document.fullscreenElement) return;
-    if (e.repeat) return;
-    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
-    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
-    if (!isLeft && !isRight) return;
-    e.preventDefault();
-    if (_holdKeyDir) return;
-    _holdKeyDir   = isLeft ? 'left' : 'right';
-    _holdKeyStart = Date.now();
+document.addEventListener('fullscreenchange', () => {
     showTopControls();
-    const capturedDir = _holdKeyDir;
-    setTimeout(() => {
-        if (_holdKeyDir === capturedDir) _startHold(capturedDir);
-    }, HOLD_THRESHOLD_MS);
-}, true);
-
-document.addEventListener('keyup', (e) => {
-    const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
-    const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
-    if (!isLeft && !isRight) return;
-    if (!document.fullscreenElement) { _holdKeyDir = null; return; }
-    e.preventDefault();
-    const held = Date.now() - _holdKeyStart;
-    const dir  = _holdKeyDir;
-    _holdKeyDir = null;
-    if (_isHolding()) {
-        _stopHold();
-    } else if (dir && held < HOLD_THRESHOLD_MS) {
-        _seekBy(dir === 'left' ? -3 : 3);
+    if (!document.fullscreenElement) {
+        _closeSettings();
+        _holdKeyDir = null;
+        playback.stopHold();
+        const panel = document.getElementById('playbackPanel');
+        if (panel) panel.style.display = 'none';
     }
-    showTopControls();
 });
 
-// Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
+// Back/Return button — context-dependent behavior (keyCode 461 on webOS)
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+
+    if (_reorderMode) { e.preventDefault(); _exitReorderMode(); return; }
+
+    // Settings panel: close sub-list first, then panel
+    if (_settingsOpen) {
+        e.preventDefault();
+        if (_settingsFocus === 'subopts') {
+            _settingsFocus = 'categories';
+            _settingsOptIdx = 0;
+            _renderSettingsCategories();
+            if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+        } else {
+            _closeSettings();
+        }
+        return;
+    }
 
     if (document.fullscreenElement) {
         e.preventDefault();
@@ -2253,21 +2464,352 @@ document.addEventListener('keydown', (e) => {
         return;
     }
 
+    // Main app visible (not start page): confirm return to home
     if (mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
         showConfirmDialog('🏠 Return to Home', 'Return to the home screen?', goToHomeScreen);
         return;
     }
 
-    // Start page: show platform exit prompt (disableBackHistoryAPI=true so we must call explicitly)
+    // Start page: show platform exit prompt
     if (typeof webOS !== 'undefined' && webOS.platformBack) webOS.platformBack();
 }, true);
 
+// ── Settings Panel State ─────────────────────────────────────────
+let _settingsOpen = false;
+let _settingsFocus = 'categories'; // 'categories' | 'subopts'
+let _settingsCatIdx = 0;           // 0–4
+let _settingsOptIdx = 0;           // index in current sub-list
+let _settingsStatsInterval = null;
+const SETTINGS_CATS = ['audio', 'subtitles', 'quality', 'speed', 'info'];
+
+function _openSettings() {
+    _settingsOpen = true;
+    _settingsFocus = 'categories';
+    _settingsCatIdx = 0;
+    _settingsOptIdx = 0;
+    const sp = document.getElementById('settingsPanel');
+    if (sp) sp.style.display = '';
+    _renderSettingsCategories();
+    _clearSettingsSubopts();
+    // Keep playback panel visible while settings open
+    if (_pbPanelTimer) { clearTimeout(_pbPanelTimer); _pbPanelTimer = null; }
+}
+
+function _closeSettings() {
+    _settingsOpen = false;
+    const sp = document.getElementById('settingsPanel');
+    if (sp) sp.style.display = 'none';
+    if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+}
+
+function _renderSettingsCategories() {
+    const cats = document.querySelectorAll('#spCategories .sp-cat');
+    cats.forEach((el, i) => {
+        el.classList.toggle('active', false);
+        el.classList.toggle('focused', i === _settingsCatIdx);
+    });
+}
+
+function _clearSettingsSubopts() {
+    const sub = document.getElementById('spSubopts');
+    if (sub) sub.innerHTML = '<span style="color:#333;font-size:0.75rem;padding:14px;display:block;">Select a category</span>';
+}
+
+function _enterSettingsSubopts() {
+    _settingsFocus = 'subopts';
+    _settingsOptIdx = 0;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'audio')     _buildAudioSublist();
+    if (cat === 'subtitles') _buildSubtitleSublist();
+    if (cat === 'quality')   _buildQualitySublist();
+    if (cat === 'speed')     _buildSpeedSublist();
+    if (cat === 'info')      _buildStreamInfoSublist();
+    // Mark active category
+    document.querySelectorAll('#spCategories .sp-cat').forEach((el, i) => {
+        el.classList.toggle('active', i === _settingsCatIdx);
+        el.classList.toggle('focused', false);
+    });
+}
+
+function _buildTrackSublist(header, items, onSelect) {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    sub.innerHTML = '';
+    const h = document.createElement('span');
+    h.className = 'sp-subheader';
+    h.textContent = header;
+    sub.appendChild(h);
+    items.forEach((item, i) => {
+        const div = document.createElement('div');
+        div.className = 'sp-opt' + (item.active ? ' active' : '') + (i === _settingsOptIdx ? ' focused' : '');
+        div.innerHTML = `<span>${escapeHtml(item.label)}</span><span class="sp-check">${item.active ? '✓' : ''}</span>`;
+        div.addEventListener('click', () => { onSelect(item); _enterSettingsSubopts(); });
+        sub.appendChild(div);
+    });
+}
+
+function _buildAudioSublist() {
+    const { audio } = playback.getTrackLists();
+    _buildTrackSublist('Audio Track', audio, item => playback.setAudioTrack(item.id));
+}
+
+function _buildSubtitleSublist() {
+    const { subtitles } = playback.getTrackLists();
+    _buildTrackSublist('Subtitle Track', subtitles, item => playback.setSubtitleTrack(item.id));
+}
+
+function _buildQualitySublist() {
+    const { quality } = playback.getTrackLists();
+    _buildTrackSublist('Video Quality', quality, item => playback.setQuality(item.id));
+}
+
+function _updateSettingsOptFocus() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'speed') {
+        sub.querySelectorAll('.sp-chip').forEach((el, i) => el.classList.toggle('focused', i === _settingsOptIdx));
+    } else if (cat === 'info') {
+        // info is read-only, no focus update needed
+    } else {
+        sub.querySelectorAll('.sp-opt').forEach((el, i) => el.classList.toggle('focused', i === _settingsOptIdx));
+    }
+}
+
+function _selectCurrentSettingsOpt() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (cat === 'speed') {
+        const chips = sub.querySelectorAll('.sp-chip');
+        if (chips[_settingsOptIdx]) chips[_settingsOptIdx].click();
+        return;
+    }
+    const opts = sub.querySelectorAll('.sp-opt');
+    if (opts[_settingsOptIdx]) opts[_settingsOptIdx].click();
+}
+
+function _buildSpeedSublist() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    sub.innerHTML = '';
+    const h = document.createElement('span');
+    h.className = 'sp-subheader';
+    h.textContent = 'Playback Speed';
+    sub.appendChild(h);
+    const wrap = document.createElement('div');
+    wrap.className = 'sp-speeds';
+    const rates = playback.getPlaybackRates();
+    const currentIdx = playback.getRateIndex();
+    rates.forEach((rate, i) => {
+        const chip = document.createElement('div');
+        chip.className = 'sp-chip' + (i === currentIdx ? ' active' : '') + (i === _settingsOptIdx ? ' focused' : '');
+        chip.textContent = rate + '×';
+        chip.addEventListener('click', () => {
+            playback.setRate(rate);
+            _buildSpeedSublist(); // refresh to show new active chip
+        });
+        wrap.appendChild(chip);
+    });
+    sub.appendChild(wrap);
+    const hint = document.createElement('div');
+    hint.style.cssText = 'padding:4px 14px;font-size:0.68rem;color:#444;';
+    hint.textContent = '▲/▼ also changes speed when not in settings';
+    sub.appendChild(hint);
+}
+
+function _buildStreamInfoSublist() {
+    if (_settingsStatsInterval) clearInterval(_settingsStatsInterval);
+    _renderStreamInfo();
+    _settingsStatsInterval = setInterval(_renderStreamInfo, 1000);
+}
+
+function _renderStreamInfo() {
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const s = playback.getStats();
+    if (!s) {
+        sub.innerHTML = '<span style="color:#555;padding:14px;display:block;font-size:0.75rem;">No stream loaded</span>';
+        return;
+    }
+
+    function row(key, val, cls) {
+        return `<div class="si-row-sp"><span class="si-key-sp">${escapeHtml(key)}</span><span class="si-val-sp ${cls || ''}">${escapeHtml(String(val))}</span></div>`;
+    }
+    function section(title, rows) {
+        return `<div class="si-section-sp"><span class="si-label-sp">${escapeHtml(title)}</span>${rows}</div>`;
+    }
+    function divider() { return '<div class="si-divider-sp"></div>'; }
+    function valCls(n) { return Number(n) === 0 ? 'good' : 'warn'; }
+
+    const res = s.width && s.height ? `${s.width} × ${s.height}` : '—';
+    sub.innerHTML =
+        section('Video',
+            row('Resolution', res) +
+            row('Frame Rate', s.frameRate) +
+            row('Codec', s.videoCodec) +
+            row('Bitrate', s.bandwidth)
+        ) +
+        divider() +
+        section('Audio',
+            row('Codec', s.audioCodec)
+        ) +
+        divider() +
+        section('Network',
+            row('Est. Bandwidth', s.estimatedBandwidth, 'good') +
+            row('Live Latency', s.liveLatency) +
+            row('Buffer Ahead', s.bufferAhead)
+        ) +
+        divider() +
+        section('Playback',
+            row('Dropped Frames', s.droppedFrames, valCls(s.droppedFrames)) +
+            row('Corrupted', s.corruptedFrames, valCls(s.corruptedFrames)) +
+            row('Load Time', s.loadLatency)
+        ) +
+        divider() +
+        section('Player',
+            row('Engine', playback.isActive() ? ('Shaka v5.1.6' + (playback.isUiActive() ? ' + UI' : '')) : 'Native (Shaka unavailable)', playback.isActive() ? 'good' : 'warn')
+        );
+}
+
+function _handleSettingsKey(e) {
+    const key = e.key;
+    const isUp    = key === 'ArrowUp'    || e.keyCode === 38;
+    const isDown  = key === 'ArrowDown'  || e.keyCode === 40;
+    const isLeft  = key === 'ArrowLeft'  || e.keyCode === 37;
+    const isRight = key === 'ArrowRight' || e.keyCode === 39;
+    const isEnter = key === 'Enter'      || e.keyCode === 13;
+
+    e.preventDefault();
+
+    if (_settingsFocus === 'categories') {
+        const catCount = SETTINGS_CATS.length;
+        if (isUp)    { _settingsCatIdx = Math.max(0, _settingsCatIdx - 1); _renderSettingsCategories(); }
+        if (isDown)  { _settingsCatIdx = Math.min(catCount - 1, _settingsCatIdx + 1); _renderSettingsCategories(); }
+        if (isRight || isEnter) { _enterSettingsSubopts(); }
+        if (isLeft)   { _closeSettings(); }
+        return;
+    }
+
+    // focus === 'subopts'
+    const cat = SETTINGS_CATS[_settingsCatIdx];
+    if (isLeft) {
+        _settingsFocus = 'categories';
+        _settingsOptIdx = 0;
+        _renderSettingsCategories();
+        if (_settingsStatsInterval) { clearInterval(_settingsStatsInterval); _settingsStatsInterval = null; }
+        return;
+    }
+    if (cat === 'info') return; // read-only, no selection
+
+    const sub = document.getElementById('spSubopts');
+    if (!sub) return;
+    const isSpeed = cat === 'speed';
+    const items = isSpeed ? sub.querySelectorAll('.sp-chip') : sub.querySelectorAll('.sp-opt');
+    const count = items.length;
+    if (count === 0) return;
+
+    if (isUp || (isSpeed && isLeft)) {
+        _settingsOptIdx = Math.max(0, _settingsOptIdx - 1);
+        _updateSettingsOptFocus();
+    }
+    if (isDown || (isSpeed && isRight)) {
+        _settingsOptIdx = Math.min(count - 1, _settingsOptIdx + 1);
+        _updateSettingsOptFocus();
+    }
+    if (isEnter) { _selectCurrentSettingsOpt(); }
+}
 
 // ----- Initialization -----
+playback.init(videoPlayer).then(() => {
+    const engine = playback.isActive() ? 'Shaka v5.1.6' : 'Native player (Shaka unavailable)';
+    statusArea.innerText = engine;
+    setTimeout(() => { if (statusArea.innerText === engine) statusArea.innerText = ''; }, 3000);
+});
 
+// Seek bar update — fires every 500ms while fullscreen
+setInterval(() => {
+    if (document.fullscreenElement) playback.updateSeekBar();
+}, 500);
+
+// Double-click the video surface to toggle fullscreen.
+// Uses the native dblclick event — browser handles timing, no manual counting.
+// All Shaka UI controls live inside .shaka-controls-container; clicks there
+// are ignored so menu/button interactions never accidentally trigger fullscreen.
+(function () {
+    const container = document.getElementById('shakaContainer');
+    if (!container) return;
+    container.addEventListener('dblclick', (e) => {
+        if (e.target.closest('button, .shaka-bottom-controls, .shaka-overflow-menu, .shaka-settings-menu')) return;
+        if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+        else container.requestFullscreen().catch(() => {});
+    });
+}());
+
+const pbLiveBtn = document.getElementById('pbLiveBtn');
+if (pbLiveBtn) pbLiveBtn.addEventListener('click', () => { playback.goToLive(); showTopControls(); });
+
+if (reorderBtn) reorderBtn.addEventListener('click', () => { _reorderMode ? _exitReorderMode() : _enterReorderMode(); });
+const _epgReorderBtn = document.getElementById('epgReorderBtn');
+if (_epgReorderBtn) _epgReorderBtn.addEventListener('click', () => { _reorderMode ? _exitReorderMode() : _enterReorderMode(); });
+
+// Channel number jump — type digits to jump to channel N in the current view
+const _chanNumOverlay = (() => {
+    const el = document.createElement('div');
+    el.className = 'chan-num-overlay';
+    el.style.display = 'none';
+    document.body.appendChild(el);
+    return el;
+})();
+document.addEventListener('keydown', (e) => {
+    if (!channels.length || (startPage && !startPage.classList.contains('hidden'))) return;
+    if (_reorderMode || _settingsOpen) return;
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
+    let digit = null;
+    if (e.keyCode >= 48 && e.keyCode <= 57) digit = String(e.keyCode - 48);
+    else if (e.keyCode >= 96 && e.keyCode <= 105) digit = String(e.keyCode - 96);
+    if (digit === null) return;
+    e.preventDefault();
+    _chanNumBuf += digit;
+    _chanNumOverlay.textContent = _chanNumBuf;
+    _chanNumOverlay.style.display = '';
+    clearTimeout(_chanNumTimer);
+    _chanNumTimer = setTimeout(() => {
+        const num = parseInt(_chanNumBuf, 10);
+        _chanNumBuf = '';
+        _chanNumOverlay.style.display = 'none';
+        if (currentFilteredChannels.length && num >= 1) {
+            // Prefer ch.chno match; fall back to positional (1-indexed)
+            let targetCh = currentFilteredChannels.find(c => c.chno === num);
+            if (!targetCh && num <= currentFilteredChannels.length) targetCh = currentFilteredChannels[num - 1];
+            if (targetCh) {
+                if (epgMode) {
+                    const rowIdx = currentFilteredChannels.indexOf(targetCh);
+                    epgFocusedRowIdx = rowIdx;
+                    updateEPGRowFocus();
+                    selectChannel(getChannelIndex(targetCh));
+                    updateEPGInfoPanel(targetCh);
+                } else {
+                    selectChannel(getChannelIndex(targetCh));
+                }
+            }
+        }
+    }, 2000);
+});
+
+const pbGearBtn = document.getElementById('pbGearBtn');
+if (pbGearBtn) pbGearBtn.addEventListener('click', () => { _openSettings(); });
+// Audio/Subtitle buttons are superseded by the settings panel
+if (typeof audioBtn !== 'undefined' && audioBtn) audioBtn.style.display = 'none';
+if (typeof subtitleBtn !== 'undefined' && subtitleBtn) subtitleBtn.style.display = 'none';
 const savedFavs = localStorage.getItem('iptv_favorites');
 if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
+const _savedRecent = localStorage.getItem('iptv_recent');
+if (_savedRecent) try { recentChannels = JSON.parse(_savedRecent); } catch (e) { }
+const _savedOrders = localStorage.getItem('iptv_orders');
+if (_savedOrders) try { customOrders = JSON.parse(_savedOrders); } catch (e) { }
 loadSavedPlaylists();
 const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;

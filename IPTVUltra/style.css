@@ -660,6 +660,13 @@ body {
     text-overflow: ellipsis;
 }
 
+.epg-info-ch-num {
+    font-size: 0.68rem;
+    color: #6c8eff;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
 .epg-info-group {
     font-size: 0.72rem;
     color: #6c7a93;
@@ -1006,6 +1013,15 @@ body {
     pointer-events: none;
 }
 
+.epg-ch-row-num {
+    font-size: 0.6rem;
+    color: #5a6a8a;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: right;
+    padding-right: 4px;
+}
+
 /* Channel label — sticks to the left as you scroll horizontally */
 .epg-ch-label {
     width: 300px;
@@ -1177,6 +1193,59 @@ body {
     border-bottom: 1px solid #262a33;
     font-weight: 600;
     font-size: 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.channels-header span { flex: 1; }
+
+.reorder-btn {
+    background: #2a2c35;
+    border: 1px solid #4a4c5a;
+    color: #c0c8e0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.reorder-btn:hover, .reorder-btn:focus { background: #3a3c50; border-color: #6c8eff; outline: none; }
+.reorder-btn.active { background: #1a3a20; border-color: #4adf80; color: #4adf80; }
+
+.reorder-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid #1e2028;
+    cursor: pointer;
+    background: #111316;
+    user-select: none;
+}
+.reorder-item:hover { background: #1a1d24; }
+.reorder-item.reorder-focused { background: #1e2850; border-left: 3px solid #6c8eff; }
+.reorder-item.reorder-grabbed { background: #1a3a20; border-left: 3px solid #4adf80; }
+.reorder-handle { font-size: 1.1rem; color: #555; flex-shrink: 0; }
+.reorder-item.reorder-grabbed .reorder-handle { color: #4adf80; }
+.reorder-name { font-size: 0.82rem; color: #d0d8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reorder-hint { font-size: 0.68rem; color: #6c8eff; padding: 6px 14px 2px; font-style: italic; }
+
+.chan-num-overlay {
+    position: fixed;
+    bottom: 90px;
+    right: 36px;
+    background: rgba(0,0,0,0.82);
+    color: #fff;
+    font-size: 52px;
+    font-weight: 700;
+    padding: 10px 26px;
+    border-radius: 14px;
+    letter-spacing: 6px;
+    z-index: 9999;
+    pointer-events: none;
+    border: 2px solid #6c8eff;
 }
 
 .search-container {
@@ -1287,6 +1356,25 @@ body {
 .epg-floating-groups-btn:focus {
     outline: 2px solid #6c8eff;
 }
+
+.epg-floating-reorder-btn {
+    position: fixed;
+    top: 12px;
+    left: 140px;
+    z-index: 200;
+    background: #2a2c35;
+    border: 1px solid #4a4c5a;
+    color: #c0c8e0;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 6px 14px;
+    border-radius: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.epg-floating-reorder-btn:hover, .epg-floating-reorder-btn:focus { background: #3a3c50; border-color: #6c8eff; outline: none; }
+.epg-floating-reorder-btn.active { background: #1a3a20; border-color: #4adf80; color: #4adf80; }
 
 .epg-info-now-playing-label {
     font-size: 0.6rem;
@@ -1525,11 +1613,149 @@ body {
     position: relative;
 }
 
+/* Shaka UI container — fills video-area or epg-video-wrap absolutely */
+#shakaContainer {
+    position: absolute;
+    inset: 0;
+}
+
 video {
     width: 100%;
     height: 100%;
     object-fit: contain;
     background: black;
+}
+
+/* ── Shaka built-in UI overrides ─────────────────────────── */
+
+/* Only show the overflow (⋮) button strip, hide Shaka's seek bar */
+.shaka-controls-container[shown="true"],
+.shaka-controls-container[casting="true"] {
+    background: transparent !important;
+}
+
+/* Control bar sits below our playback-panel (z-index 50) */
+.shaka-bottom-controls {
+    z-index: 30 !important;
+    padding: 0 12px 10px !important;
+}
+
+/* Button panel — play/pause left, overflow + fullscreen right */
+.shaka-controls-button-panel {
+    padding: 4px 0 !important;
+    gap: 12px !important;
+}
+
+/* All icon buttons */
+.shaka-controls-button-panel button {
+    color: rgba(255, 255, 255, 0.85) !important;
+    background: transparent !important;
+    border: none !important;
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 50% !important;
+    font-size: 1.25rem !important;
+    cursor: pointer !important;
+}
+
+.shaka-controls-button-panel button:focus,
+.shaka-controls-button-panel button:hover {
+    color: #fff !important;
+    background: rgba(44, 80, 220, 0.65) !important;
+    outline: 2px solid #6c8eff !important;
+    outline-offset: 2px !important;
+}
+
+/* Overflow / sub-menu panels */
+.shaka-overflow-menu,
+.shaka-audio-languages-menu,
+.shaka-text-languages-menu,
+.shaka-resolutions-menu,
+.shaka-playback-rates-menu,
+.shaka-statistics-container {
+    background: #1a1a2e !important;
+    border: 1px solid #333 !important;
+    border-radius: 6px !important;
+    min-width: 220px !important;
+    padding: 4px 0 !important;
+    bottom: 52px !important;
+    right: 8px !important;
+}
+
+.shaka-overflow-menu button,
+.shaka-audio-languages-menu button,
+.shaka-text-languages-menu button,
+.shaka-resolutions-menu button,
+.shaka-playback-rates-menu button {
+    color: #ddd !important;
+    font-size: 0.95rem !important;
+    padding: 11px 18px !important;
+    text-align: left !important;
+    width: 100% !important;
+    background: transparent !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+}
+
+.shaka-overflow-menu button:focus,
+.shaka-overflow-menu button:hover,
+.shaka-audio-languages-menu button:focus,
+.shaka-audio-languages-menu button:hover,
+.shaka-text-languages-menu button:focus,
+.shaka-text-languages-menu button:hover,
+.shaka-resolutions-menu button:focus,
+.shaka-resolutions-menu button:hover,
+.shaka-playback-rates-menu button:focus,
+.shaka-playback-rates-menu button:hover {
+    background: rgba(44, 80, 220, 0.5) !important;
+    color: #fff !important;
+    outline: none !important;
+}
+
+.shaka-current-selection-span {
+    color: #8bb !important;
+    font-size: 0.82rem !important;
+    margin-left: auto !important;
+}
+
+/* Back arrow button in sub-menus */
+.shaka-back-to-overflow-button {
+    border-bottom: 1px solid #333 !important;
+    margin-bottom: 2px !important;
+    color: #aaa !important;
+    font-size: 0.9rem !important;
+    padding: 10px 14px !important;
+    background: transparent !important;
+    width: 100% !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important;
+    cursor: pointer !important;
+}
+
+/* Statistics table inside the overflow stats view */
+.shaka-statistics-container {
+    padding: 10px 14px !important;
+    color: #ccc !important;
+    font-size: 0.82rem !important;
+    min-width: 260px !important;
+}
+
+.shaka-statistics-container .shaka-stat-value {
+    color: #8ec5fc !important;
+}
+
+/* Remove the large centered play/pause overlay button */
+.shaka-play-button {
+    display: none !important;
+}
+
+/* Spinner / muted styles for empty tracks */
+.shaka-controls-container .material-icons-round {
+    font-size: 1.1rem !important;
 }
 
 .video-controls-top {
@@ -1594,65 +1820,6 @@ video {
     background: rgba(59, 110, 255, 0.75);
     border-color: #6c8eff;
     box-shadow: 0 2px 14px rgba(59, 110, 255, 0.6);
-}
-
-.stream-info-overlay {
-    position: absolute;
-    bottom: 60px;
-    left: 15px;
-    background: rgba(0, 0, 0, 0.88);
-    backdrop-filter: blur(10px);
-    padding: 12px 16px;
-    border-radius: 10px;
-    font-size: 0.7rem;
-    font-family: monospace;
-    z-index: 100;
-    pointer-events: none;
-    transition: opacity 0.2s;
-    border-left: 3px solid #6c8eff;
-    line-height: 1.5;
-    min-width: 200px;
-}
-
-.si-section {
-    margin-bottom: 10px;
-}
-
-.si-section:last-child {
-    margin-bottom: 0;
-}
-
-.si-label {
-    font-size: 0.58rem;
-    color: #6c8eff;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 5px;
-    border-bottom: 1px solid rgba(108, 142, 255, 0.25);
-    padding-bottom: 3px;
-}
-
-.si-row {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 2px;
-}
-
-.si-key {
-    color: #8e9aaf;
-}
-
-.si-val {
-    color: #fff;
-    text-align: right;
-}
-
-.si-sub {
-    display: block;
-    font-size: 0.75rem;
-    color: #6c7a93;
-    margin-top: 1px;
 }
 
 .subtitle-panel {
@@ -1936,4 +2103,304 @@ video {
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
+}
+
+/* ── Playback Panel ──────────────────────────────── */
+.playback-panel {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(transparent, rgba(0, 0, 0, 0.92) 28%);
+    padding: 32px 22px 16px;
+    z-index: 50;
+    pointer-events: auto;
+}
+
+.pb-toprow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.pb-trick-badge {
+    background: rgba(42, 74, 204, 0.65);
+    border: 1.5px solid #4a6aff;
+    color: #a3c0ff;
+    font-size: 0.82rem;
+    font-weight: 700;
+    padding: 4px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    backdrop-filter: blur(6px);
+}
+
+.pb-rate-badge {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.pb-live-btn {
+    background: #e74c3c;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.pb-live-btn.at-live {
+    background: #555;
+    color: #aaa;
+}
+
+.pb-gear-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(42, 74, 204, 0.5);
+    border: 1.5px solid #6c8eff;
+    color: #fff;
+    font-size: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.pb-gear-btn:focus,
+.pb-gear-btn.focused {
+    outline: 2px solid #6c8eff;
+    outline-offset: 2px;
+}
+
+.pb-seek-row {
+    margin-bottom: 5px;
+}
+
+.pb-seek-track {
+    height: 5px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    position: relative;
+    cursor: pointer;
+}
+
+.pb-seek-fill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    background: #6c8eff;
+    border-radius: 3px;
+    width: 100%;
+}
+
+.pb-seek-thumb {
+    position: absolute;
+    top: 50%;
+    width: 15px;
+    height: 15px;
+    background: #fff;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 6px rgba(0, 0, 0, 0.6);
+    left: 100%;
+}
+
+.pb-timerow {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.68rem;
+    color: rgba(255, 255, 255, 0.4);
+}
+/* ── Settings Panel ──────────────────────────────── */
+.settings-panel {
+    position: absolute;
+    right: 18px;
+    bottom: 82px;
+    background: rgba(10, 12, 22, 0.97);
+    border: 1px solid #2a3050;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    backdrop-filter: blur(14px);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
+    z-index: 60;
+}
+
+.sp-categories {
+    width: 145px;
+    border-right: 1px solid rgba(108, 142, 255, 0.15);
+    padding: 8px 0;
+    flex-shrink: 0;
+}
+
+.sp-cat {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 9px 14px;
+    font-size: 0.77rem;
+    color: #888;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.sp-cat .sp-arrow {
+    font-size: 0.6rem;
+    color: #444;
+}
+
+.sp-cat.active {
+    color: #fff;
+    background: rgba(42, 74, 204, 0.3);
+}
+
+.sp-cat.active .sp-arrow {
+    color: #6c8eff;
+}
+
+.sp-cat.focused {
+    background: rgba(42, 74, 204, 0.2);
+    color: #fff;
+}
+
+.sp-subopts {
+    width: 210px;
+    padding: 8px 0;
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.sp-subopts::-webkit-scrollbar {
+    width: 3px;
+}
+
+.sp-subopts::-webkit-scrollbar-thumb {
+    background: #2a3050;
+    border-radius: 2px;
+}
+
+.sp-subheader {
+    font-size: 0.58rem;
+    color: #6c8eff;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 4px 14px 6px;
+    border-bottom: 1px solid rgba(108, 142, 255, 0.12);
+    margin-bottom: 4px;
+    display: block;
+}
+
+.sp-opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 14px;
+    font-size: 0.75rem;
+    color: #999;
+    cursor: pointer;
+}
+
+.sp-opt.active {
+    color: #fff;
+    font-weight: 600;
+}
+
+.sp-opt.active .sp-check {
+    color: #6c8eff;
+}
+
+.sp-opt.focused {
+    background: rgba(42, 74, 204, 0.35);
+    color: #fff;
+}
+
+.sp-check {
+    font-size: 0.7rem;
+    color: transparent;
+    flex-shrink: 0;
+}
+
+.sp-speeds {
+    display: flex;
+    gap: 6px;
+    padding: 8px 14px;
+    flex-wrap: wrap;
+}
+
+.sp-chip {
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #aaa;
+    font-size: 0.72rem;
+    padding: 4px 10px;
+    border-radius: 20px;
+    cursor: pointer;
+}
+
+.sp-chip.active {
+    background: rgba(42, 74, 204, 0.6);
+    border-color: #4a6aff;
+    color: #fff;
+    font-weight: 700;
+}
+
+.sp-chip.focused {
+    border-color: #6c8eff;
+    color: #fff;
+}
+
+.si-section-sp {
+    padding: 6px 14px 2px;
+}
+
+.si-label-sp {
+    font-size: 0.57rem;
+    color: #6c8eff;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid rgba(108, 142, 255, 0.15);
+    padding-bottom: 4px;
+    margin-bottom: 4px;
+    display: block;
+}
+
+.si-row-sp {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 3px 0;
+    font-size: 0.72rem;
+}
+
+.si-key-sp {
+    color: #666;
+}
+
+.si-val-sp {
+    color: #ccc;
+    font-family: monospace;
+    font-size: 0.7rem;
+}
+
+.si-val-sp.good {
+    color: #2ecc71;
+}
+
+.si-val-sp.warn {
+    color: #f39c12;
+}
+
+.si-divider-sp {
+    height: 1px;
+    background: rgba(255, 255, 255, 0.05);
+    margin: 5px 14px;
 }
