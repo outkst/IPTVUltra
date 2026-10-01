@@ -24,6 +24,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     }, k, kc);
     const back = () => key('GoBack', 461);
 
+    await fetch(BASE + '/__reset'); // server may have been running across runs
     await page.goto(BASE + '/', { waitUntil: 'load' });
     await page.evaluate(() => { localStorage.clear(); });
     await page.reload({ waitUntil: 'load' });
@@ -53,7 +54,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
 
     // Switch to All Channels and scroll with D-pad
     await page.evaluate(() => { document.querySelectorAll('.group-item')[1].click(); });
-    await page.waitForFunction(() => currentGroup === 'all' && epgRenderedRows.size > 10);
+    await page.waitForFunction(() => currentGroup === 'all' && epgRenderedRows.size > 5);
     await sleep(600);
     await fetch(BASE + '/__reset');
     for (let i = 0; i < 40; i++) await key('ArrowDown', 40);

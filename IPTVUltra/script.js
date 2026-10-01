@@ -30,7 +30,24 @@ let _searchCache = { query: null, result: null }; // invalidated on every channe
 let _searchDebounceTimer = null;
 
 // EPG virtual scroll state
-const EPG_ROW_H = 63;           // 62px row height + 1px border-bottom
+// Text scale. All type is in rem, so one root font-size drives it (style.css
+// :root). Row/strip heights must agree between CSS and the virtual-scroll
+// math, so JS computes rounded px values and publishes them as CSS variables.
+// Baked in for now; a future settings screen can change TEXT_SCALE and call
+// applyTextScale() followed by refreshCurrentView().
+const TEXT_SCALE = 1.375;
+const EPG_ROW_INNER = Math.round(62 * TEXT_SCALE);
+const EPG_ROW_H = EPG_ROW_INNER + 1;                 // + 1px border-bottom
+const EPG_TIME_STRIP_H = Math.round(34 * TEXT_SCALE);
+const CH_ITEM_H = Math.round(52 * TEXT_SCALE);       // channel list row (no EPG line)
+const CH_ITEM_H_EPG = Math.round(68 * TEXT_SCALE);   // channel list row with EPG line
+function applyTextScale() {
+    const st = document.documentElement.style;
+    st.setProperty('--text-scale', String(TEXT_SCALE));
+    st.setProperty('--epg-row-h', EPG_ROW_INNER + 'px');
+    st.setProperty('--epg-strip-h', EPG_TIME_STRIP_H + 'px');
+}
+applyTextScale();
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
 let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
@@ -138,6 +155,7 @@ const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
 const MAX_AUTO_RELOADS = 3;       // auto-reload budget per channel before giving up
 let _reloadAttempts = 0;
 let _stallGoodChecks = 0;
+let _errRetryTimer = null;
 
 
 let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
@@ -834,8 +852,8 @@ function renderChannelList() {
     renderedItems.clear();
 
     // Row height depends on whether EPG data is available
-    const ITEM_H = epgData.size > 0 ? 68 : 52;
-    const ITEM_INNER = epgData.size > 0 ? 66 : 50;
+    const ITEM_H = epgData.size > 0 ? CH_ITEM_H_EPG : CH_ITEM_H;
+    const ITEM_INNER = ITEM_H - 2;
     _stdItemH = ITEM_H;
 
     // Setup virtual container (preserve scroll position across re-renders)
@@ -983,6 +1001,7 @@ function selectChannel(index) {
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
     _reloadAttempts = 0;
+    if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; }
     const ch = channels[index];
     videoPlayer.pause();
     videoPlayer.src = ch.url;
@@ -990,6 +1009,7 @@ function selectChannel(index) {
     videoPlayer.play().catch(e => console.log);
     startStallWatchdog();
     channelInfoTag.innerText = `📺 ${ch.name}`;
+    channelInfoTag.style.visibility = '';
     statusArea.innerText = `▶️ ${ch.name}`;
     if (epgMode) {
         // Don't rebuild the EPG grid — just update active row highlighting in-place
@@ -1108,8 +1128,9 @@ function showStreamInfo() {
         '</div>';
 
     streamInfoOverlay.style.opacity = '1';
+    channelInfoTag.style.visibility = 'hidden'; // the tag sits under the overlay's corner
     if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; }, 3000);
+    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; channelInfoTag.style.visibility = ''; }, 3000);
 }
 
 function getSubtitleTracks() {
@@ -1452,7 +1473,7 @@ function hideEPGToast(delayMs = 0) {
 }
 
 // ── EPG Guide Layout ──────────────────────────────────────────
-const EPG_CH_W = 200;      // channel label column px
+const EPG_CH_W = 300;      // channel label column px (must match .epg-ch-label width in style.css)
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
 const EPG_WIN_HOURS = 7;   // ~1h past + 6h ahead
 
@@ -1534,7 +1555,7 @@ function buildEPGRow(i) {
         if (parseFloat(w) < 4) continue;
         const isNow = p.start <= now && p.stop > now;
         const wNum = parseFloat(w);
-        const descHtml = p.desc && wNum > 120
+        const descHtml = p.desc && wNum > 120 * TEXT_SCALE
             ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
             : '';
         progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" data-start="${p.start}" data-stop="${p.stop}" style="left:${sx}px;width:${w}px">` +
@@ -1567,12 +1588,12 @@ function renderEPGVisibleRows() {
     const scrollOuter = document.getElementById('epgScrollOuter');
     if (!body || !scrollOuter || !currentFilteredChannels.length || !_epgTotalGuideW) return;
     const BUFFER = 3;
-    const TIME_STRIP_H = 34;
-    const scrollTop = Math.max(0, scrollOuter.scrollTop - TIME_STRIP_H);
-    const viewH = scrollOuter.clientHeight - TIME_STRIP_H;
+    // Row i occupies content offset [strip + i*rowH, strip + (i+1)*rowH)
+    const scrollTop = scrollOuter.scrollTop;
+    const viewH = scrollOuter.clientHeight;
     const startIdx = Math.max(0, Math.floor(scrollTop / EPG_ROW_H) - BUFFER);
     const endIdx = Math.min(currentFilteredChannels.length - 1,
-        Math.ceil((scrollTop + viewH) / EPG_ROW_H) + BUFFER);
+        Math.ceil((scrollTop + viewH - EPG_TIME_STRIP_H) / EPG_ROW_H) + BUFFER);
     for (const [idx, el] of epgRenderedRows) {
         if (idx < startIdx || idx > endIdx) { el.remove(); epgRenderedRows.delete(idx); }
     }
@@ -2261,16 +2282,18 @@ function updateEPGRowFocus() {
 function scrollEPGRowIntoView(idx) {
     const scrollOuter = document.getElementById('epgScrollOuter');
     if (!scrollOuter) return;
-    const timeStripH = 34;
+    // Rows start after the in-flow sticky time strip, so a row's content
+    // offset is strip + idx*rowH; the strip also covers the top of the viewport.
+    const timeStripH = EPG_TIME_STRIP_H;
     const rowTop = idx * EPG_ROW_H;
     const rowBottom = rowTop + EPG_ROW_H;
-    const viewTop = scrollOuter.scrollTop + timeStripH;
-    const viewBottom = scrollOuter.scrollTop + scrollOuter.clientHeight;
+    const viewTop = scrollOuter.scrollTop;
+    const viewBottom = scrollOuter.scrollTop + scrollOuter.clientHeight - timeStripH;
     if (rowTop < viewTop) {
-        scrollOuter.scrollTop = rowTop - timeStripH;
+        scrollOuter.scrollTop = rowTop;
         renderEPGVisibleRows();
     } else if (rowBottom > viewBottom) {
-        scrollOuter.scrollTop = rowBottom - scrollOuter.clientHeight;
+        scrollOuter.scrollTop = rowBottom + timeStripH - scrollOuter.clientHeight;
         renderEPGVisibleRows();
     }
 }
@@ -2480,7 +2503,8 @@ videoPlayer.addEventListener('error', function () {
     _reloadAttempts++;
     statusArea.innerText = `⚠️ ${msg} — retrying (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …`;
     const idx = currentChannelIndex;
-    setTimeout(function () { if (currentChannelIndex === idx) reloadStream(true); }, 2500);
+    if (_errRetryTimer) clearTimeout(_errRetryTimer);
+    _errRetryTimer = setTimeout(function () { _errRetryTimer = null; if (currentChannelIndex === idx) reloadStream(true); }, 2500);
 });
 videoPlayer.addEventListener('resize', showStreamInfo);
 videoArea.addEventListener('mousemove', showTopControls);
