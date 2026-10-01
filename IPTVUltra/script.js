@@ -35,19 +35,34 @@ let _searchDebounceTimer = null;
 // math, so JS computes rounded px values and publishes them as CSS variables.
 // Baked in for now; a future settings screen can change TEXT_SCALE and call
 // applyTextScale() followed by refreshCurrentView().
-const TEXT_SCALE = 1.375;
-const EPG_ROW_INNER = Math.round(62 * TEXT_SCALE);
-const EPG_ROW_H = EPG_ROW_INNER + 1;                 // + 1px border-bottom
-const EPG_TIME_STRIP_H = Math.round(34 * TEXT_SCALE);
-const CH_ITEM_H = Math.round(52 * TEXT_SCALE);       // channel list row (no EPG line)
-const CH_ITEM_H_EPG = Math.round(68 * TEXT_SCALE);   // channel list row with EPG line
-function applyTextScale() {
+let TEXT_SCALE = 1.375;
+let EPG_ROW_INNER, EPG_ROW_H, EPG_TIME_STRIP_H, CH_ITEM_H, CH_ITEM_H_EPG;
+function applyTextScale(scale) {
+    TEXT_SCALE = scale;
+    EPG_ROW_INNER = Math.round(62 * scale);
+    EPG_ROW_H = EPG_ROW_INNER + 1;                 // + 1px border-bottom
+    EPG_TIME_STRIP_H = Math.round(34 * scale);
+    CH_ITEM_H = Math.round(52 * scale);            // channel list row (no EPG line)
+    CH_ITEM_H_EPG = Math.round(68 * scale);        // channel list row with EPG line
     const st = document.documentElement.style;
-    st.setProperty('--text-scale', String(TEXT_SCALE));
+    st.setProperty('--text-scale', String(scale));
     st.setProperty('--epg-row-h', EPG_ROW_INNER + 'px');
     st.setProperty('--epg-strip-h', EPG_TIME_STRIP_H + 'px');
 }
-applyTextScale();
+
+// Settings (persisted in localStorage) — UI and helpers under "// ----- Settings -----"
+const SETTINGS_KEY = 'iptv_settings';
+const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
+const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
+const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false };
+let settings = loadSettings();          // global: textScale, clock, autoLoad
+let playlistState = loadPlaylistState(); // per playlist key: startGroup, resume, lastChannel, lastGroup
+let _activePlaylistKey = null;          // key of the playlist currently loaded ('m:demo' for the demo)
+let settingsOpen = false;
+let settingsFocusIdx = 0;
+let _settingsRowsCache = null;
+applyTextScale(settings.textScale);
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
 let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
@@ -312,6 +327,11 @@ function formatTime12(ts) {
     return `${h12}:${min.toString().padStart(2, '0')}${h >= 12 ? 'PM' : 'AM'}`;
 }
 
+// Clock format follows the user setting (12-hour default)
+function formatClock(ts) {
+    return settings.clock === '24' ? formatTimeHHMM(ts) : formatTime12(ts);
+}
+
 function formatDuration(totalMins) {
     if (totalMins < 60) return `${totalMins} min`;
     const hrs = Math.floor(totalMins / 60);
@@ -503,13 +523,13 @@ function updateNowNext() {
             ? Math.min(100, Math.max(0, (Date.now() - nowProg.start) / (nowProg.stop - nowProg.start) * 100))
             : 0;
         const timeStr = nowProg.stop
-            ? formatTime12(nowProg.start) + '–' + formatTime12(nowProg.stop)
-            : formatTime12(nowProg.start);
+            ? formatClock(nowProg.start) + '–' + formatClock(nowProg.stop)
+            : formatClock(nowProg.start);
         html += `<div class="epg-row epg-now"><span class="epg-badge">NOW</span><span class="epg-title">${escapeHtml(nowProg.title)}</span><span class="epg-time">${timeStr}</span></div>`;
         html += `<div class="epg-progress-bar"><div class="epg-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
     }
     if (nextProg) {
-        html += `<div class="epg-row epg-next"><span class="epg-badge epg-badge-next">NEXT</span><span class="epg-title epg-title-next">${escapeHtml(nextProg.title)}</span><span class="epg-time">${formatTime12(nextProg.start)}</span></div>`;
+        html += `<div class="epg-row epg-next"><span class="epg-badge epg-badge-next">NEXT</span><span class="epg-title epg-title-next">${escapeHtml(nextProg.title)}</span><span class="epg-time">${formatClock(nextProg.start)}</span></div>`;
     }
     panel.innerHTML = html;
     panel.style.display = 'block';
@@ -640,18 +660,18 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
         searchInput.value = '';
-        currentGroup = 'favorites';
+        _activePlaylistKey = 'm:' + url;
+        rememberLastPlaylist(_activePlaylistKey);
+        currentGroup = initialGroupFor(_activePlaylistKey);
         currentPlaylistType = 'm3u';
         extractGroups();
+        validateCurrentGroup();
         resetStdFocus();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         renderChannelList();
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
-        if (channels.length) setTimeout(() => {
-            const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
-        }, 500);
+        if (channels.length) setTimeout(selectInitialChannel, 500);
         // Start EPG load in background after playlist is ready
         if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
     } catch (err) {
@@ -692,18 +712,17 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         updateStartStatus(`Demo loaded: ${channels.length} channels`, false, true, false, 100);
         currentSearchQuery = '';
         searchInput.value = '';
-        currentGroup = 'favorites';
+        _activePlaylistKey = 'm:demo'; // not remembered for auto-load
+        currentGroup = initialGroupFor(_activePlaylistKey);
         currentPlaylistType = 'm3u';
         extractGroups();
+        validateCurrentGroup();
         resetStdFocus();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         renderChannelList();
         statusArea.innerText = `🎬 Demo: ${channels.length} channels`;
-        if (channels.length) setTimeout(() => {
-            const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
-        }, 500);
+        if (channels.length) setTimeout(selectInitialChannel, 500);
         isLoading = false;
         setLoadSelectedButtonEnabled(true);
         showLoading(false);
@@ -752,6 +771,7 @@ function renderGroupsList() {
         div.onclick = () => {
             currentGroup = group;
             stdGroupFocusIdx = Math.max(0, groupsList.indexOf(group));
+            if (_activePlaylistKey) { getPlaylistState(_activePlaylistKey).lastGroup = group; savePlaylistState(); }
             if (currentSearchQuery) { currentSearchQuery = ''; searchInput.value = ''; }
             renderGroupsList();
             requestAnimationFrame(refreshCurrentView);
@@ -839,17 +859,19 @@ function renderChannelList() {
     const total = filtered.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
     channelCountSpan.innerText = `${total} channels${info}`;
+
+    // Remove old scroll listener and drop the row cache before any early return,
+    // so an empty group never leaves stale (detached) rows behind
+    if (currentScrollListener) {
+        channelListDiv.removeEventListener('scroll', currentScrollListener);
+        currentScrollListener = null;
+    }
+    renderedItems.clear();
+    _stdRenderVisible = null;
     if (!total) {
         channelListDiv.innerHTML = `<div style="padding:24px;text-align:center;">📭 No channels found</div>`;
         return;
     }
-
-    // Remove old scroll listener
-    if (currentScrollListener) {
-        channelListDiv.removeEventListener('scroll', currentScrollListener);
-    }
-    // Clear rendered items map
-    renderedItems.clear();
 
     // Row height depends on whether EPG data is available
     const ITEM_H = epgData.size > 0 ? CH_ITEM_H_EPG : CH_ITEM_H;
@@ -1011,6 +1033,10 @@ function selectChannel(index) {
     channelInfoTag.innerText = `📺 ${ch.name}`;
     channelInfoTag.style.visibility = '';
     statusArea.innerText = `▶️ ${ch.name}`;
+    if (_activePlaylistKey) {
+        getPlaylistState(_activePlaylistKey).lastChannel = { url: ch.url, tvgId: ch.tvgId || '' };
+        savePlaylistState();
+    }
     if (epgMode) {
         // Don't rebuild the EPG grid — just update active row highlighting in-place
         for (const [, el] of epgRenderedRows) el.classList.remove('active');
@@ -1355,6 +1381,8 @@ function goToHomeScreen() {
 
     // Reset app state (also restores the standard layout if the guide was showing)
     exitEPGMode();
+    _activePlaylistKey = null;
+    if (settingsOpen) closeSettings();
     currentPlaylistType = null;
     isLoading = false;
 
@@ -1633,11 +1661,7 @@ function rebuildEPGSkeleton(winStart, winEnd) {
         const x = ((t - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
         const minOfHour = new Date(t).getMinutes();
         if (minOfHour === 0) {
-            const d = new Date(t);
-            const h = d.getHours();
-            const h12 = h % 12 || 12;
-            const label = `${h12}:00${h >= 12 ? 'PM' : 'AM'}`;
-            tmHtml += `<span class="epg-time-marker" style="left:${x}px">${label}</span>`;
+            tmHtml += `<span class="epg-time-marker" style="left:${x}px">${formatClock(t)}</span>`;
         } else if (minOfHour === 30) {
             tmHtml += `<span class="epg-time-tick epg-time-tick-half" style="left:${x}px"></span>`;
         } else {
@@ -1752,7 +1776,7 @@ function updateEPGInfoPanel(ch) {
     const curr = getCurrentProgramme(ch.tvgId);
     if (curr) {
         const minsLeft = Math.max(0, Math.ceil((curr.stop - Date.now()) / 60000));
-        time.textContent = `${formatTime12(curr.start)} – ${formatTime12(curr.stop)}  (${formatDuration(minsLeft)})`;
+        time.textContent = `${formatClock(curr.start)} – ${formatClock(curr.stop)}  (${formatDuration(minsLeft)})`;
         title.textContent = curr.title;
         desc.textContent = curr.desc || '';
         if (nowPlayingLabel) nowPlayingLabel.style.display = '';
@@ -1770,7 +1794,7 @@ function updateEPGInfoPanel(ch) {
     const nextDescEl = document.getElementById('epgInfoNextDesc');
     const next = getNextProgramme(ch.tvgId);
     if (upNextEl && next) {
-        nextTimeEl.textContent = `${formatTime12(next.start)} – ${formatTime12(next.stop)}`;
+        nextTimeEl.textContent = `${formatClock(next.start)} – ${formatClock(next.stop)}`;
         nextTitleEl.textContent = next.title;
         nextDescEl.textContent = next.desc || '';
         upNextEl.style.display = '';
@@ -2106,17 +2130,17 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
         searchInput.value = '';
-        currentGroup = 'favorites';
+        _activePlaylistKey = 'x:' + base + '|' + username;
+        rememberLastPlaylist(_activePlaylistKey);
+        currentGroup = initialGroupFor(_activePlaylistKey);
         currentPlaylistType = 'xtream';
         extractGroups();
+        validateCurrentGroup();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
         statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
-        if (channels.length) setTimeout(() => {
-            const firstIdx = currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0;
-            selectChannel(firstIdx);
-        }, 500);
+        if (channels.length) setTimeout(selectInitialChannel, 500);
 
         // 5. EPG is fetched lazily per visible row (see "Xtream lazy EPG"); warm favorites in the background
         startEpgTick();
@@ -2229,6 +2253,8 @@ function updateFocusableElements() {
             if (saveXtreamBtn) focusableElements.push(saveXtreamBtn);
         }
         if (loadSelectedBtn && !loadSelectedBtn.disabled) focusableElements.push(loadSelectedBtn);
+        const sb = document.getElementById('settingsBtn');
+        if (sb) focusableElements.push(sb);
     }
 }
 function focusElement(idx) {
@@ -2239,6 +2265,181 @@ function focusElement(idx) {
     const el = focusableElements[currentFocusIndex];
     if (el) { el.focus(); el.scrollIntoView({ block: 'nearest' }); }
 }
+// ----- Settings -----
+function loadSettings() {
+    let st = {};
+    try { st = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') || {}; } catch (_) { st = {}; }
+    const out = Object.assign({}, DEFAULT_SETTINGS, st);
+    if (TEXT_SCALE_OPTIONS.indexOf(out.textScale) === -1) out.textScale = DEFAULT_SETTINGS.textScale;
+    if (out.clock !== '12' && out.clock !== '24') out.clock = DEFAULT_SETTINGS.clock;
+    out.autoLoad = !!out.autoLoad;
+    return out;
+}
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
+function loadPlaylistState() { try { return JSON.parse(localStorage.getItem(PLAYLIST_STATE_KEY) || '{}') || {}; } catch (_) { return {}; } }
+function savePlaylistState() { try { localStorage.setItem(PLAYLIST_STATE_KEY, JSON.stringify(playlistState)); } catch (_) { /* storage unavailable */ } }
+function getPlaylistState(key) { if (!playlistState[key]) playlistState[key] = {}; return playlistState[key]; }
+function playlistKeyOf(p) { return p.type === 'xtream' ? 'x:' + String(p.url).replace(/\/$/, '') + '|' + p.username : 'm:' + p.url; }
+function rememberLastPlaylist(key) { try { localStorage.setItem(LAST_PLAYLIST_KEY, key); } catch (_) { /* storage unavailable */ } }
+function refreshViewIfLoaded() { if (currentPlaylistType) refreshCurrentView(); }
+
+// Starting group for a playlist: Favorites (default), All Channels, or the last group used
+function initialGroupFor(key) {
+    const ps = getPlaylistState(key);
+    if (ps.startGroup === 'all') return 'all';
+    if (ps.startGroup === 'last' && ps.lastGroup) return ps.lastGroup;
+    return 'favorites';
+}
+// Called after extractGroups(): a remembered group may no longer exist in the playlist
+function validateCurrentGroup() {
+    if (groupsList.indexOf(currentGroup) === -1) { currentGroup = 'favorites'; renderGroupsList(); }
+}
+// First channel after a playlist loads: the last one watched (if enabled and still present), else the first row
+function selectInitialChannel() {
+    if (!channels.length) return;
+    const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
+    if (ps && ps.resume !== false && ps.lastChannel) {
+        let idx = channels.findIndex(c => c.url === ps.lastChannel.url);
+        if (idx < 0 && ps.lastChannel.tvgId) idx = channels.findIndex(c => c.tvgId === ps.lastChannel.tvgId);
+        if (idx >= 0) {
+            selectChannel(idx);
+            if (epgMode) {
+                const fi = currentFilteredChannels.indexOf(channels[idx]);
+                if (fi >= 0) { epgFocusedRowIdx = fi; updateEPGRowFocus(); }
+            }
+            return;
+        }
+    }
+    selectChannel(currentFilteredChannels.length ? getChannelIndex(currentFilteredChannels[0]) : 0);
+}
+
+// Which playlist the per-playlist rows apply to: the loaded one, else the one selected on the start page
+function settingsTargetKey() {
+    if (_activePlaylistKey && _activePlaylistKey !== 'm:demo') {
+        const p = savedPlaylists.find(pl => playlistKeyOf(pl) === _activePlaylistKey);
+        return { key: _activePlaylistKey, name: p ? p.name : 'current playlist' };
+    }
+    if (!startPage.classList.contains('hidden') && selectedPlaylistId !== null && savedPlaylists[selectedPlaylistId]) {
+        const p = savedPlaylists[selectedPlaylistId];
+        return { key: playlistKeyOf(p), name: p.name };
+    }
+    return null;
+}
+
+function settingsRows() {
+    const t = settingsTargetKey();
+    const ps = t ? getPlaylistState(t.key) : null;
+    const forName = t ? `For ${t.name}` : 'Select or load a playlist first';
+    const cur = () => (currentChannelIndex >= 0 ? channels[currentChannelIndex] : null);
+    return [
+        { id: 'textScale', type: 'choice', label: 'Text size', sub: 'Applies to every screen',
+          options: TEXT_SCALE_OPTIONS.map(v => ({ v, label: Math.round(v * 100) + '%' })),
+          get: () => settings.textScale,
+          set: v => { settings.textScale = v; saveSettings(); applyTextScale(v); _epgSkeletonWinStart = 0; refreshViewIfLoaded(); } },
+        { id: 'clock', type: 'choice', label: 'Clock', sub: 'Guide, Now/Next and programme times',
+          options: [{ v: '12', label: '12-hour' }, { v: '24', label: '24-hour' }],
+          get: () => settings.clock,
+          set: v => { settings.clock = v; saveSettings(); _epgSkeletonWinStart = 0; refreshViewIfLoaded(); updateNowNext(); if (epgMode && cur()) updateEPGInfoPanel(cur()); } },
+        { id: 'autoLoad', type: 'toggle', label: 'Auto-load last playlist', sub: 'Skip the start page on launch',
+          get: () => settings.autoLoad, set: v => { settings.autoLoad = v; saveSettings(); } },
+        { id: 'startGroup', type: 'choice', label: 'Starting group', sub: forName, disabled: !t,
+          options: [{ v: 'favorites', label: 'Favorites' }, { v: 'all', label: 'All Channels' }, { v: 'last', label: 'Last used' }],
+          get: () => (ps && ps.startGroup) || 'favorites', set: v => { ps.startGroup = v; savePlaylistState(); } },
+        { id: 'resume', type: 'toggle', label: 'Resume last channel', sub: forName, disabled: !t,
+          get: () => !ps || ps.resume !== false, set: v => { ps.resume = v; savePlaylistState(); } },
+        { id: 'clearFavs', type: 'action', label: 'Clear favorites', sub: `${favoriteIds.size.toLocaleString()} saved`, button: 'Clear', disabled: !favoriteIds.size,
+          run: () => showConfirmDialog('⭐ Clear Favorites', `Remove all ${favoriteIds.size.toLocaleString()} favorites?`, clearFavorites) },
+    ];
+}
+function settingsFocusables(rows) { return rows.filter(r => !r.disabled).map(r => r.id).concat(['close']); }
+
+function renderSettings() {
+    const list = document.getElementById('settingsList');
+    if (!list) return;
+    const rows = settingsRows();
+    _settingsRowsCache = rows;
+    const foc = settingsFocusables(rows);
+    settingsFocusIdx = Math.max(0, Math.min(settingsFocusIdx, foc.length - 1));
+    const focusedId = foc[settingsFocusIdx];
+    list.innerHTML = '';
+    for (const r of rows) {
+        const row = document.createElement('div');
+        row.className = 'settings-row' + (r.disabled ? ' disabled' : '') + (r.id === focusedId ? ' focused' : '');
+        row.dataset.id = r.id;
+        let valueHtml;
+        if (r.type === 'choice') {
+            const o = r.options.find(x => x.v === r.get()) || r.options[0];
+            valueHtml = `<button class="settings-arrow" data-dir="-1" aria-label="Previous">◀</button><span class="settings-val">${escapeHtml(o.label)}</span><button class="settings-arrow" data-dir="1" aria-label="Next">▶</button>`;
+        } else if (r.type === 'toggle') {
+            const on = !!r.get();
+            valueHtml = `<span class="settings-switch${on ? ' on' : ''}"><span class="settings-knob"></span></span><span class="settings-val">${on ? 'On' : 'Off'}</span>`;
+        } else {
+            valueHtml = `<button class="settings-action">${escapeHtml(r.button || 'Go')}</button>`;
+        }
+        row.innerHTML = `<div class="settings-label"><div class="settings-name">${escapeHtml(r.label)}</div>${r.sub ? `<div class="settings-sub">${escapeHtml(r.sub)}</div>` : ''}</div><div class="settings-value">${valueHtml}</div>`;
+        if (!r.disabled) {
+            row.querySelectorAll('.settings-arrow').forEach(b => b.addEventListener('click', e => {
+                e.stopPropagation(); settingsFocusIdx = foc.indexOf(r.id); settingsChange(r, +b.dataset.dir);
+            }));
+            row.addEventListener('click', () => { settingsFocusIdx = foc.indexOf(r.id); settingsActivate(r); });
+        }
+        list.appendChild(row);
+    }
+    const closeBtn = document.getElementById('settingsCloseBtn');
+    if (closeBtn) closeBtn.classList.toggle('focused', focusedId === 'close');
+    const f = list.querySelector('.settings-row.focused');
+    if (f) f.scrollIntoView({ block: 'nearest' });
+}
+function settingsChange(r, dir) {
+    if (r.type === 'choice') {
+        const i = r.options.findIndex(x => x.v === r.get());
+        r.set(r.options[(i + dir + r.options.length) % r.options.length].v);
+    } else if (r.type === 'toggle') {
+        r.set(dir > 0 ? true : dir < 0 ? false : !r.get());
+    }
+    renderSettings();
+}
+function settingsActivate(r) {
+    if (r.type === 'action') { r.run(); return; }
+    settingsChange(r, r.type === 'toggle' ? 0 : 1);
+}
+function handleSettingsKey(e) {
+    const k = e.key, kc = e.keyCode;
+    const rows = _settingsRowsCache || settingsRows();
+    const foc = settingsFocusables(rows);
+    const id = foc[settingsFocusIdx];
+    const row = rows.find(r => r.id === id);
+    if (k === 'ArrowUp' || kc === 38) { e.preventDefault(); settingsFocusIdx = Math.max(0, settingsFocusIdx - 1); renderSettings(); }
+    else if (k === 'ArrowDown' || kc === 40) { e.preventDefault(); settingsFocusIdx = Math.min(foc.length - 1, settingsFocusIdx + 1); renderSettings(); }
+    else if (k === 'ArrowLeft' || kc === 37) { e.preventDefault(); if (row && row.type !== 'action') settingsChange(row, -1); }
+    else if (k === 'ArrowRight' || kc === 39) { e.preventDefault(); if (row && row.type !== 'action') settingsChange(row, 1); }
+    else if (k === 'Enter' || kc === 13) { e.preventDefault(); if (id === 'close') closeSettings(); else if (row) settingsActivate(row); }
+}
+function openSettings() {
+    if (document.fullscreenElement) return;
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
+    const ov = document.getElementById('settingsOverlay');
+    if (!ov) return;
+    settingsOpen = true;
+    settingsFocusIdx = 0;
+    renderSettings();
+    ov.classList.remove('hidden');
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+}
+function closeSettings() {
+    const ov = document.getElementById('settingsOverlay');
+    if (ov) ov.classList.add('hidden');
+    settingsOpen = false;
+    if (!startPage.classList.contains('hidden')) { updateFocusableElements(); focusElement(currentFocusIndex); }
+}
+function clearFavorites() {
+    favoriteIds.clear();
+    localStorage.setItem('iptv_favorites', '[]');
+    document.querySelectorAll('.epg-fav-btn, .epg-info-fav-btn').forEach(el => { el.textContent = '☆'; el.classList.remove('fav-active'); });
+    refreshViewIfLoaded();
+    if (settingsOpen) renderSettings();
+}
+
 // ── Standard (M3U) View Remote Navigation ─────────────────────
 function resetStdFocus() {
     stdFocusZone = 'channels';
@@ -2354,8 +2555,14 @@ function handleRemoteNav(e) {
         return;
     }
 
+    // Settings overlay owns the remote while open
+    if (settingsOpen) { handleSettingsKey(e); return; }
+
     // Fullscreen playback keys (seek, trick-play, play/pause) have dedicated listeners
     if (document.fullscreenElement) return;
+
+    // Yellow colour key opens Settings from any screen
+    if (kc === 405 || k === 'ColorF2Yellow') { e.preventDefault(); openSettings(); return; }
 
     const inMain = mainApp && mainApp.style.display !== 'none';
 
@@ -2462,6 +2669,14 @@ if (epgInfoFavBtn) epgInfoFavBtn.addEventListener('click', () => {
 });
 reloadBtn.addEventListener('click', reloadStream);
 homePageBtn.addEventListener('click', goToHomeScreen);
+['settingsBtn', 'settingsFooterBtn', 'epgSettingsBtn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.addEventListener('click', openSettings);
+});
+const settingsCloseBtn = document.getElementById('settingsCloseBtn');
+if (settingsCloseBtn) settingsCloseBtn.addEventListener('click', closeSettings);
+const settingsOverlayEl = document.getElementById('settingsOverlay');
+if (settingsOverlayEl) settingsOverlayEl.addEventListener('click', e => { if (e.target === settingsOverlayEl) closeSettings(); });
 toggleGroupsBtn.addEventListener('click', toggleGroupsColumn);
 showGroupsBtn.addEventListener('click', toggleGroupsColumn);
 const epgVideoWrap = document.getElementById('epgVideoWrap');
@@ -2617,6 +2832,7 @@ document.addEventListener('keydown', (e) => {
     if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
     if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0) return;
     if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
+    if (settingsOpen) return;
     e.preventDefault();
     if (kc === 415) { videoPlayer.play().catch(() => {}); showTopControls(); }
     else if (kc === 19) { videoPlayer.pause(); showTopControls(); }
@@ -2633,6 +2849,7 @@ document.addEventListener('keydown', (e) => {
         confirmNo.click();
         return;
     }
+    if (settingsOpen) { e.preventDefault(); closeSettings(); return; }
 
     if (document.fullscreenElement) {
         e.preventDefault();
@@ -2660,4 +2877,21 @@ const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;
 // Force a channel list refresh to show favorites
 if (currentGroup === 'favorites') refreshCurrentView();
+
+// Auto-load the last playlist (setting). On failure the loader leaves the
+// start page showing the error, so nothing else is needed here.
+if (settings.autoLoad) {
+    let lastKey = null;
+    try { lastKey = localStorage.getItem(LAST_PLAYLIST_KEY); } catch (_) { /* storage unavailable */ }
+    const idx = lastKey ? savedPlaylists.findIndex(pl => playlistKeyOf(pl) === lastKey) : -1;
+    if (idx >= 0) {
+        const p = savedPlaylists[idx];
+        selectedPlaylistId = idx;
+        updateStartStatus(`Auto-loading "${p.name}" …`, false, false, true, 0);
+        setTimeout(() => {
+            if (p.type === 'xtream') loadXtreamPlaylist(p.url, p.username, p.password);
+            else loadM3UFromUrl(p.url, p.epgUrl || '');
+        }, 100);
+    }
+}
 setTimeout(() => { updateFocusableElements(); focusElement(0); }, 500);

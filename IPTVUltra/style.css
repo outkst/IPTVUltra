@@ -1974,3 +1974,212 @@ video {
     animation: spin 0.8s linear infinite;
     flex-shrink: 0;
 }
+/* ----- Settings overlay ----- */
+.settings-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(6, 8, 12, 0.72);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1500;
+}
+
+.settings-overlay.hidden {
+    display: none;
+}
+
+.settings-card {
+    width: 42rem;
+    max-width: 92vw;
+    max-height: 86vh;
+    background: #14161e;
+    border: 1px solid #2a2e3c;
+    border-radius: 14px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.settings-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    padding: 18px 24px 12px;
+    border-bottom: 1px solid #262a33;
+}
+
+.settings-list {
+    overflow-y: auto;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 2px solid transparent;
+    cursor: pointer;
+}
+
+.settings-row:hover {
+    background: #1b1e29;
+}
+
+.settings-row.focused {
+    background: #1b2345;
+    border-color: #6c8eff;
+}
+
+.settings-row.disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.settings-label {
+    min-width: 0;
+}
+
+.settings-name {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.settings-sub {
+    font-size: 0.75rem;
+    color: #8b93a7;
+    margin-top: 2px;
+}
+
+.settings-value {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.settings-val {
+    font-size: 0.95rem;
+    font-weight: 600;
+    min-width: 6.5em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.settings-arrow {
+    background: #242731;
+    border: 1px solid #4a4e5c;
+    color: #ddd;
+    border-radius: 8px;
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    cursor: pointer;
+}
+
+.settings-row.focused .settings-arrow {
+    background: #2a3a70;
+    border-color: #6c8eff;
+    color: #fff;
+}
+
+.settings-switch {
+    width: 2.6rem;
+    height: 1.45rem;
+    border-radius: 1rem;
+    background: #3a3e4c;
+    position: relative;
+    transition: background 0.15s;
+    flex-shrink: 0;
+}
+
+.settings-switch.on {
+    background: #4a6aff;
+}
+
+.settings-knob {
+    position: absolute;
+    top: 0.15rem;
+    left: 0.15rem;
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 50%;
+    background: #fff;
+    transition: left 0.15s;
+}
+
+.settings-switch.on .settings-knob {
+    left: 1.3rem;
+}
+
+.settings-action {
+    background: #5a2430;
+    border: 1px solid #c04a5c;
+    color: #ffd6dc;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 6px 16px;
+    cursor: pointer;
+}
+
+.settings-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 24px 16px;
+    border-top: 1px solid #262a33;
+}
+
+.settings-hint {
+    font-size: 0.75rem;
+    color: #8b93a7;
+}
+
+#settingsCloseBtn.focused {
+    outline: 2px solid #6c8eff;
+    outline-offset: 2px;
+}
+
+/* Settings entry points */
+.footer-btns {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.channels-status {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.epg-info-settings-btn {
+    position: absolute;
+    top: 14px;
+    right: calc(14px + 3.6rem);
+    background: none;
+    border: 1px solid #4a4e5c;
+    color: #aab;
+    font-size: 1.1rem;
+    cursor: pointer;
+    padding: 5px 10px;
+    border-radius: 6px;
+    line-height: 1;
+    z-index: 2;
+}
+
+.epg-info-settings-btn:hover,
+.epg-info-settings-btn:focus {
+    border-color: #6c8eff;
+    color: #fff;
+}

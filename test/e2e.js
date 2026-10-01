@@ -169,6 +169,38 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     // Group name escaping
     check('group names are HTML-escaped', await page.evaluate(() => { channels[0].group = 'A&B <Sports>'; extractGroups(); return [...document.querySelectorAll('.group-item')].some(g => g.textContent.includes('A&B <Sports>')) && !document.querySelector('.group-item sports'); }));
 
+    // ---------- Settings overlay (opened from the channel-list footer) ----------
+    await page.evaluate(() => { document.querySelectorAll('.group-item')[1].click(); }); // All Channels (non-empty)
+    await sleep(300);
+    check('empty group leaves no stale rows (regression)', await page.evaluate(() => { const g = currentGroup; currentGroup = 'no-such-group'; renderChannelList(); const empty = renderedItems.size === 0; currentGroup = g; renderChannelList(); return empty && renderedItems.size > 0; }));
+    await page.click('#settingsFooterBtn');
+    check('settings opens from footer button', await page.evaluate(() => settingsOpen && !document.getElementById('settingsOverlay').classList.contains('hidden')));
+    check('settings: first row focused', await page.evaluate(() => document.querySelector('.settings-row.focused').dataset.id === 'textScale'));
+    await key('ArrowLeft', 37); await sleep(150);
+    const ts = await page.evaluate(() => ({ s: settings.textScale, rowH: EPG_ROW_H, cssVar: getComputedStyle(document.documentElement).getPropertyValue('--epg-row-h').trim(), item: renderedItems.get(0) && renderedItems.get(0).style.height, stored: JSON.parse(localStorage.getItem('iptv_settings')).textScale }));
+    check('text size Left → 125%, rows and CSS var follow, persisted', ts.s === 1.25 && ts.rowH === 79 && ts.cssVar === '78px' && ts.item === '63px' && ts.stored === 1.25, JSON.stringify(ts));
+    await key('ArrowRight', 39); await sleep(150);
+    check('text size Right → back to 137%', await page.evaluate(() => settings.textScale === 1.375 && EPG_ROW_H === 86));
+    await key('ArrowDown', 40); await key('ArrowRight', 39); await sleep(100);
+    check('clock Right → 24-hour, persisted', await page.evaluate(() => settings.clock === '24' && JSON.parse(localStorage.getItem('iptv_settings')).clock === '24' && /^\d{2}:\d{2}$/.test(formatClock(Date.now()))));
+    await key('ArrowLeft', 37); await sleep(100);
+    check('clock Left → 12-hour', await page.evaluate(() => settings.clock === '12' && /[AP]M$/.test(formatClock(Date.now()))));
+    await key('ArrowDown', 40); await key('Enter', 13); await sleep(100);
+    check('auto-load toggle Enter → On, persisted', await page.evaluate(() => settings.autoLoad === true && JSON.parse(localStorage.getItem('iptv_settings')).autoLoad === true));
+    check('per-playlist rows disabled for the demo', await page.evaluate(() => [...document.querySelectorAll('.settings-row')].filter(r => r.classList.contains('disabled')).map(r => r.dataset.id).join(',') === 'startGroup,resume'));
+    await back();
+    check('Back closes settings', await page.evaluate(() => !settingsOpen && document.getElementById('settingsOverlay').classList.contains('hidden')));
+    await key('ColorF2Yellow', 405);
+    check('Yellow key opens settings', await page.evaluate(() => settingsOpen));
+    // Clear favorites via confirm dialog
+    await page.evaluate(() => { favoriteIds.add('x1'); favoriteIds.add('x2'); renderSettings(); });
+    await page.evaluate(() => { settingsFocusIdx = settingsFocusables(_settingsRowsCache).indexOf('clearFavs'); renderSettings(); });
+    await key('Enter', 13);
+    check('Clear favorites opens confirm dialog', await page.evaluate(() => !confirmDialog.classList.contains('hidden')));
+    await key('ArrowLeft', 37); await key('Enter', 13); await sleep(100);
+    check('confirm Yes clears favorites, settings still open', await page.evaluate(() => favoriteIds.size === 0 && settingsOpen && localStorage.getItem('iptv_favorites') === '[]'));
+    await back();
+
     // ---------- Stream error budget ----------
     await page.evaluate(() => { channels[1].url = 'http://localhost:8765/does-not-exist.m3u8'; selectChannel(1); });
     await page.waitForFunction(() => document.getElementById('epgToastTitle').textContent === 'Stream Error', { timeout: 20000 }).catch(() => {});
@@ -184,6 +216,32 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await back();
     const st = await page.evaluate(() => ({ pb: window.__pb, start: !startPage.classList.contains('hidden'), main: mainApp.style.display, dlg: confirmDialog.classList.contains('hidden'), fs: !!document.fullscreenElement }));
     check('Back on start page calls webOS.platformBack', st.pb === 1 && st.start, JSON.stringify(st));
+
+    // ---------- Auto-load + per-playlist resume / starting group across a relaunch ----------
+    // The Xtream playlist was the last real playlist loaded; mark a starting group and a last channel for it.
+    await page.evaluate(() => {
+        const key = localStorage.getItem('iptv_last_playlist');
+        const st = JSON.parse(localStorage.getItem('iptv_playlist_state') || '{}');
+        st[key] = Object.assign(st[key] || {}, { startGroup: 'all', lastChannel: { url: 'http://localhost:8765/live/user/pass/1234.m3u8', tvgId: 'ch1234.test' } });
+        localStorage.setItem('iptv_playlist_state', JSON.stringify(st));
+    });
+    await page.reload({ waitUntil: 'load' });
+    await page.waitForFunction(() => currentPlaylistType === 'xtream' && epgMode && currentChannelIndex >= 0, { timeout: 30000 }).catch(() => {});
+    await sleep(500);
+    const al = await page.evaluate(() => ({ type: currentPlaylistType, group: currentGroup, idx: currentChannelIndex, name: channels[currentChannelIndex] && channels[currentChannelIndex].name, focus: epgFocusedRowIdx, rowOk: !!epgRenderedRows.get(epgFocusedRowIdx) && epgRenderedRows.get(epgFocusedRowIdx).classList.contains('epg-focused') }));
+    check('auto-load relaunch opens the last playlist in the guide', al.type === 'xtream', JSON.stringify(al));
+    check('starting group "All Channels" applied', al.group === 'all');
+    check('resumes last channel and focuses its row', al.name === 'Channel 01234' && al.focus === 1233 && al.rowOk, JSON.stringify(al));
+    await page.click('#epgSettingsBtn');
+    check('settings opens from the guide button; per-playlist rows enabled', await page.evaluate(() => settingsOpen && !document.querySelector('.settings-row[data-id="startGroup"]').classList.contains('disabled') && document.querySelector('.settings-row[data-id="startGroup"] .settings-val').textContent === 'All Channels'));
+    await page.evaluate(() => { settingsFocusIdx = settingsFocusables(_settingsRowsCache).indexOf('resume'); renderSettings(); });
+    await key('ArrowLeft', 37); await sleep(100);
+    check('resume Left → Off for this playlist', await page.evaluate(() => JSON.parse(localStorage.getItem('iptv_playlist_state'))[localStorage.getItem('iptv_last_playlist')].resume === false));
+    await back();
+    // Up/Down in the guide must still work after the settings overlay closes
+    const fb = await page.evaluate(() => epgFocusedRowIdx);
+    await key('ArrowDown', 40);
+    check('guide navigation resumes after closing settings', await page.evaluate(() => epgFocusedRowIdx) === fb + 1);
 
     check('no uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await browser.close();

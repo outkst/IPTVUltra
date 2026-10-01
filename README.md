@@ -11,6 +11,7 @@ A webOS TV application for LG Smart TVs that streams IPTV channels from M3U play
 - Search channels with scored ranking (exact → prefix → multi-term → substring)
 - Favorites — star any channel; persisted across sessions
 - Save multiple playlists and switch between them
+- Settings (Yellow key or ⚙️ buttons): text size, 12/24-hour clock, auto-load last playlist, per-playlist starting group and resume-last-channel, clear favorites
 - Native fullscreen video playback
 - Full LG remote control navigation
 

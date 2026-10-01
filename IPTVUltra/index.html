@@ -61,7 +61,8 @@
 				</div>
 				<div class="start-buttons"><button id="loadSelectedBtn" class="start-btn primary" disabled
 						tabindex="0">▶ Load Selected</button><button id="startDemoBtn" class="start-btn secondary"
-						tabindex="0">🎬 Try Demo</button></div>
+						tabindex="0">🎬 Try Demo</button><button id="settingsBtn" class="start-btn secondary"
+						tabindex="0">⚙️ Settings</button></div>
 			</div>
 		</div>
 
@@ -72,6 +73,15 @@
 				<div class="confirm-message" id="confirmMessage">Are you sure you want to clear all saved playlists?</div>
 				<div class="confirm-buttons"><button id="confirmYes" class="confirm-btn yes">Yes, Clear
 						All</button><button id="confirmNo" class="confirm-btn no">Cancel</button></div>
+			</div>
+		</div>
+
+		<!-- Settings Overlay -->
+		<div id="settingsOverlay" class="settings-overlay hidden">
+			<div class="settings-card" role="dialog" aria-label="Settings">
+				<div class="settings-title">⚙️ Settings</div>
+				<div id="settingsList" class="settings-list"></div>
+				<div class="settings-footer"><span class="settings-hint">◀ ▶ change · OK select · Back close</span><button id="settingsCloseBtn" class="confirm-btn no">Close</button></div>
 			</div>
 		</div>
 
@@ -108,7 +118,7 @@
 						<div id="channelList" class="channel-list"></div>
 						<div class="channels-footer">
 							<span id="statusArea" class="channels-status">✨ Ready</span>
-							<button id="homePageBtn" class="home-btn" tabindex="0">🏠 Home</button>
+							<div class="footer-btns"><button id="settingsFooterBtn" class="home-btn" tabindex="0">⚙️ Settings</button><button id="homePageBtn" class="home-btn" tabindex="0">🏠 Home</button></div>
 						</div>
 					</div>
 					<div class="video-area" id="videoArea">
@@ -157,6 +167,7 @@
 								</div>
 							</div>
 							<button id="epgInfoFavBtn" class="epg-info-fav-btn" data-fav-id="">☆</button>
+							<button id="epgSettingsBtn" class="epg-info-settings-btn" title="Settings">⚙️</button>
 							<div class="epg-info-now-playing-label" id="epgInfoNowPlayingLabel" style="display:none;">Now Playing</div>
 							<div id="epgInfoTitle" class="epg-info-title"></div>
 							<div id="epgInfoTime" class="epg-info-time"></div>
