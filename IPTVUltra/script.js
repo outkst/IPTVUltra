@@ -2390,7 +2390,8 @@ loadSelectedBtn.addEventListener('click', () => {
         else loadM3UFromUrl(p.url, p.epgUrl || '');
     }
 });
-saveXtreamBtn.addEventListener('click', async () => {
+saveXtreamBtn.addEventListener('click', () => {
+    // Save only — the server is contacted when the user presses "Load Selected"
     const server = xtreamServer.value.trim();
     const uname = xtreamUsername.value.trim();
     const pass = xtreamPassword.value.trim();
@@ -2399,18 +2400,11 @@ saveXtreamBtn.addEventListener('click', async () => {
         updateStartStatus('Please enter server URL, username, and password', true, false, false, 0);
         return;
     }
-    updateStartStatus('Verifying credentials …', false, false, true, 50);
-    try {
-        const base = server.replace(/\/$/, '');
-        const resp = await fetch(`${base}/player_api.php?username=${encodeURIComponent(uname)}&password=${encodeURIComponent(pass)}`);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = await resp.json();
-        if (data.user_info && data.user_info.auth === 0) throw new Error('Invalid credentials');
-        addXtreamPlaylist(server, uname, pass, name);
-    } catch (err) {
-        updateStartStatus(`Login failed: ${err.message}`, true, false, false, 0);
-        setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 3000);
+    if (!/^https?:\/\//i.test(server)) {
+        updateStartStatus('Server URL must start with http:// or https://', true, false, false, 0);
+        return;
     }
+    addXtreamPlaylist(server, uname, pass, name);
 });
 tabM3u.addEventListener('click', () => switchTab('m3u'));
 tabXtream.addEventListener('click', () => switchTab('xtream'));
