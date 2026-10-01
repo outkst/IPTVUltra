@@ -1,0 +1,6 @@
+{
+  "name": "iptvultra-e2e",
+  "private": true,
+  "scripts": { "test": "node e2e.js" },
+  "devDependencies": { "puppeteer-core": "^24" }
+}

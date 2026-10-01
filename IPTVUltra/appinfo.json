@@ -1,11 +1,11 @@
 {
   "id": "com.outkst.iptvultra",
-  "version": "2.9.6",
+  "version": "2.9.7",
   "vendor": "outkst",
   "type": "web",
   "main": "index.html",
   "title": "IPTV Ultra",
-  "appDescription": "Play IPTV channels from M3U playlists",
+  "appDescription": "Play IPTV channels from M3U playlists or Xtream Codes providers, with EPG",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",
   "splashBackground": "splash-screen.png",

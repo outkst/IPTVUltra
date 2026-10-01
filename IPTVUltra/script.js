@@ -37,6 +37,30 @@ let _epgWinStart = 0;
 let _epgWinEnd = 0;
 let _epgTotalGuideW = 0;
 let _epgSkeletonWinStart = 0;  // tracks which hour window the time strip was built for
+let _epgLoadedAt = 0;          // when the XMLTV feed (M3U) was last parsed
+const EPG_M3U_REFRESH_MS = 4 * 3600000; // re-download XMLTV every 4h so the 6h window never runs dry
+
+// Xtream lazy EPG state — EPG is fetched per channel on demand (see "Xtream lazy EPG")
+let _xt = null;                       // { base, u, pw } while an Xtream playlist is loaded
+let _xtStreamIdByTvgId = new Map();   // tvgId -> stream_id for get_short_epg
+const EPG_CACHE_TTL_MS = 2 * 3600000; // re-fetch a channel's EPG after 2h
+const EPG_CACHE_MAX = 800;            // max channels kept in epgData (LRU eviction)
+const EPG_FETCH_CONCURRENCY = 6;      // parallel get_short_epg requests
+const EPG_QUEUE_MAX = 400;            // max queued channel fetches
+const EPG_XT_LIMIT = 48;              // listings per channel requested from the provider
+let _epgFetchMeta = new Map();        // tvgId -> { at, status: 'pending'|'done'|'error' }
+let _epgQueue = [];                   // tvgIds waiting to fetch (front = highest priority)
+let _epgQueued = new Set();           // membership mirror of _epgQueue
+let _epgInFlight = 0;
+let _epgVisibleFetchTimer = null;
+let _epgPrefetchActive = false;
+
+// Standard (M3U) view D-pad focus
+let stdFocusZone = 'channels';  // 'groups' | 'channels'
+let stdFocusIdx = 0;            // index into currentFilteredChannels
+let stdGroupFocusIdx = 0;       // index into groupsList
+let _stdItemH = 0;              // row height of the virtual channel list (set by renderChannelList)
+let _stdRenderVisible = null;   // renderVisible closure of the current channel list
 
 // Precompiled regexes reused across many XMLTV parse iterations
 const _RE_CHAN_ID = /id="([^"]*)"/;
@@ -111,6 +135,9 @@ let stallLastTime = -1;
 let stallCount = 0;
 const STALL_CHECK_INTERVAL_MS = 2000;
 const STALL_THRESHOLD_CHECKS = 5; // ~10 s of no progress
+const MAX_AUTO_RELOADS = 3;       // auto-reload budget per channel before giving up
+let _reloadAttempts = 0;
+let _stallGoodChecks = 0;
 
 
 let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
@@ -308,8 +335,10 @@ async function loadEPG(url) {
     epgLoading = true;
     if (_epgAbortController) _epgAbortController.abort();
     _epgAbortController = new AbortController();
-    epgData.clear();
-    epgIdMap.clear();
+    // Parse into fresh maps and swap them in on success, so a background
+    // refresh never blanks the existing guide while it downloads.
+    const newData = new Map();
+    const newIdMap = new Map();
     currentEpgUrl = url;
 
     const decoder = new TextDecoder('utf-8');
@@ -355,8 +384,8 @@ async function loadEPG(url) {
                     const nmM = _RE_DISP_NAME.exec(xml);
                     if (idM) {
                         const cid = idM[1];
-                        epgIdMap.set(cid.toLowerCase(), cid);
-                        if (nmM) epgIdMap.set(nmM[1].toLowerCase().trim(), cid);
+                        newIdMap.set(cid.toLowerCase(), cid);
+                        if (nmM) newIdMap.set(nmM[1].toLowerCase().trim(), cid);
                     }
                 }
                 cursor = idx + 10;
@@ -376,11 +405,11 @@ async function loadEPG(url) {
                         const pStop = spM ? parseXMLTVDate(spM[1]) : null;
                         if (pStart !== null && pStart <= windowEnd && (pStop === null || pStop >= windowStart)) {
                             const cid = chM[1];
-                            if (!epgData.has(cid)) {
-                                epgData.set(cid, []);
-                                epgIdMap.set(cid.toLowerCase(), cid);
+                            if (!newData.has(cid)) {
+                                newData.set(cid, []);
+                                newIdMap.set(cid.toLowerCase(), cid);
                             }
-                            epgData.get(cid).push({ start: pStart, stop: pStop || 0, title: tiM ? unescapeXml(tiM[1].trim()) : '' });
+                            newData.get(cid).push({ start: pStart, stop: pStop || 0, title: tiM ? unescapeXml(tiM[1].trim()) : '' });
                             programmeCount++;
                         }
                     }
@@ -407,16 +436,16 @@ async function loadEPG(url) {
         }
 
         // Sort each channel's programme list chronologically for fast lookup
-        for (const progs of epgData.values()) {
+        for (const progs of newData.values()) {
             progs.sort((a, b) => a.start - b.start);
         }
+        epgData = newData;
+        epgIdMap = newIdMap;
+        _epgLoadedAt = Date.now();
 
         renderChannelList();
         updateNowNext();
-
-        // Refresh Now/Next every minute as current programme advances
-        if (epgRefreshTimer) clearInterval(epgRefreshTimer);
-        epgRefreshTimer = setInterval(updateNowNext, 60000);
+        startEpgTick();
 
         const mb = (bytesRead / 1048576).toFixed(1);
         const readyMsg = `${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)`;
@@ -456,13 +485,13 @@ function updateNowNext() {
             ? Math.min(100, Math.max(0, (Date.now() - nowProg.start) / (nowProg.stop - nowProg.start) * 100))
             : 0;
         const timeStr = nowProg.stop
-            ? formatTimeHHMM(nowProg.start) + '–' + formatTimeHHMM(nowProg.stop)
-            : formatTimeHHMM(nowProg.start);
+            ? formatTime12(nowProg.start) + '–' + formatTime12(nowProg.stop)
+            : formatTime12(nowProg.start);
         html += `<div class="epg-row epg-now"><span class="epg-badge">NOW</span><span class="epg-title">${escapeHtml(nowProg.title)}</span><span class="epg-time">${timeStr}</span></div>`;
         html += `<div class="epg-progress-bar"><div class="epg-progress-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
     }
     if (nextProg) {
-        html += `<div class="epg-row epg-next"><span class="epg-badge epg-badge-next">NEXT</span><span class="epg-title epg-title-next">${escapeHtml(nextProg.title)}</span><span class="epg-time">${formatTimeHHMM(nextProg.start)}</span></div>`;
+        html += `<div class="epg-row epg-next"><span class="epg-badge epg-badge-next">NEXT</span><span class="epg-title epg-title-next">${escapeHtml(nextProg.title)}</span><span class="epg-time">${formatTime12(nextProg.start)}</span></div>`;
     }
     panel.innerHTML = html;
     panel.style.display = 'block';
@@ -571,8 +600,10 @@ async function loadM3UFromUrl(url, epgUrl = '') {
     isLoading = true;
     if (_m3uAbortController) _m3uAbortController.abort();
     _m3uAbortController = new AbortController();
+    resetLazyEpg();
     epgData.clear();
     epgIdMap.clear();
+    _epgLoadedAt = 0;
     currentEpgUrl = epgUrl;
     setLoadSelectedButtonEnabled(false);
     updateStartStatus(`Fetching playlist...`, false, false, true, 0);
@@ -594,6 +625,7 @@ async function loadM3UFromUrl(url, epgUrl = '') {
         currentGroup = 'favorites';
         currentPlaylistType = 'm3u';
         extractGroups();
+        resetStdFocus();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         renderChannelList();
@@ -620,6 +652,10 @@ async function loadM3UFromUrl(url, epgUrl = '') {
 function loadDemoM3U() {
     if (isLoading) return;
     isLoading = true;
+    resetLazyEpg();
+    epgData.clear();
+    epgIdMap.clear();
+    currentEpgUrl = '';
     setLoadSelectedButtonEnabled(false);
     updateStartStatus(`Loading demo playlist...`, false, false, true, 30);
     const demoContent = `#EXTM3U
@@ -641,6 +677,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         currentGroup = 'favorites';
         currentPlaylistType = 'm3u';
         extractGroups();
+        resetStdFocus();
         startPage.classList.add('hidden');
         mainApp.style.display = 'flex';
         renderChannelList();
@@ -688,14 +725,15 @@ function renderGroupsList() {
             displayName = 'All Channels';
         } else {
             folderIcon = '📁';
-            displayName = group;
+            displayName = escapeHtml(group);
         }
-        if (currentSearchQuery && group !== 'favorites' && group !== 'all' && displayName.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
+        if (currentSearchQuery && group !== 'favorites' && group !== 'all' && group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
             displayName = highlightText(displayName, currentSearchQuery);
         }
         div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${displayName}</span>`;
         div.onclick = () => {
             currentGroup = group;
+            stdGroupFocusIdx = Math.max(0, groupsList.indexOf(group));
             if (currentSearchQuery) { currentSearchQuery = ''; searchInput.value = ''; }
             renderGroupsList();
             requestAnimationFrame(refreshCurrentView);
@@ -706,6 +744,7 @@ function renderGroupsList() {
             groupsListDiv.appendChild(div);
         }
     }
+    if (currentPlaylistType === 'm3u') updateStdGroupFocus(false);
 }
 
 function highlightText(text, query) {
@@ -777,6 +816,7 @@ function renderChannelList() {
         filtered = channels.filter(ch => ch.group === currentGroup);
     }
     currentFilteredChannels = filtered;
+    if (stdFocusIdx >= filtered.length) stdFocusIdx = Math.max(0, filtered.length - 1);
     if (currentPlaylistType === 'xtream') return;
     const total = filtered.length;
     const info = currentSearchQuery ? ` (search: "${currentSearchQuery}")` : '';
@@ -796,6 +836,7 @@ function renderChannelList() {
     // Row height depends on whether EPG data is available
     const ITEM_H = epgData.size > 0 ? 68 : 52;
     const ITEM_INNER = epgData.size > 0 ? 66 : 50;
+    _stdItemH = ITEM_H;
 
     // Setup virtual container (preserve scroll position across re-renders)
     const savedScrollTop = channelListDiv.scrollTop;
@@ -826,7 +867,8 @@ function renderChannelList() {
             const originalIndex = getChannelIndex(ch);
             const fav = favoriteIds.has(ch.tvgId || `idx_${originalIndex}`);
             const div = document.createElement('div');
-            div.className = 'virtual-item' + (currentChannelIndex === originalIndex ? ' active' : '');
+            div.className = 'virtual-item' + (currentChannelIndex === originalIndex ? ' active' : '') +
+                (stdFocusZone === 'channels' && i === stdFocusIdx ? ' focused' : '');
             div.style.top = `${i * ITEM_H}px`;
             div.style.height = `${ITEM_INNER}px`;
             // Build logo HTML
@@ -859,7 +901,8 @@ function renderChannelList() {
                 if (favoriteIds.has(id)) favoriteIds.delete(id);
                 else favoriteIds.add(id);
                 localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
-                renderChannelList(); // re-render to update stars
+                if (currentGroup === 'favorites' && !currentSearchQuery) renderChannelList(); // list membership changed
+                else starSpan.textContent = favoriteIds.has(id) ? '★' : '☆';          // otherwise update in place
             };
             div.onclick = () => selectChannel(originalIndex);
             virtualContainer.appendChild(div);
@@ -870,6 +913,7 @@ function renderChannelList() {
     const onScroll = () => { requestAnimationFrame(renderVisible); };
     channelListDiv.addEventListener('scroll', onScroll);
     currentScrollListener = onScroll;
+    _stdRenderVisible = renderVisible;
     channelListDiv.scrollTop = savedScrollTop;
     renderVisible();
 }
@@ -879,20 +923,30 @@ function startStallWatchdog() {
     stopStallWatchdog();
     stallLastTime = -1;
     stallCount = 0;
+    _stallGoodChecks = 0;
     stallWatchdogTimer = setInterval(function () {
         if (videoPlayer.paused || currentChannelIndex < 0) { stallCount = 0; return; }
         const t = videoPlayer.currentTime;
         if (t === stallLastTime && videoPlayer.readyState < 3) {
             stallCount++;
+            _stallGoodChecks = 0;
             if (stallCount >= STALL_THRESHOLD_CHECKS) {
                 stallCount = 0;
                 stallLastTime = -1;
-                statusArea.innerText = '🔄 Buffering ...';
-                reloadStream();
+                if (_reloadAttempts >= MAX_AUTO_RELOADS) {
+                    // Budget exhausted: stop hammering the stream and tell the user
+                    stopStallWatchdog();
+                    showStreamError('Stream not responding');
+                    return;
+                }
+                _reloadAttempts++;
+                reloadStream(true);
             }
         } else {
             stallCount = 0;
             stallLastTime = t;
+            // ~30 s of steady playback restores the auto-reload budget
+            if (++_stallGoodChecks >= 15) _reloadAttempts = 0;
         }
     }, STALL_CHECK_INTERVAL_MS);
 }
@@ -901,12 +955,34 @@ function stopStallWatchdog() {
     if (stallWatchdogTimer) { clearInterval(stallWatchdogTimer); stallWatchdogTimer = null; }
 }
 
+function showStreamError(msg) {
+    const name = (currentChannelIndex >= 0 && channels[currentChannelIndex]) ? channels[currentChannelIndex].name : '';
+    statusArea.innerText = `⚠️ ${msg}`;
+    channelInfoTag.innerText = `⚠️ ${name ? name + ' — ' : ''}${msg}`;
+    showEPGToast(`${name ? name + ': ' : ''}${msg}. Press Reload to retry.`, 'error', 'Stream Error');
+    hideEPGToast(7000);
+}
+
+function toggleVideoFullscreen() {
+    if (document.fullscreenElement) {
+        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+        return;
+    }
+    if (currentChannelIndex < 0) return;
+    try {
+        const p = videoPlayer.requestFullscreen ? videoPlayer.requestFullscreen()
+            : (videoPlayer.webkitRequestFullscreen ? videoPlayer.webkitRequestFullscreen() : null);
+        if (p && p.catch) p.catch(() => {});
+    } catch (_) { /* fullscreen unavailable */ }
+}
+
 // ----- Video Control -----
 function selectChannel(index) {
     if (!channels[index]) return;
     stopStallWatchdog();
     if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
     currentChannelIndex = index;
+    _reloadAttempts = 0;
     const ch = channels[index];
     videoPlayer.pause();
     videoPlayer.src = ch.url;
@@ -922,8 +998,18 @@ function selectChannel(index) {
         if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx)) epgRenderedRows.get(filteredIdx).classList.add('active');
         updateEPGInfoPanel(ch);
     } else {
-        renderChannelList();
+        // Update the active row in place — no list rebuild
+        for (const [, el] of renderedItems) el.classList.remove('active');
+        const fi = currentFilteredChannels.indexOf(ch);
+        if (fi >= 0) {
+            stdFocusIdx = fi;
+            stdFocusZone = 'channels';
+            if (renderedItems.has(fi)) renderedItems.get(fi).classList.add('active');
+        }
+        updateStdChannelFocus();
+        updateStdGroupFocus(false);
     }
+    if (ch.tvgId) queueEpgFetch([ch.tvgId], true);
     updateNowNext();
     showTopControls();
 
@@ -1169,17 +1255,19 @@ function toggleAudioPanel() {
     }
 }
 
-function reloadStream() {
+function reloadStream(auto) {
     if (currentChannelIndex < 0) return;
+    const isAuto = auto === true;
+    if (!isAuto) _reloadAttempts = 0; // a manual reload restores the auto-reload budget
     stopStallWatchdog();
     const url = channels[currentChannelIndex].url;
     const wasPlaying = !videoPlayer.paused;
     videoPlayer.pause();
     videoPlayer.src = url;
     videoPlayer.load();
-    if (wasPlaying) videoPlayer.play().catch(e => console.log);
+    if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
     startStallWatchdog();
-    statusArea.innerText = '🔄 Reloading ...';
+    statusArea.innerText = isAuto ? `🔄 Reloading (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …` : '🔄 Reloading ...';
     setTimeout(() => statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`, 2000);
     showTopControls();
 }
@@ -1223,10 +1311,17 @@ function goToHomeScreen() {
     _epgWinStart = 0; _epgWinEnd = 0; _epgTotalGuideW = 0; _epgSkeletonWinStart = 0;
 
     // Clear all data
+    resetLazyEpg();
     epgData.clear();
     epgIdMap.clear();
     epgLoading = false;
+    _epgLoadedAt = 0;
     currentEpgUrl = '';
+    renderedItems.clear();
+    _stdRenderVisible = null;
+    _stdItemH = 0;
+    stdFocusZone = 'channels'; stdFocusIdx = 0; stdGroupFocusIdx = 0;
+    _reloadAttempts = 0;
     channels = [];
     currentFilteredChannels = [];
     groupsList = [];
@@ -1335,7 +1430,7 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
 
 // ── EPG Toast Notifications ───────────────────────────────────
 let _epgToastTimer = null;
-function showEPGToast(msg, type = 'loading') {
+function showEPGToast(msg, type = 'loading', title) {
     const toast = document.getElementById('epgToast');
     const titleEl = document.getElementById('epgToastTitle');
     const msgEl = document.getElementById('epgToastMsg');
@@ -1344,7 +1439,7 @@ function showEPGToast(msg, type = 'loading') {
     if (_epgToastTimer) { clearTimeout(_epgToastTimer); _epgToastTimer = null; }
     const titles = { loading: 'EPG Loading', error: 'EPG Error', success: 'EPG Ready' };
     toast.className = `epg-toast epg-toast--${type} epg-toast--visible`;
-    if (titleEl) titleEl.textContent = titles[type] || 'EPG';
+    if (titleEl) titleEl.textContent = title || titles[type] || 'EPG';
     if (msgEl) msgEl.textContent = msg;
     if (spinner) spinner.style.display = type === 'loading' ? '' : 'none';
 }
@@ -1430,13 +1525,13 @@ function buildEPGRow(i) {
         const descHtml = p.desc && wNum > 120
             ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
             : '';
-        progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" style="left:${sx}px;width:${w}px">` +
+        progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" data-start="${p.start}" data-stop="${p.stop}" style="left:${sx}px;width:${w}px">` +
             `<span class="epg-prog-title">${escapeHtml(p.title)}</span>${descHtml}</div>`);
         hadBlock = true;
     }
     if (!hadBlock) {
-        const label = epgLoading ? 'Loading ...' : 'No data available ...';
-        const cls = epgLoading ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
+        const label = epgPlaceholderText(ch.tvgId);
+        const cls = label === 'Loading ...' ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
         progsParts.push(`<div class="${cls}" style="left:2px;width:${(_epgTotalGuideW - 4).toFixed(1)}px">` +
             `<span class="epg-prog-title">${label}</span></div>`);
     }
@@ -1475,6 +1570,7 @@ function renderEPGVisibleRows() {
         body.appendChild(row);
         epgRenderedRows.set(i, row);
     }
+    scheduleEpgFetchForVisible();
 }
 
 function updateEPGNowMarker() {
@@ -1628,7 +1724,7 @@ function updateEPGInfoPanel(ch) {
         desc.textContent = curr.desc || '';
         if (nowPlayingLabel) nowPlayingLabel.style.display = '';
     } else {
-        const placeholder = epgLoading ? 'Loading ...' : 'No data available ...';
+        const placeholder = epgPlaceholderText(ch.tvgId);
         time.textContent = '';
         title.textContent = placeholder;
         desc.textContent = '';
@@ -1685,90 +1781,230 @@ function decodeBase64Field(s) {
     return s;
 }
 
-async function loadXtreamEPG(base, username, password) {
-    if (epgLoading) return;
-    epgLoading = true;
-    epgData.clear();
-    epgIdMap.clear();
-    showEPGToast('Connecting to EPG …', 'loading');
+// ── Xtream lazy EPG (per channel, on demand) ─────────────────
+// Fetching get_short_epg for every channel up front took minutes on large
+// providers (17k channels ≈ 17k requests). Instead EPG is fetched only for
+// rows that are on screen, for the playing channel, and in the background
+// for favorites. Results live in epgData with a TTL and LRU eviction.
+function resetLazyEpg() {
+    _xt = null;
+    _xtStreamIdByTvgId = new Map();
+    _epgFetchMeta.clear();
+    _epgQueue = [];
+    _epgQueued.clear();
+    _epgPrefetchActive = false;
+    if (_epgVisibleFetchTimer) { clearTimeout(_epgVisibleFetchTimer); _epgVisibleFetchTimer = null; }
+}
 
-    const u = encodeURIComponent(username);
-    const pw = encodeURIComponent(password);
-    const now2 = Date.now();
-    const windowStart = now2 - 120000;
-    const windowEnd = now2 + 6 * 3600000; // 6h ahead
+function epgNeedsFetch(tvgId) {
+    if (!_xt || !tvgId) return false;
+    const m = _epgFetchMeta.get(tvgId);
+    if (!m) return true;
+    if (m.status === 'pending') return false;
+    return (Date.now() - m.at) > EPG_CACHE_TTL_MS;
+}
 
-    const BATCH = 200;
-    const total = channels.length;
+// Placeholder text for a guide row / info panel that has no programme blocks
+function epgPlaceholderText(tvgId) {
+    if (_xt) {
+        if (!tvgId || !_xtStreamIdByTvgId.has(tvgId)) return 'No data available ...';
+        const m = _epgFetchMeta.get(tvgId);
+        if (!m || m.status === 'pending') return 'Loading ...';
+        return 'No data available ...';
+    }
+    return epgLoading ? 'Loading ...' : 'No data available ...';
+}
 
+// Queue channels for EPG fetch. front=true puts them ahead of everything queued
+// (visible rows / playing channel); front=false appends (favorites prefetch).
+function queueEpgFetch(tvgIds, front) {
+    if (!_xt) return;
+    const add = [];
+    for (const id of tvgIds) {
+        if (!id) continue;
+        if (_epgQueued.has(id)) { if (front) add.push(id); continue; }
+        if (!epgNeedsFetch(id)) continue;
+        _epgQueued.add(id);
+        _epgFetchMeta.set(id, { at: 0, status: 'pending' });
+        add.push(id);
+    }
+    if (add.length) {
+        if (front) {
+            const addSet = new Set(add);
+            _epgQueue = add.concat(_epgQueue.filter(x => !addSet.has(x)));
+        } else {
+            _epgQueue = _epgQueue.concat(add);
+        }
+        // Bound the backlog: drop the lowest-priority tail; it is re-queued if it scrolls into view
+        while (_epgQueue.length > EPG_QUEUE_MAX) {
+            const dropped = _epgQueue.pop();
+            _epgQueued.delete(dropped);
+            _epgFetchMeta.delete(dropped);
+        }
+    }
+    pumpEpgQueue();
+}
+
+function pumpEpgQueue() {
+    while (_epgInFlight < EPG_FETCH_CONCURRENCY && _epgQueue.length) {
+        const id = _epgQueue.shift();
+        _epgQueued.delete(id);
+        _epgInFlight++;
+        fetchXtreamEpgFor(id).then(null, () => {}).then(() => { _epgInFlight--; pumpEpgQueue(); });
+    }
+    if (_epgPrefetchActive && !_epgQueue.length && !_epgInFlight) {
+        _epgPrefetchActive = false;
+        showEPGToast('Favorites guide ready', 'success');
+        hideEPGToast(2500);
+        if (currentChannelIndex >= 0 && channels[currentChannelIndex]) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
+    }
+}
+
+async function fetchXtreamEpgFor(tvgId) {
+    const xt = _xt;
+    const streamId = xt ? _xtStreamIdByTvgId.get(tvgId) : undefined;
+    if (!xt || streamId === undefined) { _epgFetchMeta.set(tvgId, { at: Date.now(), status: 'done' }); return; }
+    const progs = [];
+    let ok = false;
     try {
-        for (let i = 0; i < total; i += BATCH) {
-            const batch = channels.slice(i, i + BATCH).filter(ch => ch.streamId);
-            if (!batch.length) continue;
-
-            const results = await Promise.allSettled(
-                batch.map(ch =>
-                    fetch(`${base}/player_api.php?username=${u}&password=${pw}&action=get_short_epg&stream_id=${ch.streamId}&limit=48`)
-                        .then(r => r.ok ? r.json() : null)
-                        .catch(() => null)
-                )
-            );
-
-            results.forEach((result, j) => {
-                if (result.status !== 'fulfilled' || !result.value) return;
-                const ch = batch[j];
-                const listings = result.value.epg_listings;
-                if (!Array.isArray(listings) || !listings.length) return;
-
-                const progs = [];
+        const resp = await fetch(`${xt.base}/player_api.php?username=${xt.u}&password=${xt.pw}&action=get_short_epg&stream_id=${streamId}&limit=${EPG_XT_LIMIT}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            ok = true;
+            const listings = data && data.epg_listings;
+            if (Array.isArray(listings)) {
+                const cutoff = Date.now() - 2 * 3600000; // keep a little history for the 1h-back guide window
                 for (const ep of listings) {
                     const pStart = parseInt(ep.start_timestamp) * 1000;
                     const pStop = parseInt(ep.stop_timestamp) * 1000;
-                    if (isNaN(pStart) || isNaN(pStop)) continue;
-                    if (pStart > windowEnd || pStop < windowStart) continue;
+                    if (isNaN(pStart) || isNaN(pStop) || pStop < cutoff) continue;
                     const title = unescapeXml(decodeBase64Field(ep.title || '').trim());
                     const rawDesc = unescapeXml(decodeBase64Field(ep.description || '').trim());
-                    const desc = rawDesc.replace(_RE_TS_INJECT, '').trim();
-                    progs.push({ start: pStart, stop: pStop, title, desc });
+                    progs.push({ start: pStart, stop: pStop, title, desc: rawDesc.replace(_RE_TS_INJECT, '').trim() });
                 }
-                if (progs.length) {
-                    progs.sort((a, b) => a.start - b.start);
-                    epgData.set(ch.tvgId, progs);
-                    epgIdMap.set(ch.tvgId.toLowerCase(), ch.tvgId);
-                }
-            });
-
-            const _batchMsg = `${Math.min(i + BATCH, total).toLocaleString()} / ${total.toLocaleString()} channels …`;
-            statusArea.innerText = `📅 EPG: ${_batchMsg}`;
-            showEPGToast(_batchMsg, 'loading');
-            await new Promise(r => setTimeout(r, 80));
+                progs.sort((a, b) => a.start - b.start);
+            }
         }
-
-        if (epgRefreshTimer) clearInterval(epgRefreshTimer);
-        epgRefreshTimer = setInterval(() => { if (currentPlaylistType === 'xtream') renderEPGVisibleRows(); else updateNowNext(); }, 60000);
-        enterEPGMode();
-        const xtReadyMsg = `${epgData.size.toLocaleString()} channels loaded`;
-        statusArea.innerText = `📅 EPG ready — ${xtReadyMsg}`;
-        showEPGToast(xtReadyMsg, 'success');
-        hideEPGToast(3500);
-        setTimeout(() => {
-            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
-        }, 4000);
-    } catch (err) {
-        statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
-        showEPGToast(err.message, 'error');
-        hideEPGToast(7000);
-        setTimeout(() => {
-            if (currentChannelIndex >= 0) statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
-        }, 3000);
-    } finally {
-        epgLoading = false;
+    } catch (_) { /* network error — becomes eligible for retry below */ }
+    if (_xt !== xt) return; // playlist changed while this request was in flight
+    // A failed fetch is retried after 60 s instead of waiting out the full TTL
+    _epgFetchMeta.set(tvgId, { at: ok ? Date.now() : Date.now() - EPG_CACHE_TTL_MS + 60000, status: ok ? 'done' : 'error' });
+    if (progs.length) {
+        epgData.delete(tvgId); // re-insert so Map insertion order doubles as LRU order
+        epgData.set(tvgId, progs);
+        epgIdMap.set(tvgId.toLowerCase(), tvgId);
+        if (epgData.size > EPG_CACHE_MAX) {
+            for (const k of epgData.keys()) {
+                if (epgData.size <= EPG_CACHE_MAX) break;
+                epgData.delete(k);
+                _epgFetchMeta.delete(k);
+            }
+        }
+    } else {
+        epgData.delete(tvgId);
     }
+    onEpgChannelUpdated(tvgId);
+}
+
+// Refresh whatever is on screen for this channel, in place
+function onEpgChannelUpdated(tvgId) {
+    if (currentPlaylistType !== 'xtream') return;
+    if (epgMode) {
+        for (const [idx, el] of epgRenderedRows) {
+            const ch = currentFilteredChannels[idx];
+            if (ch && ch.tvgId === tvgId) {
+                const fresh = buildEPGRow(idx);
+                el.replaceWith(fresh);
+                epgRenderedRows.set(idx, fresh);
+            }
+        }
+    }
+    const cur = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+    if (cur && cur.tvgId === tvgId) {
+        if (epgMode) updateEPGInfoPanel(cur);
+        updateNowNext();
+    }
+}
+
+// Debounced: once scrolling settles, fetch EPG for the rows that are rendered
+function scheduleEpgFetchForVisible() {
+    if (!_xt) return;
+    if (_epgVisibleFetchTimer) clearTimeout(_epgVisibleFetchTimer);
+    _epgVisibleFetchTimer = setTimeout(() => {
+        _epgVisibleFetchTimer = null;
+        const ids = [];
+        for (const idx of epgRenderedRows.keys()) {
+            const ch = currentFilteredChannels[idx];
+            if (ch && ch.tvgId) ids.push(ch.tvgId);
+        }
+        if (ids.length) queueEpgFetch(ids, true);
+    }, 150);
+}
+
+// Background prefetch so the Favorites group is populated without scrolling
+function prefetchFavoritesEpg() {
+    if (!_xt) return;
+    const ids = new Set();
+    for (let i = 0; i < channels.length; i++) {
+        const ch = channels[i];
+        if (ch.tvgId && favoriteIds.has(ch.tvgId) && epgNeedsFetch(ch.tvgId)) ids.add(ch.tvgId);
+    }
+    if (!ids.size) return;
+    _epgPrefetchActive = true;
+    showEPGToast(`Loading guide for ${ids.size.toLocaleString()} favorites …`, 'loading');
+    queueEpgFetch([...ids], false);
+}
+
+// ── Minute tick ───────────────────────────────────────────────
+function startEpgTick() {
+    if (epgRefreshTimer) clearInterval(epgRefreshTimer);
+    epgRefreshTimer = setInterval(epgMinuteTick, 60000);
+}
+
+// Runs once a minute. Updates only what is on screen, in place; the full guide
+// is rebuilt only when the hour window rolls over.
+function epgMinuteTick() {
+    const now = Date.now();
+    if (currentPlaylistType === 'xtream' && epgMode) {
+        const HOUR_MS = 3600000;
+        const winStart = Math.floor((now - HOUR_MS) / HOUR_MS) * HOUR_MS;
+        if (_epgSkeletonWinStart && winStart !== _epgSkeletonWinStart) {
+            // Hour rolled over: shift the horizontal scroll so the same wall-clock
+            // time stays in view, then rebuild the time strip and rows once.
+            const so = document.getElementById('epgScrollOuter');
+            if (so) so.scrollLeft = Math.max(0, so.scrollLeft - 60 * EPG_PX_PER_MIN);
+            renderEPGGuide();
+        } else {
+            updateEPGNowMarker();
+            for (const [, el] of epgRenderedRows) {
+                const blocks = el.getElementsByClassName('epg-prog-block');
+                for (let i = 0; i < blocks.length; i++) {
+                    const b = blocks[i];
+                    b.classList.toggle('now-playing', +b.dataset.start <= now && +b.dataset.stop > now);
+                }
+            }
+            scheduleEpgFetchForVisible(); // re-queues rows whose cached EPG passed its TTL
+        }
+        if (currentChannelIndex >= 0 && channels[currentChannelIndex]) updateEPGInfoPanel(channels[currentChannelIndex]);
+    } else if (currentPlaylistType === 'm3u') {
+        // Refresh the "now" line of visible channel rows in place
+        for (const [idx, el] of renderedItems) {
+            const ch = currentFilteredChannels[idx];
+            const span = el.querySelector('.channel-epg');
+            if (!ch || !span) continue;
+            const p = getCurrentProgramme(ch.tvgId);
+            span.textContent = p ? (p.title.length > 36 ? p.title.substring(0, 34) + '…' : p.title) : '';
+        }
+        // Re-download the XMLTV feed periodically so the 6h window never runs dry
+        if (currentEpgUrl && !epgLoading && _epgLoadedAt && now - _epgLoadedAt > EPG_M3U_REFRESH_MS) loadEPG(currentEpgUrl);
+    }
+    updateNowNext();
 }
 
 async function loadXtreamPlaylist(serverUrl, username, password) {
     if (isLoading) return;
     isLoading = true;
+    resetLazyEpg();
     epgData.clear();
     epgIdMap.clear();
     setLoadSelectedButtonEnabled(false);
@@ -1830,6 +2066,9 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
 
         channels = parsed;
         buildChannelIndexMap();
+        _xt = { base, u, pw };
+        _xtStreamIdByTvgId = new Map();
+        for (const ch of parsed) if (!_xtStreamIdByTvgId.has(ch.tvgId)) _xtStreamIdByTvgId.set(ch.tvgId, ch.streamId);
         localStorage.setItem('last_m3u_url', ''); // clear M3U cache; Xtream uses its own auth
         updateStartStatus(`Loaded ${channels.length.toLocaleString()} channels!`, false, true, false, 100);
         currentSearchQuery = '';
@@ -1846,8 +2085,9 @@ async function loadXtreamPlaylist(serverUrl, username, password) {
             selectChannel(firstIdx);
         }, 500);
 
-        // 5. Load EPG via per-channel JSON API (avoids downloading the full XMLTV)
-        setTimeout(() => loadXtreamEPG(base, username, password), 1500);
+        // 5. EPG is fetched lazily per visible row (see "Xtream lazy EPG"); warm favorites in the background
+        startEpgTick();
+        setTimeout(prefetchFavoritesEpg, 1200);
 
     } catch (err) {
         updateStartStatus(`Error: ${err.message}`, true, false, false, 0);
@@ -1966,6 +2206,38 @@ function focusElement(idx) {
     const el = focusableElements[currentFocusIndex];
     if (el) { el.focus(); el.scrollIntoView({ block: 'nearest' }); }
 }
+// ── Standard (M3U) View Remote Navigation ─────────────────────
+function resetStdFocus() {
+    stdFocusZone = 'channels';
+    stdFocusIdx = 0;
+    stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
+}
+
+function _groupItemEls() {
+    // Document order matches groupsList order: pinned (favorites, all) first, then the rest
+    return document.querySelectorAll('#groupsPinned .group-item, #groupsList .group-item');
+}
+
+function updateStdGroupFocus(scroll) {
+    const els = _groupItemEls();
+    for (let i = 0; i < els.length; i++) els[i].classList.toggle('focused', stdFocusZone === 'groups' && i === stdGroupFocusIdx);
+    if (scroll && els[stdGroupFocusIdx]) els[stdGroupFocusIdx].scrollIntoView({ block: 'nearest' });
+}
+
+function updateStdChannelFocus() {
+    if (stdFocusZone === 'channels' && _stdItemH && currentFilteredChannels.length) {
+        const top = stdFocusIdx * _stdItemH, bottom = top + _stdItemH;
+        if (top < channelListDiv.scrollTop) channelListDiv.scrollTop = top;
+        else if (bottom > channelListDiv.scrollTop + channelListDiv.clientHeight) channelListDiv.scrollTop = bottom - channelListDiv.clientHeight;
+        if (_stdRenderVisible) _stdRenderVisible();
+    }
+    for (const [idx, el] of renderedItems) el.classList.toggle('focused', stdFocusZone === 'channels' && idx === stdFocusIdx);
+}
+
+function _isTextInput(el) {
+    return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
+
 // ── EPG Remote Navigation ─────────────────────────────────────
 function updateEPGRowFocus() {
     for (const [idx, el] of epgRenderedRows) {
@@ -2024,39 +2296,82 @@ function toggleEPGFav(id) {
 }
 
 function selectEPGFocusedChannel() {
-    const body = document.getElementById('epgBody');
-    if (!body) return;
-    const rows = body.querySelectorAll('.epg-row');
-    if (rows[epgFocusedRowIdx]) rows[epgFocusedRowIdx].click();
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    if (!ch) return;
+    const idx = getChannelIndex(ch);
+    if (idx === currentChannelIndex) { toggleVideoFullscreen(); return; }
+    const row = epgRenderedRows.get(epgFocusedRowIdx);
+    if (row) row.click();
+    else selectChannel(idx);
 }
 
 function handleRemoteNav(e) {
-    if (epgMode) {
-        if (e.key === 'ArrowUp' || e.keyCode === 38) {
+    const k = e.key, kc = e.keyCode;
+    const up = k === 'ArrowUp' || kc === 38, down = k === 'ArrowDown' || kc === 40;
+    const left = k === 'ArrowLeft' || kc === 37, right = k === 'ArrowRight' || kc === 39;
+    const enter = k === 'Enter' || kc === 13;
+
+    // The confirm dialog owns the remote while it is open
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
+        if (left || up) { e.preventDefault(); confirmYes.focus(); }
+        else if (right || down) { e.preventDefault(); confirmNo.focus(); }
+        else if (enter) { e.preventDefault(); (document.activeElement === confirmYes ? confirmYes : confirmNo).click(); }
+        return;
+    }
+
+    // Fullscreen playback keys (seek, trick-play, play/pause) have dedicated listeners
+    if (document.fullscreenElement) return;
+
+    const inMain = mainApp && mainApp.style.display !== 'none';
+
+    // Typing in a search box: Down/Enter hand focus back to the list; other keys pass through
+    if (inMain && _isTextInput(document.activeElement)) {
+        if (down || enter) {
             e.preventDefault();
-            epgFocusedRowIdx = Math.max(0, epgFocusedRowIdx - 1);
-            updateEPGRowFocus();
-        } else if (e.key === 'ArrowDown' || e.keyCode === 40) {
-            e.preventDefault();
-            epgFocusedRowIdx = Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1);
-            updateEPGRowFocus();
-        } else if (e.key === 'ArrowLeft' || e.keyCode === 37) {
-            e.preventDefault();
-            scrollEPGTimeBy(-30);
-        } else if (e.key === 'ArrowRight' || e.keyCode === 39) {
-            e.preventDefault();
-            scrollEPGTimeBy(30);
-        } else if (e.key === 'Enter' || e.keyCode === 13) {
-            e.preventDefault();
-            selectEPGFocusedChannel();
+            document.activeElement.blur();
+            if (!epgMode) { stdFocusZone = 'channels'; updateStdChannelFocus(); }
         }
         return;
     }
-    if (!startPage.classList.contains('hidden') && (!confirmDialog || confirmDialog.classList.contains('hidden'))) {
-        if (e.key === 'Tab') { e.preventDefault(); switchTab(activeTab === 'm3u' ? 'xtream' : 'm3u'); }
-        else if (e.key === 'ArrowUp' || e.keyCode === 38) { e.preventDefault(); currentFocusIndex--; focusElement(currentFocusIndex); }
-        else if (e.key === 'ArrowDown' || e.keyCode === 40) { e.preventDefault(); currentFocusIndex++; focusElement(currentFocusIndex); }
-        else if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); if (document.activeElement && document.activeElement.click) document.activeElement.click(); }
+
+    if (epgMode) {
+        if (up) { e.preventDefault(); epgFocusedRowIdx = Math.max(0, epgFocusedRowIdx - 1); updateEPGRowFocus(); }
+        else if (down) { e.preventDefault(); epgFocusedRowIdx = Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1); updateEPGRowFocus(); }
+        else if (left) { e.preventDefault(); scrollEPGTimeBy(-30); }
+        else if (right) { e.preventDefault(); scrollEPGTimeBy(30); }
+        else if (enter) { e.preventDefault(); selectEPGFocusedChannel(); }
+        return;
+    }
+
+    if (inMain) {
+        // Standard (M3U) view: groups column ◀▶ channel list
+        if (stdFocusZone === 'groups') {
+            if (up) { e.preventDefault(); stdGroupFocusIdx = Math.max(0, stdGroupFocusIdx - 1); updateStdGroupFocus(true); }
+            else if (down) { e.preventDefault(); stdGroupFocusIdx = Math.min(groupsList.length - 1, stdGroupFocusIdx + 1); updateStdGroupFocus(true); }
+            else if (right) { e.preventDefault(); stdFocusZone = 'channels'; updateStdGroupFocus(false); updateStdChannelFocus(); }
+            else if (enter) { e.preventDefault(); const els = _groupItemEls(); if (els[stdGroupFocusIdx]) els[stdGroupFocusIdx].click(); }
+        } else {
+            if (up) { e.preventDefault(); stdFocusIdx = Math.max(0, stdFocusIdx - 1); updateStdChannelFocus(); }
+            else if (down) { e.preventDefault(); stdFocusIdx = Math.min(Math.max(0, currentFilteredChannels.length - 1), stdFocusIdx + 1); updateStdChannelFocus(); }
+            else if (left) {
+                if (groupsColumnVisible) { e.preventDefault(); stdFocusZone = 'groups'; updateStdChannelFocus(); updateStdGroupFocus(true); }
+            } else if (enter) {
+                e.preventDefault();
+                const ch = currentFilteredChannels[stdFocusIdx];
+                if (!ch) return;
+                const idx = getChannelIndex(ch);
+                if (idx === currentChannelIndex) toggleVideoFullscreen(); // Enter on the playing row toggles fullscreen
+                else selectChannel(idx);
+            }
+        }
+        return;
+    }
+
+    if (!startPage.classList.contains('hidden')) {
+        if (k === 'Tab') { e.preventDefault(); switchTab(activeTab === 'm3u' ? 'xtream' : 'm3u'); }
+        else if (up) { e.preventDefault(); currentFocusIndex--; focusElement(currentFocusIndex); }
+        else if (down) { e.preventDefault(); currentFocusIndex++; focusElement(currentFocusIndex); }
+        else if (enter) { e.preventDefault(); if (document.activeElement && document.activeElement.click) document.activeElement.click(); }
     }
 }
 
@@ -2125,9 +2440,8 @@ if (epgVideoWrap) epgVideoWrap.addEventListener('mousemove', showTopControls);
 searchInput.addEventListener('input', () => {
     currentSearchQuery = searchInput.value;
     if (currentSearchQuery.trim()) currentGroup = 'all';
-    renderGroupsList();
     clearTimeout(_searchDebounceTimer);
-    _searchDebounceTimer = setTimeout(refreshCurrentView, 150);
+    _searchDebounceTimer = setTimeout(() => { renderGroupsList(); refreshCurrentView(); }, 150);
 });
 clearSearchBtn.addEventListener('click', () => { currentSearchQuery = ''; searchInput.value = ''; searchInput.focus(); renderGroupsList(); refreshCurrentView(); });
 const epgSearchInput = document.getElementById('epgSearchInput');
@@ -2151,6 +2465,17 @@ if (epgClearSearchBtn) {
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
 videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
+videoPlayer.addEventListener('error', function () {
+    if (currentChannelIndex < 0 || !videoPlayer.getAttribute('src')) return; // src cleared on purpose
+    const code = videoPlayer.error ? videoPlayer.error.code : 0;
+    const msg = code === 2 ? 'Network error' : code === 3 ? 'Decode error' : code === 4 ? 'Stream unavailable or unsupported' : 'Playback error';
+    stopStallWatchdog();
+    if (_reloadAttempts >= MAX_AUTO_RELOADS) { showStreamError(msg); return; }
+    _reloadAttempts++;
+    statusArea.innerText = `⚠️ ${msg} — retrying (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …`;
+    const idx = currentChannelIndex;
+    setTimeout(function () { if (currentChannelIndex === idx) reloadStream(true); }, 2500);
+});
 videoPlayer.addEventListener('resize', showStreamInfo);
 videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
@@ -2246,6 +2571,13 @@ document.addEventListener('keyup', (e) => {
 // Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+
+    // Back while the confirm dialog is open cancels it
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
+        e.preventDefault();
+        confirmNo.click();
+        return;
+    }
 
     if (document.fullscreenElement) {
         e.preventDefault();

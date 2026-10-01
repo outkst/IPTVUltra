@@ -10,3 +10,5 @@ sdk/
 # Project docs not for repo
 CLAUDE.md
 img/
+test/node_modules/
+__pycache__/

@@ -43,11 +43,11 @@ On the start screen switch to the **Xtream Codes** tab and enter:
 | Username | `myuser` |
 | Password | `mypassword` |
 
-The app fetches your full channel list via the Xtream API and automatically loads EPG data for each channel — no separate EPG URL needed.
+The app fetches your full channel list via the Xtream API and loads EPG data on demand — for the channels currently visible in the guide, the playing channel, and your favorites — so even very large providers open in seconds. No separate EPG URL is needed.
 
 ## EPG (Electronic Programme Guide)
 
-When EPG data is available the guide opens automatically (Xtream) or can be accessed from the channel list (M3U). It shows a scrollable 7-hour timeline for every channel.
+Xtream playlists open directly in the guide view, a scrollable 7-hour timeline for every channel. M3U playlists use the channel list view; when an XMLTV URL is provided, each row shows the current programme and the player shows a Now/Next overlay.
 
 ### Guide layout
 
