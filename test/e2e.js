@@ -102,10 +102,28 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await page.focus('#epgSearchInput');
     await page.keyboard.type('Channel 000');
     await sleep(400);
-    check('typing in EPG search filters guide (best match first)', await page.evaluate(() => currentSearchQuery === 'Channel 000' && currentFilteredChannels[0].name === 'Channel 00001' && document.getElementById('epgSearchInput').value === 'Channel 000'), await page.evaluate(() => currentFilteredChannels.length + ' results, first=' + currentFilteredChannels[0].name));
+    check('typing in EPG search filters guide (best match first)', await page.evaluate(() => currentSearchQuery === 'Channel 000' && currentFilteredChannels[0].name === 'Channel 00001' && document.getElementById('epgSearchInput').value === 'Channel 000'), await page.evaluate(() => currentFilteredChannels.length + ' results, first=' + currentFilteredChannels[0].name + ' query=' + JSON.stringify(currentSearchQuery) + ' input=' + JSON.stringify(document.getElementById('epgSearchInput').value) + ' active=' + (document.activeElement && document.activeElement.id)));
     await key('ArrowDown', 40); // leaves the search box
     check('Down leaves the search box', await page.evaluate(() => document.activeElement !== document.getElementById('epgSearchInput')));
     await page.click('#epgClearSearchBtn');
+
+    // ---------- Dedicated media keys: Play/Pause/CH+/CH- ----------
+    {
+        const start = await page.evaluate(() => ({ idx: currentChannelIndex, pos: currentFilteredChannels.indexOf(channels[currentChannelIndex]), len: currentFilteredChannels.length }));
+        await key('ChannelUp', 427); await sleep(200);
+        const up = await page.evaluate(() => ({ idx: currentChannelIndex, pos: currentFilteredChannels.indexOf(channels[currentChannelIndex]), focus: epgFocusedRowIdx }));
+        check('CH+ steps to the next channel in the on-screen list', up.pos === (start.pos + 1) % start.len && up.focus === up.pos, `pos ${start.pos} → ${up.pos}`);
+        await key('ChannelDown', 428); await sleep(200);
+        const down = await page.evaluate(() => currentChannelIndex);
+        check('CH- steps back', down === start.idx);
+        await page.evaluate(() => { currentChannelIndex = getChannelIndex(currentFilteredChannels[0]); });
+        await key('ChannelDown', 428); await sleep(200);
+        check('CH- wraps from first to last', await page.evaluate(() => currentFilteredChannels.indexOf(channels[currentChannelIndex]) === currentFilteredChannels.length - 1));
+        await key('MediaPause', 19); await sleep(100);
+        check('Pause key pauses', await page.evaluate(() => videoPlayer.paused));
+        await key('MediaPlay', 415); await sleep(100);
+        check('Play key resumes (play() called)', await page.evaluate(() => !videoPlayer.paused || videoPlayer.error !== null));
+    }
 
     // ---------- Back + confirm dialog with D-pad ----------
     await back();
@@ -126,7 +144,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
 
     // ---------- M3U demo: standard view D-pad ----------
     await page.click('#startDemoBtn');
-    await page.waitForFunction(() => currentPlaylistType === 'm3u' && mainApp.style.display === 'flex', { timeout: 10000 });
+    await page.waitForFunction(() => currentPlaylistType === 'm3u' && mainApp.style.display === 'flex', { timeout: 10000 }).catch(async e => { console.log('DEMO STATE', JSON.stringify(await page.evaluate(() => ({ isLoading, type: currentPlaylistType, main: mainApp.style.display, start: startPage.className, status: startStatusMessage.textContent }))), 'ERRORS', errors.slice(0, 5)); throw e; });
     await sleep(800);
     await page.evaluate(() => { document.querySelectorAll('.group-item')[1].click(); }); // All Channels
     await sleep(300);

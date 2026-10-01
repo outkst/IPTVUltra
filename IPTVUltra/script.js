@@ -2598,6 +2598,31 @@ document.addEventListener('keyup', (e) => {
     showTopControls();
 });
 
+// Step to the previous/next channel within the list currently on screen
+// (group, favorites or search result), wrapping at the ends.
+function zapChannel(dir) {
+    const list = currentFilteredChannels;
+    if (!list.length) return;
+    const cur = currentChannelIndex >= 0 ? list.indexOf(channels[currentChannelIndex]) : -1;
+    const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+    if (epgMode) { epgFocusedRowIdx = next; updateEPGRowFocus(); }
+    selectChannel(getChannelIndex(list[next]));
+}
+
+// Dedicated remote keys: Play (415), Pause (19), CH+ (427), CH- (428).
+// These work in fullscreen and in both main views; nothing else in fullscreen
+// reacts apart from OK, Back and the Left/Right seek handlers above.
+document.addEventListener('keydown', (e) => {
+    const kc = e.keyCode;
+    if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
+    if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0) return;
+    if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
+    e.preventDefault();
+    if (kc === 415) { videoPlayer.play().catch(() => {}); showTopControls(); }
+    else if (kc === 19) { videoPlayer.pause(); showTopControls(); }
+    else zapChannel(kc === 427 ? 1 : -1);
+}, true);
+
 // Back/Return button (webOS keyCode 461) — capture phase so system default is suppressed
 document.addEventListener('keydown', (e) => {
     if (e.keyCode !== 461 && e.key !== 'GoBack') return;
