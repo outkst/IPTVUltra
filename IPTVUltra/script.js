@@ -1332,8 +1332,8 @@ function goToHomeScreen() {
     currentSearchQuery = '';
     selectedPlaylistId = null;
 
-    // Reset app state
-    epgMode = false;
+    // Reset app state (also restores the standard layout if the guide was showing)
+    exitEPGMode();
     currentPlaylistType = null;
     isLoading = false;
 
@@ -1486,6 +1486,18 @@ function enterEPGMode() {
     if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
         updateEPGInfoPanel(channels[currentChannelIndex]);
     }
+}
+
+// Restore the standard layout after the EPG guide was shown: swap the view
+// containers back and return the <video> + stream-info overlay to videoArea.
+function exitEPGMode() {
+    epgMode = false;
+    const sv = document.getElementById('standardView');
+    const ev = document.getElementById('epgView');
+    if (sv) sv.style.display = 'flex';
+    if (ev) ev.style.display = 'none';
+    if (videoPlayer.parentNode !== videoArea) videoArea.insertBefore(videoPlayer, videoArea.firstChild);
+    if (streamInfoOverlay.parentNode !== videoArea) videoArea.insertBefore(streamInfoOverlay, document.getElementById('epgNowNext'));
 }
 
 function refreshCurrentView() {
