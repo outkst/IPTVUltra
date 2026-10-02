@@ -125,6 +125,123 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('Play key resumes (play() called)', await page.evaluate(() => !videoPlayer.paused || videoPlayer.error !== null));
     }
 
+    // ---------- VOD: Movies & Series ----------
+    {
+        check('mode switch shown for Xtream playlists', await page.evaluate(() => document.getElementById('modeSwitch').style.display !== 'none'));
+        await key('ColorF3Blue', 406); // Live → Movies
+        await page.waitForFunction(() => vodMode === 'movies' && vodNav.screen === 'home' && (vodCats || []).length > 0, { timeout: 10000 });
+        await page.waitForFunction(() => !!vodRecent, { timeout: 15000 }); // background full fetch for Recently Added
+        await sleep(200);
+        const mv = await page.evaluate(() => ({ vv: document.getElementById('vodView').style.display, ev: document.getElementById('epgView').style.display, cats: [...document.querySelectorAll('#groupsList .group-item')].map(g => g.textContent.trim()), recent: document.querySelectorAll('.vod-card[data-pos^="recent:"]').length, paused: videoPlayer.paused }));
+        check('Blue opens Movies home; adult category hidden; live video paused', mv.vv === 'flex' && mv.ev === 'none' && mv.cats.length === 5 && !mv.cats.some(c => /adult/i.test(c)) && mv.paused, JSON.stringify(mv));
+        check('Recently Added row filled from the background catalog fetch', mv.recent === 18, `recent=${mv.recent}`);
+        // Left → categories, Down to "Action", Enter → grid
+        await key('ArrowLeft', 37); await key('ArrowDown', 40); await key('ArrowDown', 40); await key('ArrowDown', 40);
+        check('category column focus on Action', await page.evaluate(() => document.querySelector('.group-item.focused') && document.querySelector('.group-item.focused').textContent.includes('Action')));
+        await fetch(BASE + '/__reset');
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodNav.screen === 'grid' && vodNav.items.length === 60 && vodGridRows.size > 0, { timeout: 10000 });
+        s = await stats();
+        check('category grid loads only that category (one request, 60 titles, 6 columns)', (s.vod_actions || []).join() === 'get_vod_streams@100' && await page.evaluate(() => vodGrid.cols === 6 && document.querySelectorAll('#vodGridInner .vod-card').length >= 12 && document.querySelectorAll('#vodGridInner .vod-card').length < 60), JSON.stringify(s.vod_actions));
+        await key('ArrowRight', 39); await key('ArrowDown', 40); await key('ArrowRight', 39);
+        check('grid D-pad: Right, Down, Right → index 7 focused', await page.evaluate(() => vodNav.zone === 'content' && vodNav.focus === 7 && document.querySelector('.vod-card.focused').dataset.idx === '7'));
+        await page.evaluate(() => { for (let i = 0; i < 8; i++) { vodNav.focus = Math.min(vodNav.items.length - 1, vodNav.focus + 6); } updateVodGridFocus(); });
+        check('grid virtualization keeps a bounded number of cards', await page.evaluate(() => document.querySelectorAll('#vodGridInner .vod-card').length <= 36 && !!document.querySelector('.vod-card.focused')));
+        await page.evaluate(() => { vodNav.focus = 7; updateVodGridFocus(); });
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 10000 });
+        const det = await page.evaluate(() => ({ title: document.querySelector('.vod-dtitle').textContent, plot: document.querySelector('.vod-dplot').textContent, btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, meta: document.querySelector('.vod-dmeta').textContent }));
+        check('movie details show plot, metadata and a focused Play button', /Plot of/.test(det.plot) && det.btn === '▶ Play' && /2023/.test(det.meta), JSON.stringify(det));
+        // Play → player screen with the movie file, playback progresses
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodPlay.active && !document.getElementById('vodPlayer').classList.contains('hidden'), { timeout: 5000 });
+        await page.waitForFunction(() => videoPlayer.currentTime > 1.5, { timeout: 15000 }).catch(() => {});
+        const pl = await page.evaluate(() => ({ src: videoPlayer.currentSrc || videoPlayer.src, t: videoPlayer.currentTime, controls: videoPlayer.hasAttribute('controls'), inSlot: videoPlayer.parentNode.id, osd: document.getElementById('vodOsdTitle').textContent }));
+        check('movie plays in the app-owned player without native controls', /\/movie\/user\/pass\/\d+\.mp4$/.test(pl.src) && pl.t > 1.5 && !pl.controls && pl.inSlot === 'vodVideoSlot' && pl.osd === det.title, JSON.stringify(pl));
+        await key('ArrowUp', 38); await sleep(300);
+        check('Up seeks forward 60 s (clamped to the clip) and shows the OSD', await page.evaluate(() => videoPlayer.currentTime > 10 && document.getElementById('vodOsd').classList.contains('visible')));
+        await page.evaluate(() => { videoPlayer.currentTime = 6; });
+        await sleep(400);
+        // OK pauses, OK resumes
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(200);
+        check('OK pauses VOD playback', await page.evaluate(() => videoPlayer.paused && !document.getElementById('vodPaused').classList.contains('hidden')));
+        await back();
+        await sleep(300);
+        const afterBack = await page.evaluate(() => ({ screen: vodNav.screen, playerHidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, controls: videoPlayer.hasAttribute('controls'), btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, prog: Object.values(vodProgress).filter(p => p.kind === 'movie').length, stored: !!localStorage.getItem('iptv_vod_progress') }));
+        check('Back from player returns to details with a Resume button; progress saved; video returned to the guide', afterBack.screen === 'details' && afterBack.playerHidden && afterBack.slot === 'epgVideoWrap' && afterBack.controls && /Resume from 0:0[5-9]/.test(afterBack.btn) && afterBack.prog === 1 && afterBack.stored, JSON.stringify(afterBack));
+        // Start over button exists; Favorite toggles
+        await key('ArrowRight', 39); await key('ArrowRight', 39); await key('Enter', 13); await sleep(100);
+        check('Favorite toggles on from details', await page.evaluate(() => document.querySelector('.vod-btn.focused').textContent === '★ Favorite' && Object.keys(JSON.parse(localStorage.getItem('iptv_vod_favorites'))[localStorage.getItem('iptv_last_playlist')].movies).length === 1));
+        await back(); // → grid
+        check('Back from details returns to the grid', await page.evaluate(() => vodNav.screen === 'grid' && document.getElementById('vodDetails').style.display === 'none'));
+        await back(); // → home
+        await sleep(300);
+        const home = await page.evaluate(() => ({ screen: vodNav.screen, list: vodNav.list, cw: document.querySelectorAll('.vod-card[data-pos^="cw:"]').length, fav: document.querySelectorAll('.vod-card[data-pos^="favs:"]').length, cwMeta: document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m') && document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent }));
+        check('Home shows Continue Watching and Favorites rows', home.screen === 'home' && home.cw === 1 && home.fav === 1 && /left/.test(home.cwMeta), JSON.stringify(home));
+        // Search all: typing filters the full catalog
+        await page.evaluate(() => { document.querySelectorAll('.group-item')[2].click(); });
+        await page.waitForFunction(() => vodNav.list === 'all' && vodNav.screen === 'grid' && vodNav.items.length === 300, { timeout: 10000 });
+        check('Search all shows the full (non-adult) catalog and focuses the search box', await page.evaluate(() => document.activeElement === document.getElementById('vodSearchInput')));
+        await page.keyboard.type('Comedy Movie 1');
+        await sleep(400);
+        check('typing filters all movies (prefix matches first)', await page.evaluate(() => vodNav.items.length === 15 && /^Comedy Movie 1\d$/.test(vodNav.items[0].name)), await page.evaluate(() => vodNav.items.length + ' first=' + (vodNav.items[0] && vodNav.items[0].name)));
+        await key('ArrowDown', 40);
+        check('Down leaves the search box into the grid', await page.evaluate(() => document.activeElement !== document.getElementById('vodSearchInput') && vodNav.zone === 'content'));
+
+        // ---- Series
+        await key('ColorF3Blue', 406); // Movies → Series
+        await page.waitForFunction(() => vodMode === 'series' && vodNav.screen === 'home' && (seriesCats || []).length > 0, { timeout: 10000 });
+        await page.evaluate(() => { document.querySelectorAll('#groupsList .group-item')[0].click(); }); // Drama Series
+        await page.waitForFunction(() => vodNav.screen === 'grid' && vodNav.items.length === 20, { timeout: 10000 });
+        await page.evaluate(() => { vodNav.zone = 'content'; vodNav.focus = 0; updateVodGridFocus(); });
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 10000 });
+        const sd = await page.evaluate(() => ({ seasons: document.querySelectorAll('.vod-season').length, eps: document.querySelectorAll('.vod-ep').length, btn: document.querySelector('.vod-btn.focused').textContent, meta: document.querySelector('.vod-dmeta').textContent }));
+        check('series details: 2 seasons, 3 episodes in season 1, Play S1 E1', sd.seasons === 2 && sd.eps === 3 && sd.btn === '▶ Play S1 E1' && /2 seasons · 5 episodes/.test(sd.meta), JSON.stringify(sd));
+        await key('ArrowDown', 40); await key('ArrowRight', 39);
+        check('Down to seasons, Right selects season 2 (2 episodes)', await page.evaluate(() => vodNav.detailZone === 'seasons' && vodNav.season === 1 && document.querySelectorAll('.vod-ep').length === 2));
+        await key('ArrowLeft', 37); await key('ArrowDown', 40); await key('ArrowDown', 40);
+        check('Down into episodes, E2 focused', await page.evaluate(() => vodNav.detailZone === 'episodes' && vodNav.epIdx === 1 && document.querySelector('.vod-ep.focused .vod-ept').textContent.includes('E2')));
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodPlay.active && vodPlay.kind === 'episode', { timeout: 5000 });
+        const ep = await page.evaluate(() => ({ src: videoPlayer.currentSrc || videoPlayer.src, title: vodPlay.title }));
+        check('episode plays from the series endpoint', /\/series\/user\/pass\/\d+\.mp4$/.test(ep.src) && /S1 E2/.test(ep.title), JSON.stringify(ep));
+        await page.waitForFunction(() => videoPlayer.currentTime > 0.5, { timeout: 10000 }).catch(() => {});
+        // Simulate the end of the episode → Up Next card with countdown
+        await page.evaluate(() => { videoPlayer.pause(); videoPlayer.dispatchEvent(new Event('ended')); });
+        await sleep(200);
+        const nx = await page.evaluate(() => ({ visible: vodNextVisible(), name: document.getElementById('vodNextName').textContent, label: document.getElementById('vodNextLabel').textContent, watched: Object.values(vodProgress).some(p => p.kind === 'episode' && p.watched) }));
+        check('ended → Up Next card for S1 E3 with countdown; E2 marked watched', nx.visible && /S1 E3/.test(nx.name) && /plays in \d+ s/.test(nx.label) && nx.watched, JSON.stringify(nx));
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await page.waitForFunction(() => vodPlay.active && /S1 E3/.test(vodPlay.title), { timeout: 5000 });
+        check('OK on Play now starts the next episode', await page.evaluate(() => !vodNextVisible() && vodPlay.epIdx === 2));
+        // Last episode of season 1 ends → rolls into season 2
+        await page.evaluate(() => { videoPlayer.dispatchEvent(new Event('ended')); });
+        await sleep(100);
+        check('end of season rolls Up Next into season 2', await page.evaluate(() => vodNextVisible() && /S2 E1/.test(document.getElementById('vodNextName').textContent)));
+        await key('ArrowRight', 39); // focus Cancel
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(300);
+        const canc = await page.evaluate(() => ({ active: vodPlay.active, screen: vodNav.screen, season: vodNav.season, ep: vodNav.epIdx, zone: vodNav.detailZone, checks: document.querySelectorAll('.vod-ep .vod-chk').length, btn: document.querySelector('.vod-btn.pri').textContent, focusedEp: document.querySelector('.vod-ep.focused .vod-ept') && document.querySelector('.vod-ep.focused .vod-ept').textContent }));
+        check('Cancel returns to details on S2 E1; Play button advances; S1 fully ticked', !canc.active && canc.screen === 'details' && canc.btn === '▶ Play S2 E1' && canc.season === 1 && canc.ep === 0 && canc.zone === 'episodes' && /E1/.test(canc.focusedEp), JSON.stringify(canc));
+        await key('ArrowLeft', 37); await key('ArrowLeft', 37); await sleep(100);
+        check('season 1 shows both watched episodes ticked', await page.evaluate(() => vodNav.season === 0 && document.querySelectorAll('.vod-ep .vod-chk').length === 2));
+        // Series home shows Continue Watching
+        await back(); await back(); await sleep(300);
+        check('Series home shows the show in Continue Watching', await page.evaluate(() => vodNav.screen === 'home' && document.querySelectorAll('.vod-card[data-pos^="cw:"]').length === 1 && /S1 E3/.test(document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent)));
+        // Adult toggle in settings
+        await page.evaluate(() => { settings.showAdult = true; saveSettings(); renderGroupsList(); });
+        check('Show adult categories reveals the hidden category', await page.evaluate(() => [...document.querySelectorAll('#groupsList .group-item')].some(g => /Adult/.test(g.textContent))));
+        await page.evaluate(() => { settings.showAdult = false; saveSettings(); renderGroupsList(); });
+        // Back from Home → Live, channel resumes
+        await back();
+        await page.waitForFunction(() => vodMode === 'live', { timeout: 5000 });
+        await sleep(400);
+        const live = await page.evaluate(() => ({ ev: document.getElementById('epgView').style.display, vv: document.getElementById('vodView').style.display, slot: videoPlayer.parentNode.id, src: videoPlayer.getAttribute('src') || '', controls: videoPlayer.hasAttribute('controls'), rows: epgRenderedRows.size }));
+        check('Back from Home returns to Live: guide visible, live stream reloaded, controls restored', live.ev === 'flex' && live.vv === 'none' && live.slot === 'epgVideoWrap' && /\/live\//.test(live.src) && live.controls && live.rows > 0, JSON.stringify(live));
+    }
+
     // ---------- Back + confirm dialog with D-pad ----------
     await back();
     check('Back opens Return-to-Home dialog', await page.evaluate(() => !confirmDialog.classList.contains('hidden')));

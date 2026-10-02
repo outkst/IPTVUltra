@@ -76,6 +76,24 @@
 			</div>
 		</div>
 
+		<!-- VOD player: full-viewport container owned by the app so the OSD can draw over the video -->
+		<div id="vodPlayer" class="vod-player hidden">
+			<div id="vodVideoSlot" class="vod-video-slot"></div>
+			<div id="vodLoading" class="vod-loading hidden"><div class="loading-spinner"></div></div>
+			<div id="vodPaused" class="vod-paused hidden">⏸</div>
+			<div id="vodNext" class="vod-next hidden">
+				<div id="vodNextLabel" class="vod-next-label">Up next</div>
+				<div id="vodNextName" class="vod-next-name"></div>
+				<div class="vod-next-btns"><button id="vodNextPlay" class="vod-next-btn focused">Play now</button><button id="vodNextCancel" class="vod-next-btn">Cancel</button></div>
+			</div>
+			<div id="vodOsd" class="vod-osd">
+				<div id="vodOsdTitle" class="vod-osd-title"></div>
+				<div id="vodOsdSub" class="vod-osd-sub"></div>
+				<div class="vod-bar"><div id="vodBarFill" class="vod-bar-fill"></div><div id="vodBarKnob" class="vod-bar-knob"></div></div>
+				<div class="vod-times"><span id="vodTimePos">0:00</span><span id="vodTimeRem"></span></div>
+			</div>
+		</div>
+
 		<!-- Settings Overlay -->
 		<div id="settingsOverlay" class="settings-overlay hidden">
 			<div class="settings-card" role="dialog" aria-label="Settings">
@@ -98,6 +116,11 @@
 		<div id="mainApp" style="display: none; flex-direction: column; height: 100%;">
 			<div class="main-content">
 				<div class="groups-column" id="groupsColumn">
+					<div class="mode-switch" id="modeSwitch" style="display:none;">
+						<button class="mode-btn active" data-mode="live">📡 Live</button>
+						<button class="mode-btn" data-mode="movies">🎬 Movies</button>
+						<button class="mode-btn" data-mode="series">📺 Series</button>
+					</div>
 					<div class="groups-header"><span>📁 Groups</span><button id="toggleGroupsBtn"
 							class="toggle-groups-btn">◀ Hide</button></div>
 					<div class="groups-pinned" id="groupsPinned"></div>
@@ -148,6 +171,20 @@
 						<div id="channelInfoTag" class="channel-info-tag"></div>
 						<div id="pbTrickBadge" style="display:none;"></div>
 					</div>
+				</div>
+				<!-- VOD view: Movies / Series browse, details -->
+				<div id="vodView" style="display:none;flex:1;flex-direction:column;min-width:0;position:relative;">
+					<div class="vod-hdr">
+						<span id="vodTitle" class="vod-title">🎬 Movies</span><span id="vodCount" class="vod-count"></span>
+						<div class="vod-search-wrap"><span class="search-icon">🔍</span><input type="text" id="vodSearchInput" class="vod-search" placeholder="Search…"></div>
+						<button id="vodSettingsBtn" class="home-btn">⚙️ Settings</button>
+					</div>
+					<div id="vodContent" class="vod-content">
+						<div id="vodHome" class="vod-home"></div>
+						<div id="vodGrid" class="vod-grid" style="display:none;"><div id="vodGridInner" class="vod-grid-inner"></div></div>
+						<div id="vodEmpty" class="vod-empty" style="display:none;"></div>
+					</div>
+					<div id="vodDetails" class="vod-details" style="display:none;"></div>
 				</div>
 				<!-- EPG guide view: video+info panel on top, guide grid below -->
 				<div id="epgView" style="display:none;flex:1;flex-direction:column;min-width:0;position:relative;">
