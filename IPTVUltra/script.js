@@ -2340,6 +2340,8 @@ function focusElement(idx) {
 // into an app-owned full-viewport container so the OSD can draw over it.
 const VOD_COLS = 6;
 const VOD_PROGRESS_MAX = 300;
+const VOD_MIN_RESUME_S = 120;   // nothing counts as "in progress" before 2 minutes (10% for very short items)
+function vodMinResume(dur) { return dur > 0 ? Math.min(VOD_MIN_RESUME_S, dur * 0.1) : VOD_MIN_RESUME_S; }
 const VOD_NEXT_COUNTDOWN = 10;
 let vodGrid = { cols: VOD_COLS, cardW: 0, rowH: 0, total: 0 };
 const vodGridRows = new Map(); // rowIdx -> element
@@ -2480,7 +2482,13 @@ function toggleVodFav(item) {
 function vodFavItems() { return Object.values(vodFavBucket()).sort((a, b) => a.name.localeCompare(b.name)); }
 
 function progressKeyFor(kind, id, seriesId) { return `${_activePlaylistKey || '_'}|` + (kind === 'movie' ? `m:${id}` : `e:${seriesId}:${id}`); }
-function movieProgress(item) { const e = vodProgress[progressKeyFor('movie', item.id)]; return e && !e.watched && e.dur ? e : null; }
+function movieProgress(item) { const e = vodProgress[progressKeyFor('movie', item.id)]; return e && !e.watched && e.dur && e.pos >= vodMinResume(e.dur) ? e : null; }
+function removeVodProgress(item) {
+    const prefix = `${_activePlaylistKey || '_'}|`;
+    if (item.kind === 'movie') delete vodProgress[prefix + 'm:' + item.id];
+    else for (const k of Object.keys(vodProgress)) if (k.startsWith(prefix + 'e:' + item.id + ':')) delete vodProgress[k];
+    saveJson('iptv_vod_progress', vodProgress);
+}
 function episodeProgress(seriesId, epId) { return vodProgress[progressKeyFor('episode', epId, seriesId)] || null; }
 function lastEpisodeEntry(seriesId) {
     const prefix = `${_activePlaylistKey || '_'}|e:${seriesId}:`;
@@ -2493,7 +2501,7 @@ function continueWatchingItems(mode) {
     const prefix = `${_activePlaylistKey || '_'}|`;
     const out = [];
     if (mode === 'movies') {
-        for (const k in vodProgress) { const e = vodProgress[k]; if (k.startsWith(prefix + 'm:') && !e.watched && e.dur && e.pos > 0) out.push(e); }
+        for (const k in vodProgress) { const e = vodProgress[k]; if (k.startsWith(prefix + 'm:') && !e.watched && e.dur && e.pos >= vodMinResume(e.dur)) out.push(e); }
         out.sort((a, b) => b.at - a.at);
         return out.map(e => ({ kind: 'movie', id: e.id, name: e.name, icon: e.icon, rating: e.rating || 0, added: 0, ext: e.ext, catId: e.catId, _resume: e }));
     }
@@ -2506,6 +2514,7 @@ function continueWatchingItems(mode) {
     }
     for (const e of bySeries.values()) {
         if (e.watched && e.lastOfSeries) continue; // finished the series
+        if (!e.watched && !(e.dur && e.pos >= vodMinResume(e.dur))) continue; // barely started
         out.push({ kind: 'series', id: e.seriesId, name: e.name, icon: e.icon, rating: e.rating || 0, added: 0, catId: e.catId, _resume: e });
     }
     out.sort((a, b) => b._resume.at - a._resume.at);
@@ -2649,7 +2658,7 @@ function focusVodSearch() {
 function vodHomeRows() {
     const rows = [];
     const cw = continueWatchingItems(vodMode);
-    if (cw.length) rows.push({ key: 'cw', title: '▶ Continue Watching', sub: `${cw.length} in progress`, items: cw.slice(0, 30) });
+    if (cw.length) rows.push({ key: 'cw', title: '▶ Continue Watching', sub: `${cw.length} in progress · Red removes`, items: cw.slice(0, 30) });
     const recent = vodMode === 'movies' ? vodRecent : seriesRecent;
     if (recent) rows.push({ key: 'recent', title: '🆕 Recently Added', sub: '', items: vodVisible(recent, vodMode).slice(0, 18) });
     else rows.push({ key: 'recent', title: '🆕 Recently Added', sub: 'loading …', items: [] });
@@ -2899,6 +2908,13 @@ function vodDetailButtons() {
         btns.push({ id: 'play', label: '▶ Play', primary: true, disabled: true, act: () => {} });
     }
     btns.push({ id: 'fav', label: isVodFav(item) ? '★ Favorite' : '☆ Favorite', act: () => { toggleVodFav(item); renderVodDetails(); } });
+    const hasProgress = item.kind === 'movie' ? !!movieProgress(item) : !!lastEpisodeEntry(item.id);
+    if (hasProgress) btns.push({ id: 'remove', label: '✕ Remove from Continue Watching', act: () => {
+        removeVodProgress(item);
+        if (vodNav.detailBtn >= vodDetailButtons().length) vodNav.detailBtn = 0;
+        renderVodDetails();
+        showEPGToast(`${item.name} removed from Continue Watching`, 'success', 'Continue Watching'); hideEPGToast(2500);
+    } });
     return btns;
 }
 function renderVodDetails() {
@@ -2938,8 +2954,8 @@ function renderVodDetails() {
         html += `<div class="vod-seasons">${info.seasons.map((s, i) => `<button class="vod-season${i === vodNav.season ? ' on' : ''}${vodNav.detailZone === 'seasons' && i === vodNav.season ? ' focused' : ''}" data-i="${i}">Season ${s.num}</button>`).join('')}</div>`;
         html += `<div class="vod-eps">` + season.episodes.map((ep, i) => {
             const p = episodeProgress(item.id, ep.id);
-            const pct = p && p.dur ? Math.min(100, Math.round(p.pos / p.dur * 100)) : 0;
             const watched = !!(p && p.watched);
+            const pct = p && p.dur && (watched || p.pos >= vodMinResume(p.dur)) ? Math.min(100, Math.round(p.pos / p.dur * 100)) : 0;
             const thumb = ep.image || poster;
             return `<div class="vod-ep${vodNav.detailZone === 'episodes' && i === vodNav.epIdx ? ' focused' : ''}${watched ? ' watched' : ''}" data-i="${i}">` +
                 `<div class="vod-thumb">${thumb ? `<img loading="lazy" src="${escapeHtml(thumb)}" alt="" onerror="this.remove()">` : ''}${pct ? `<div class="vod-prog"><i style="width:${watched ? 100 : pct}%"></i></div>` : ''}</div>` +
@@ -2994,7 +3010,8 @@ function handleVodDetailsKey(e, up, down, left, right, enter) {
 // ── browse keys ──────────────────────────────────────────────
 function handleVodBrowseKey(e, up, down, left, right, enter) {
     if (vodNav.screen === 'details') return handleVodDetailsKey(e, up, down, left, right, enter);
-    if (!(up || down || left || right || enter)) return;
+    const red = e.keyCode === 403 || e.key === 'ColorF0Red';
+    if (!(up || down || left || right || enter || red)) return;
     e.preventDefault();
     if (vodNav.zone === 'cats') {
         const els = _groupItemEls();
@@ -3010,6 +3027,11 @@ function handleVodBrowseKey(e, up, down, left, right, enter) {
         const rows = vodHomeFocusRows();
         if (!rows.length) { if (left) { vodNav.zone = 'cats'; vodNav.catIdx = vodActiveCatIdx(); refreshVodFocus(); updateVodCatFocus(true); } else if (up) focusVodSearch(); return; }
         const r = rows[vodNav.homeRow]; const col = vodNav.homeCol[r.key] || 0;
+        if ((e.keyCode === 403 || e.key === 'ColorF0Red') && r.key === 'cw') {
+            const it = r.items[col];
+            if (it) { removeVodProgress(it); showEPGToast(`${it.name} removed from Continue Watching`, 'success', 'Continue Watching'); hideEPGToast(2500); renderVodHome(); }
+            return;
+        }
         if (up) { if (vodNav.homeRow === 0) { focusVodSearch(); return; } vodNav.homeRow--; }
         else if (down) vodNav.homeRow = Math.min(rows.length - 1, vodNav.homeRow + 1);
         else if (left) { if (col === 0) { vodNav.zone = 'cats'; vodNav.catIdx = vodActiveCatIdx(); refreshVodFocus(); updateVodCatFocus(true); return; } vodNav.homeCol[r.key] = col - 1; }
@@ -3044,7 +3066,8 @@ function startVodPlayback(p) {
     if (!_xt) return;
     const key = p.kind === 'movie' ? progressKeyFor('movie', p.item.id) : progressKeyFor('episode', p.ep.id, p.item.id);
     const saved = vodProgress[key];
-    const resumeAt = (!p.restart && saved && !saved.watched && saved.dur && saved.pos > 5 && saved.pos < saved.dur * 0.9) ? saved.pos : 0;
+    const resumeAt = (!p.restart && saved && !saved.watched && saved.dur && saved.pos >= vodMinResume(saved.dur) && saved.pos < saved.dur * 0.9) ? saved.pos : 0;
+    if (p.restart && saved) { delete vodProgress[key]; saveJson('iptv_vod_progress', vodProgress); }
     if (vodPlay.active) { saveVodProgress(true); clearVodNext(); }
     stopStallWatchdog();
     if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; }
@@ -3111,7 +3134,7 @@ function saveVodProgress(force) {
     const pos = videoPlayer.currentTime || 0;
     const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) || vodPlay.dur || 0;
     vodPlay.saveAt = now;
-    if (pos < 3 && !vodPlay.ended) return;
+    if (!vodPlay.ended && pos < vodMinResume(dur)) return; // not "in progress" yet
     const it = vodPlay.item;
     const watched = vodPlay.ended || (dur > 0 && pos / dur >= 0.9);
     const e = { kind: vodPlay.kind, id: vodPlay.kind === 'movie' ? it.id : vodPlay.ep.id, name: it.name, icon: it.icon, ext: it.ext, catId: it.catId,

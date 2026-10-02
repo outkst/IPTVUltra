@@ -133,6 +133,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => !!vodRecent, { timeout: 15000 }); // background full fetch for Recently Added
         await sleep(200);
         const mv = await page.evaluate(() => ({ vv: document.getElementById('vodView').style.display, ev: document.getElementById('epgView').style.display, cats: [...document.querySelectorAll('#groupsList .group-item')].map(g => g.textContent.trim()), recent: document.querySelectorAll('.vod-card[data-pos^="recent:"]').length, paused: videoPlayer.paused }));
+        check('nothing counts as in progress before 2 min (10% for short items)', await page.evaluate(() => vodMinResume(7200) === 120 && vodMinResume(20) === 2 && vodMinResume(0) === 120));
+        check('Continue Watching ignores entries under the threshold', await page.evaluate(() => { const k = localStorage.getItem('iptv_last_playlist'); vodProgress[k + '|m:999001'] = { kind: 'movie', id: '999001', name: 'Short', icon: '', ext: 'mp4', catId: '100', pos: 60, dur: 7200, at: Date.now(), watched: false }; vodProgress[k + '|m:999002'] = { kind: 'movie', id: '999002', name: 'Long', icon: '', ext: 'mp4', catId: '100', pos: 200, dur: 7200, at: Date.now(), watched: false }; const ids = continueWatchingItems('movies').map(i => i.id); delete vodProgress[k + '|m:999001']; delete vodProgress[k + '|m:999002']; return !ids.includes('999001') && ids.includes('999002'); }));
         check('settings offer subtitle and audio language rows (default English / Default)', await page.evaluate(() => { const r = settingsRows(); const s = r.find(x => x.id === 'subLang'), a = r.find(x => x.id === 'audioLang'); return !!s && !!a && s.get() === 'en' && a.get() === 'default'; }));
         check('Blue opens Movies home; adult category hidden; live video paused', mv.vv === 'flex' && mv.ev === 'none' && mv.cats.length === 5 && !mv.cats.some(c => /adult/i.test(c)) && mv.paused, JSON.stringify(mv));
         check('Recently Added row filled from the background catalog fetch', mv.recent === 18, `recent=${mv.recent}`);
@@ -197,12 +199,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         // Start over button exists; Favorite toggles
         await key('ArrowRight', 39); await key('ArrowRight', 39); await key('Enter', 13); await sleep(100);
         check('Favorite toggles on from details', await page.evaluate(() => document.querySelector('.vod-btn.focused').textContent === '★ Favorite' && Object.keys(JSON.parse(localStorage.getItem('iptv_vod_favorites'))[localStorage.getItem('iptv_last_playlist')].movies).length === 1));
+        await key('ArrowRight', 39);
+        check('Remove from Continue Watching button is last', await page.evaluate(() => /Remove from Continue Watching/.test(document.querySelector('.vod-btn.focused').textContent)));
+        const savedEntry = await page.evaluate(() => JSON.stringify(vodProgress));
+        await key('Enter', 13); await sleep(100);
+        check('Remove clears the movie progress; Play button no longer offers Resume', await page.evaluate(() => Object.values(vodProgress).filter(p => p.kind === 'movie').length === 0 && document.querySelector('.vod-btn.pri').textContent === '▶ Play' && !document.querySelector('.vod-btn.focused') === false));
+        await page.evaluate(s => { vodProgress = JSON.parse(s); saveJson('iptv_vod_progress', vodProgress); renderVodDetails(); }, savedEntry); // restore for the Home checks
         await back(); // → grid
         check('Back from details returns to the grid', await page.evaluate(() => vodNav.screen === 'grid' && document.getElementById('vodDetails').style.display === 'none'));
         await back(); // → home
         await sleep(300);
         const home = await page.evaluate(() => ({ screen: vodNav.screen, list: vodNav.list, cw: document.querySelectorAll('.vod-card[data-pos^="cw:"]').length, fav: document.querySelectorAll('.vod-card[data-pos^="favs:"]').length, cwMeta: document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m') && document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent }));
         check('Home shows Continue Watching and Favorites rows', home.screen === 'home' && home.cw === 1 && home.fav === 1 && /left/.test(home.cwMeta), JSON.stringify(home));
+        const cwBackup = await page.evaluate(() => JSON.stringify(vodProgress));
+        await page.evaluate(() => { vodNav.zone = 'content'; vodNav.homeRow = 0; updateVodHomeFocus(); });
+        await key('ColorF0Red', 403); await sleep(200);
+        check('Red on a Continue Watching card removes it from the row', await page.evaluate(() => document.querySelectorAll('.vod-card[data-pos^="cw:"]').length === 0 && document.querySelectorAll('.vod-card[data-pos^="favs:"]').length === 1 && document.getElementById('epgToastTitle').textContent === 'Continue Watching'));
+        await page.evaluate(s => { vodProgress = JSON.parse(s); saveJson('iptv_vod_progress', vodProgress); renderVodHome(); }, cwBackup);
         // Search all: typing filters the full catalog
         await page.evaluate(() => { document.querySelectorAll('.group-item')[2].click(); });
         await page.waitForFunction(() => vodNav.list === 'all' && vodNav.screen === 'grid' && vodNav.items.length === 300, { timeout: 10000 });
