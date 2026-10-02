@@ -162,6 +162,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('Up seeks forward 60 s (clamped to the clip) and shows the OSD', await page.evaluate(() => videoPlayer.currentTime > 10 && document.getElementById('vodOsd').classList.contains('visible')));
         await page.evaluate(() => { videoPlayer.currentTime = 6; });
         await sleep(400);
+        // Hold Right: the OSD scrubs while the video stays put; release seeks once
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }); Object.defineProperty(d, 'keyCode', { get: () => 39 }); document.dispatchEvent(d); });
+        await sleep(1300);
+        const hold = await page.evaluate(() => ({ holding: _isHolding(), scrub: _scrubPos, t: videoPlayer.currentTime, osd: document.getElementById('vodOsd').classList.contains('visible'), badge: document.getElementById('pbTrickBadge').textContent, paused: videoPlayer.paused, shown: document.getElementById('vodTimePos').textContent }));
+        check('holding Right scrubs the OSD at 10× without seeking the video', hold.holding && hold.scrub > hold.t + 3 && hold.osd && /▶▶ 10×/.test(hold.badge) && hold.paused && hold.shown === (Math.floor(hold.scrub / 60) + ':' + String(Math.floor(hold.scrub % 60)).padStart(2, '0')), JSON.stringify(hold));
+        await page.evaluate(() => { const u = new KeyboardEvent('keyup', { key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }); Object.defineProperty(u, 'keyCode', { get: () => 39 }); document.dispatchEvent(u); });
+        await sleep(700);
+        const rel = await page.evaluate(() => ({ holding: _isHolding(), scrub: _scrubPos, t: videoPlayer.currentTime, paused: videoPlayer.paused }));
+        check('release seeks once to the scrubbed position and resumes playback', !rel.holding && rel.scrub === null && rel.t > 12 && rel.t < 16 && !rel.paused, JSON.stringify(rel));
         // OK pauses, OK resumes
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(200);
@@ -169,7 +178,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await back();
         await sleep(300);
         const afterBack = await page.evaluate(() => ({ screen: vodNav.screen, playerHidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, controls: videoPlayer.hasAttribute('controls'), btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, prog: Object.values(vodProgress).filter(p => p.kind === 'movie').length, stored: !!localStorage.getItem('iptv_vod_progress') }));
-        check('Back from player returns to details with a Resume button; progress saved; video returned to the guide', afterBack.screen === 'details' && afterBack.playerHidden && afterBack.slot === 'epgVideoWrap' && afterBack.controls && /Resume from 0:0[5-9]/.test(afterBack.btn) && afterBack.prog === 1 && afterBack.stored, JSON.stringify(afterBack));
+        check('Back from player returns to details with a Resume button; progress saved; video returned to the guide', afterBack.screen === 'details' && afterBack.playerHidden && afterBack.slot === 'epgVideoWrap' && afterBack.controls && /Resume from 0:1\d/.test(afterBack.btn) && afterBack.prog === 1 && afterBack.stored, JSON.stringify(afterBack));
         // Start over button exists; Favorite toggles
         await key('ArrowRight', 39); await key('ArrowRight', 39); await key('Enter', 13); await sleep(100);
         check('Favorite toggles on from details', await page.evaluate(() => document.querySelector('.vod-btn.focused').textContent === '★ Favorite' && Object.keys(JSON.parse(localStorage.getItem('iptv_vod_favorites'))[localStorage.getItem('iptv_last_playlist')].movies).length === 1));

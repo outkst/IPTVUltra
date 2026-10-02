@@ -207,6 +207,16 @@ const _FF_RAMP = [
 let _trickInterval  = null;
 let _trickHoldStart = 0;
 let _trickHoldDir   = null;  // 'left' | 'right' | null — null means not in trick play
+// VOD scrubbing: while Left/Right is held the OSD position moves at these
+// speeds (seconds of content per second) and the video seeks once on release.
+// Seeking a large file on every tick stalls the decoder and the bar never moves.
+const _VOD_SCRUB_RAMP = [
+    { after: 0,    speed: 10 },
+    { after: 1500, speed: 30 },
+    { after: 4000, speed: 60 },
+    { after: 8000, speed: 120 },
+];
+let _scrubPos = null;        // virtual position during a VOD scrub, null otherwise
 
 function _seekRange() {
     if (videoPlayer.seekable && videoPlayer.seekable.length > 0)
@@ -243,6 +253,22 @@ function _startHold(dir) {
     _trickHoldDir   = dir;
     _trickHoldStart = Date.now();
     videoPlayer.pause();
+    if (vodPlay.active) {
+        _scrubPos = videoPlayer.currentTime || 0;
+        if (vodPlay.osdTimer) { clearTimeout(vodPlay.osdTimer); vodPlay.osdTimer = null; }
+        document.getElementById('vodOsd').classList.add('visible');
+        _trickInterval = setInterval(() => {
+            const heldMs = Date.now() - _trickHoldStart;
+            const speed  = _getRampSpeed(_VOD_SCRUB_RAMP, heldMs);
+            const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) || vodPlay.dur || 0;
+            const max = dur ? Math.max(0, dur - 1) : Number.MAX_VALUE;
+            _scrubPos = Math.max(0, Math.min(max, _scrubPos + (dir === 'left' ? -1 : 1) * speed * 0.1));
+            _showTrickBadge((dir === 'left' ? '◀◀ ' : '▶▶ ') + speed + '×');
+            updateVodOsd(_scrubPos);
+            if ((dir === 'right' && dur && _scrubPos >= max) || (dir === 'left' && _scrubPos <= 0)) _stopHold();
+        }, 100);
+        return;
+    }
     const ramp = dir === 'left' ? _REWIND_RAMP : _FF_RAMP;
     _trickInterval = setInterval(() => {
         const heldMs = Date.now() - _trickHoldStart;
@@ -265,6 +291,15 @@ function _stopHold() {
     _trickHoldDir   = null;
     _trickHoldStart = 0;
     _hideTrickBadge();
+    if (_scrubPos !== null) {
+        // VOD: one seek to the scrubbed position, then resume
+        const target = _scrubPos;
+        _scrubPos = null;
+        try { videoPlayer.currentTime = target; } catch (_) { /* not seekable yet */ }
+        videoPlayer.play().catch(() => {});
+        if (vodPlay.active) showVodOsd();
+        return;
+    }
     videoPlayer.play().catch(() => {});
 }
 
@@ -3039,6 +3074,7 @@ function stopVodPlayback(backToDetails) {
     if (!vodPlay.active) return;
     saveVodProgress(true);
     clearVodNext();
+    _scrubPos = null; // abandon any scrub in progress; no seek/play on the way out
     if (_isHolding()) _stopHold();
     _holdKeyDir = null;
     if (vodPlay.osdTimer) { clearTimeout(vodPlay.osdTimer); vodPlay.osdTimer = null; }
@@ -3080,8 +3116,8 @@ function saveVodProgress(force) {
     pruneVodProgress();
     saveJson('iptv_vod_progress', vodProgress);
 }
-function updateVodOsd() {
-    const pos = videoPlayer.currentTime || 0;
+function updateVodOsd(posOverride) {
+    const pos = posOverride !== undefined ? posOverride : (videoPlayer.currentTime || 0);
     const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) || vodPlay.dur || 0;
     document.getElementById('vodOsdTitle').textContent = vodPlay.title || '';
     document.getElementById('vodOsdSub').textContent = vodPlay.sub || '';
