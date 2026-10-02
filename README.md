@@ -12,7 +12,7 @@ A webOS TV application for LG Smart TVs that streams IPTV channels from M3U play
 - Favorites — star any channel; persisted across sessions
 - Save multiple playlists and switch between them
 - Settings (Yellow key or ⚙️ buttons): text size, 12/24-hour clock, auto-load last playlist, per-playlist starting group and resume-last-channel, show adult categories, clear favorites
-- **Movies and Series** (Xtream) — Live / Movies / Series switch above the groups column (Blue key cycles). Poster grid per category, Home with Continue Watching, Recently Added and Favorites, details pages, resume where you left off, series seasons and episodes with watched marks and auto-play next. Playback uses an app-drawn player with a progress bar, ±10 s / ±60 s seeking and trick-play.
+- **Movies and Series** (Xtream) — Live / Movies / Series switch above the groups column (Blue key cycles). Poster grid per category, Home with Continue Watching, Recently Added and Favorites, details pages, resume where you left off, series seasons and episodes with watched marks and auto-play next. Playback uses an app-drawn player with a progress bar, ±10 s / ±60 s seeking and fast scrubbing. Embedded subtitle and audio tracks are selected automatically from Settings (English subtitles by default) and can be changed with the Green key.
 - Native fullscreen video playback
 - Full LG remote control navigation
 

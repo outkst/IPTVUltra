@@ -133,6 +133,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => !!vodRecent, { timeout: 15000 }); // background full fetch for Recently Added
         await sleep(200);
         const mv = await page.evaluate(() => ({ vv: document.getElementById('vodView').style.display, ev: document.getElementById('epgView').style.display, cats: [...document.querySelectorAll('#groupsList .group-item')].map(g => g.textContent.trim()), recent: document.querySelectorAll('.vod-card[data-pos^="recent:"]').length, paused: videoPlayer.paused }));
+        check('settings offer subtitle and audio language rows (default English / Default)', await page.evaluate(() => { const r = settingsRows(); const s = r.find(x => x.id === 'subLang'), a = r.find(x => x.id === 'audioLang'); return !!s && !!a && s.get() === 'en' && a.get() === 'default'; }));
         check('Blue opens Movies home; adult category hidden; live video paused', mv.vv === 'flex' && mv.ev === 'none' && mv.cats.length === 5 && !mv.cats.some(c => /adult/i.test(c)) && mv.paused, JSON.stringify(mv));
         check('Recently Added row filled from the background catalog fetch', mv.recent === 18, `recent=${mv.recent}`);
         // Left → categories, Down to "Action", Enter → grid
@@ -175,6 +176,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(200);
         check('OK pauses VOD playback', await page.evaluate(() => videoPlayer.paused && !document.getElementById('vodPaused').classList.contains('hidden')));
+        // Subtitles: simulate tracks announced by the file; English auto-selects per Settings default
+        await page.evaluate(() => { for (const [l, n] of [['es', 'Spanish'], ['en', 'English']]) { const t = document.createElement('track'); t.kind = 'subtitles'; t.srclang = l; t.label = n; videoPlayer.appendChild(t); } });
+        await sleep(300);
+        const st = await page.evaluate(() => { const subs = getSubtitleTracks(); return { n: subs.length, en: subs.find(t => t.language === 'en').mode, es: subs.find(t => t.language === 'es').mode, hint: document.getElementById('vodOsdTracks').textContent }; });
+        check('English subtitle track auto-selected, Spanish off, OSD shows it', st.n === 2 && st.en === 'showing' && st.es === 'disabled' && /Subtitles: English/.test(st.hint) && /Green/.test(st.hint), JSON.stringify(st));
+        await key('ColorF1Green', 404);
+        const tm = await page.evaluate(() => ({ open: vodTracksOpen(), rows: [...document.querySelectorAll('.vod-track')].map(r => r.textContent.trim()), focused: document.querySelector('.vod-track.focused') && document.querySelector('.vod-track.focused').textContent.trim() }));
+        check('Green opens the tracks menu with Off/Spanish/English, English focused', tm.open && tm.rows.length === 3 && /English/.test(tm.focused), JSON.stringify(tm));
+        await key('ArrowUp', 38); await key('ArrowUp', 38);
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(100);
+        check('Up Up OK picks Off: all subtitle tracks disabled, manual choice remembered', await page.evaluate(() => getSubtitleTracks().every(t => t.mode === 'disabled') && vodPlay.subManual && /Subtitles: Off/.test(document.getElementById('vodOsdTracks').textContent)));
+        await back();
+        check('Back closes the tracks menu but keeps the player', await page.evaluate(() => !vodTracksOpen() && vodPlay.active));
         await back();
         await sleep(300);
         const afterBack = await page.evaluate(() => ({ screen: vodNav.screen, playerHidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, controls: videoPlayer.hasAttribute('controls'), btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, prog: Object.values(vodProgress).filter(p => p.kind === 'movie').length, stored: !!localStorage.getItem('iptv_vod_progress') }));
