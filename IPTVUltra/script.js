@@ -55,9 +55,9 @@ const SETTINGS_KEY = 'iptv_settings';
 const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
 const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
 const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
-const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subBg: 'translucent', subEdge: 'outline' };
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'gray', subBg: 'translucent', subEdge: 'outline', schema: 2 };
 const SUB_SIZE_OPTIONS = [{ v: 'small', label: 'Small' }, { v: 'medium', label: 'Medium' }, { v: 'large', label: 'Large' }, { v: 'extraLarge', label: 'Extra large' }];
-const SUB_COLOR_OPTIONS = [{ v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
+const SUB_COLOR_OPTIONS = [{ v: 'gray', label: 'Grey' }, { v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
 const SUB_BG_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'translucent', label: 'Translucent' }, { v: 'solid', label: 'Solid black' }];
 const SUB_EDGE_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'outline', label: 'Outline' }, { v: 'shadow', label: 'Shadow' }];
 const SUB_LANG_OPTIONS = [{ v: 'off', label: 'Off' }, { v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }, { v: 'any', label: 'First available' }];
@@ -143,9 +143,7 @@ const videoPlayer = document.getElementById('videoPlayer');
 const channelListDiv = document.getElementById('channelList');
 const channelCountSpan = document.getElementById('channelCount');
 const statusArea = document.getElementById('statusArea');
-const streamInfoOverlay = document.getElementById('streamInfoOverlay');
 const channelInfoTag = document.getElementById('channelInfoTag');
-const infoBtn = document.getElementById('infoBtn');
 const reloadBtn = document.getElementById('reloadBtn');
 const videoArea = document.getElementById('videoArea');
 const groupsListDiv = document.getElementById('groupsList');
@@ -177,7 +175,6 @@ const subtitleBtn = document.getElementById('subtitleBtn');
 const subtitlePanel = document.getElementById('subtitlePanel');
 const audioBtn = document.getElementById('audioBtn');
 const audioPanel = document.getElementById('audioPanel');
-const epgInfoBtn = document.getElementById('epgInfoBtn');
 const newEpgUrl = document.getElementById('newEpgUrl');
 const tabM3u = document.getElementById('tabM3u');
 const tabXtream = document.getElementById('tabXtream');
@@ -1095,10 +1092,13 @@ function toggleVideoFullscreen() {
 function enterLivePlayer() {
     if (livePlayer.active || vodPlay.active || currentChannelIndex < 0) return;
     livePlayer.active = true;
-    const playerEl = document.getElementById('vodPlayer'), slot = document.getElementById('vodVideoSlot');
-    if (videoPlayer.parentNode !== slot) slot.appendChild(videoPlayer);
+    // Do NOT move the <video>: re-parenting destroys the webOS media pipeline (verified on the C4:
+    // currentTime resets to 0, mediaId empties, picture never returns). The element stays where it
+    // is and body.live-player stretches it to the viewport underneath the transparent player overlay.
+    const playerEl = document.getElementById('vodPlayer');
+    document.body.classList.add('live-player');
+    playerEl.classList.add('live');
     const badge = document.getElementById('pbTrickBadge'); if (badge && badge.parentNode !== playerEl) playerEl.appendChild(badge);
-    if (streamInfoOverlay.parentNode !== playerEl) playerEl.appendChild(streamInfoOverlay);
     playerEl.classList.remove('hidden');
     document.getElementById('vodPaused').classList.toggle('hidden', !videoPlayer.paused);
     document.getElementById('vodLoading').classList.add('hidden');
@@ -1116,6 +1116,8 @@ function exitLivePlayer() {
     _holdKeyDir = null;
     livePlayer.active = false;
     document.getElementById('vodPlayer').classList.add('hidden');
+    document.getElementById('vodPlayer').classList.remove('live');
+    document.body.classList.remove('live-player');
     restoreLiveVideoSlot();
     // Put the cursor on the playing channel so the next key press continues from it
     if (currentChannelIndex >= 0) {
@@ -1187,95 +1189,14 @@ function selectChannel(index) {
 function showTopControls() {
     const c = document.getElementById('topControls');
     c.classList.add('visible');
-    const cr = document.getElementById('topControlsRight');
-    if (cr) cr.classList.add('visible');
-    const ec = document.getElementById('epgTopControls');
-    if (ec) ec.classList.add('visible');
     if (controlsTimeout) clearTimeout(controlsTimeout);
-    controlsTimeout = setTimeout(() => {
-        c.classList.remove('visible');
-        if (cr) cr.classList.remove('visible');
-        if (ec) ec.classList.remove('visible');
-    }, 3000);
+    controlsTimeout = setTimeout(() => { c.classList.remove('visible'); }, 3000);
 }
 
 function resolveLanguage(code) {
     if (!code) return null;
     const short = code.toLowerCase().substring(0, 2);
     return LANG_NAMES[short] || code;
-}
-
-function showStreamInfo() {
-    const w = videoPlayer.videoWidth, h = videoPlayer.videoHeight;
-
-    // Video resolution
-    let resText = (w && h) ? (w + '×' + h) : 'Loading ...';
-    if (w >= 3840) resText += ' (4K/UHD)';
-    else if (w >= 1920) resText += ' (FHD 1080p)';
-    else if (w >= 1280) resText += ' (HD 720p)';
-    else if (w >= 720) resText += ' (SD+)';
-    else if (w > 0) resText += ' (SD)';
-
-    // Active audio track
-    let audioLang = '—';
-    if (videoPlayer.audioTracks && videoPlayer.audioTracks.length) {
-        const tracks = Array.from(videoPlayer.audioTracks);
-        const active = tracks.find(function (t) { return t.enabled; }) || tracks[0];
-        if (active) {
-            const resolvedLang = active.language ? resolveLanguage(active.language) : null;
-            if (active.label && active.label.trim()) {
-                audioLang = active.label.trim();
-            } else {
-                audioLang = resolvedLang || 'Unknown';
-            }
-            if (active.kind && active.kind !== 'main' && active.kind !== '') {
-                audioLang += ' [' + active.kind + ']';
-            }
-        }
-    }
-
-    // Subtitle tracks
-    const subTracks = getSubtitleTracks();
-    const subInfo = subTracks.length
-        ? subTracks.length + ' track' + (subTracks.length > 1 ? 's' : '') + ' available'
-        : 'None detected';
-
-    // Audio track count subtitle
-    const audioTracks = getAudioTracks();
-    let audioCountSub = '';
-    if (audioTracks.length > 1) {
-        const uniqueLangs = new Set(audioTracks.map(function (t) { return t.language || ''; }).filter(Boolean));
-        let countText;
-        if (uniqueLangs.size >= audioTracks.length) {
-            countText = audioTracks.length + ' languages available';
-        } else if (uniqueLangs.size <= 1) {
-            countText = audioTracks.length + ' tracks available';
-        } else {
-            countText = audioTracks.length + ' tracks, ' + uniqueLangs.size + ' languages';
-        }
-        audioCountSub = '<span class="si-sub">' + countText + '</span>';
-    }
-
-    const techText = (liveUms && liveUms.video) ? umsTechString(liveUms) : '';
-    streamInfoOverlay.innerHTML =
-        '<div class="si-section">' +
-        '<div class="si-label">Video</div>' +
-        '<div class="si-row"><span class="si-key">Resolution</span><span class="si-val">' + escapeHtml(resText) + '</span></div>' +
-        (techText ? '<div class="si-row"><span class="si-key">Stream</span><span class="si-val">' + escapeHtml(techText) + '</span></div>' : '') +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Audio</div>' +
-        '<div class="si-row"><span class="si-key">Language</span><span class="si-val">' + escapeHtml(audioLang) + audioCountSub + '</span></div>' +
-        '</div>' +
-        '<div class="si-section">' +
-        '<div class="si-label">Subtitles</div>' +
-        '<div class="si-row"><span class="si-key">Tracks</span><span class="si-val">' + escapeHtml(subInfo) + '</span></div>' +
-        '</div>';
-
-    streamInfoOverlay.style.opacity = '1';
-    channelInfoTag.style.visibility = 'hidden'; // the tag sits under the overlay's corner
-    if (infoHideTimeout) clearTimeout(infoHideTimeout);
-    infoHideTimeout = setTimeout(function () { streamInfoOverlay.style.opacity = '0'; channelInfoTag.style.visibility = ''; }, 3000);
 }
 
 function getSubtitleTracks() {
@@ -1403,7 +1324,6 @@ function buildAudioPanel() {
             tracks.forEach(function (t) { t.enabled = false; });
             track.enabled = true;
             buildAudioPanel();
-            if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
             showTopControls();
         };
         listEl.appendChild(item);
@@ -1463,7 +1383,6 @@ function goToHomeScreen() {
     // Stop all timers
     if (epgRefreshTimer) { clearInterval(epgRefreshTimer); epgRefreshTimer = null; }
     if (controlsTimeout) { clearTimeout(controlsTimeout); controlsTimeout = null; }
-    if (infoHideTimeout) { clearTimeout(infoHideTimeout); infoHideTimeout = null; }
     if (_epgToastTimer) { clearTimeout(_epgToastTimer); _epgToastTimer = null; }
 
     // Dismiss EPG toast immediately
@@ -1646,7 +1565,6 @@ function enterEPGMode() {
     const wrap = document.getElementById('epgVideoWrap');
     if (wrap) {
         if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
-        if (streamInfoOverlay.parentNode !== wrap) wrap.appendChild(streamInfoOverlay);
     }
     // Start focus cursor at the currently playing channel
     if (currentChannelIndex >= 0) {
@@ -1672,7 +1590,6 @@ function exitEPGMode() {
     if (sv) sv.style.display = 'flex';
     if (ev) ev.style.display = 'none';
     if (videoPlayer.parentNode !== videoArea) videoArea.insertBefore(videoPlayer, videoArea.firstChild);
-    if (streamInfoOverlay.parentNode !== videoArea) videoArea.insertBefore(streamInfoOverlay, document.getElementById('epgNowNext'));
 }
 
 function refreshCurrentView() {
@@ -3125,10 +3042,8 @@ function _inPlayerMode() { return (!!document.fullscreenElement || playerActive(
 function showPlayerControls() { if (playerActive()) showVodOsd(); else showTopControls(); }
 function vodNextVisible() { return !document.getElementById('vodNext').classList.contains('hidden'); }
 function restoreLiveVideoSlot() {
-    if (livePlayer.active) return; // the live player owns the element until exitLivePlayer()
     const wrap = (currentPlaylistType === 'xtream' && epgMode) ? document.getElementById('epgVideoWrap') : videoArea;
     if (videoPlayer.parentNode !== wrap) { if (wrap === videoArea) videoArea.insertBefore(videoPlayer, videoArea.firstChild); else wrap.appendChild(videoPlayer); }
-    if (streamInfoOverlay.parentNode !== wrap) { if (wrap === videoArea) videoArea.insertBefore(streamInfoOverlay, document.getElementById('epgNowNext')); else wrap.appendChild(streamInfoOverlay); }
     const badge = document.getElementById('pbTrickBadge');
     if (badge && badge.parentNode !== videoArea) videoArea.appendChild(badge);
 }
@@ -3282,14 +3197,11 @@ function toggleVodPause() {
 function playerButtonsFor() {
     const btns = [];
     if (vodPlay.active) {
-        btns.push({ id: 'pause', label: videoPlayer.paused ? '▶ Play' : '⏸ Pause', act: toggleVodPause });
         if (vodPlay.kind === 'episode' && nextEpisode()) btns.push({ id: 'next', label: '⏭ Next episode', act: () => { vodPlay.nextEp = nextEpisode(); clearVodNext(); playNextEpisode(); } });
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
     } else if (livePlayer.active) {
-        btns.push({ id: 'pause', label: videoPlayer.paused ? '▶ Play' : '⏸ Pause', act: toggleLivePause });
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
-        btns.push({ id: 'info', label: 'ℹ️ Stream Info', act: () => { showStreamInfo(); showVodOsd(); } });
         btns.push({ id: 'guide', label: currentPlaylistType === 'xtream' ? '📺 Guide' : '📡 Channels', act: exitLivePlayer });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
     }
@@ -3657,7 +3569,6 @@ function umsTechUpdated(u) {
         const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s;
         if (s && vodPlay.key) { vodTech[vodPlay.key] = s; const ks = Object.keys(vodTech); if (ks.length > 300) delete vodTech[ks[0]]; saveJson('iptv_vod_tech', vodTech); }
     } else if (u.kind === 'live' && liveUms === u) {
-        if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
         if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s; }
     }
 }
@@ -3668,10 +3579,15 @@ async function umsApplySubtitleStyle(u) {
     const sizeIdx = Math.max(0, SUB_SIZE_OPTIONS.findIndex(o => o.v === settings.subSize));
     await umsCall('setSubtitleCharacterFontSize', { mediaId: id, charFontSize: settings.subSize });
     await umsCall('setSubtitleFontSize', { mediaId: id, fontSize: sizeIdx });
-    await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: settings.subColor });
-    await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: 100 });
+    // Grey: LG's caption colours have no grey, so request white at reduced opacity (and 'gray' in case it is honoured)
+    const grey = settings.subColor === 'gray';
+    await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: grey ? 'white' : settings.subColor });
+    if (grey) await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: 'gray' });
+    await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: grey ? 75 : 100 });
     await umsCall('setSubtitleBackgroundColor', { mediaId: id, bgColor: 'black' });
-    await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity: settings.subBg === 'none' ? 0 : settings.subBg === 'solid' ? 100 : 50 });
+    const bgOpacity = settings.subBg === 'none' ? 0 : settings.subBg === 'solid' ? 100 : 50;
+    await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity });
+    if (settings.subBg === 'solid') await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity: 255 }); // 0-255 scale on some firmware; ignored otherwise
     await umsCall('setSubtitleCharacterEdge', { mediaId: id, charEdgeType: settings.subEdge === 'outline' ? 'uniform' : settings.subEdge === 'shadow' ? 'dropShadow' : 'none' });
     await umsCall('setSubtitleSync', { mediaId: id, sync: u.kind === 'vod' ? (vodPlay.syncMs || 0) : 0 });
 }
@@ -3780,6 +3696,7 @@ function loadSettings() {
     if (!SUB_LANG_OPTIONS.some(o => o.v === out.subLang)) out.subLang = DEFAULT_SETTINGS.subLang;
     if (!AUDIO_LANG_OPTIONS.some(o => o.v === out.audioLang)) out.audioLang = DEFAULT_SETTINGS.audioLang;
     for (const [k, opts] of [['subSize', SUB_SIZE_OPTIONS], ['subColor', SUB_COLOR_OPTIONS], ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS]]) if (!opts.some(o => o.v === out[k])) out[k] = DEFAULT_SETTINGS[k];
+    if (!(st.schema >= 2)) { out.subColor = 'gray'; out.schema = 2; } // one-time switch of the default colour to Grey (v3.6.0)
     return out;
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
@@ -4179,8 +4096,6 @@ startDemoBtn.addEventListener('click', loadDemoM3U);
 clearAllBtn.addEventListener('click', () => {
     showConfirmDialog('⚠️ Clear All Playlists', 'Are you sure you want to clear all saved playlists?', clearAllPlaylists);
 });
-infoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
-if (epgInfoBtn) epgInfoBtn.addEventListener('click', () => { showStreamInfo(); showTopControls(); });
 
 const epgTimePrevBtn = document.getElementById('epgTimePrevBtn');
 const epgTimeNextBtn = document.getElementById('epgTimeNextBtn');
@@ -4259,7 +4174,7 @@ if (epgClearSearchBtn) {
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
-videoPlayer.addEventListener('loadedmetadata', function () { showStreamInfo(); updateSubtitleButton(); updateAudioButton(); });
+videoPlayer.addEventListener('loadedmetadata', function () { updateSubtitleButton(); updateAudioButton(); });
 videoPlayer.addEventListener('error', function () {
     if (vodPlay.active) { if (videoPlayer.getAttribute('src')) onVodError(); return; }
     if (vodMode !== 'live') return; // live video is parked while browsing Movies/Series
@@ -4274,7 +4189,6 @@ videoPlayer.addEventListener('error', function () {
     if (_errRetryTimer) clearTimeout(_errRetryTimer);
     _errRetryTimer = setTimeout(function () { _errRetryTimer = null; if (currentChannelIndex === idx) reloadStream(true); }, 2500);
 });
-videoPlayer.addEventListener('resize', showStreamInfo);
 videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();

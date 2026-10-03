@@ -2936,11 +2936,19 @@ video {
     z-index: 5;
 }
 
-#vodPlayer .stream-info-overlay {
-    bottom: auto;
-    top: 40px;
-    left: 60px;
-    z-index: 7;
+/* Live TV in the player: the <video> stays in its live slot (re-parenting kills the webOS
+   pipeline) and is stretched to the viewport beneath the transparent player overlay */
+body.live-player #videoPlayer {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 899;
+    object-fit: contain;
+}
+
+#vodPlayer.live {
+    background: transparent;
 }
 
 .vod-osd-tech {
