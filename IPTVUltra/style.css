@@ -2913,6 +2913,15 @@ video {
     z-index: 5;
 }
 
+.vod-osd-tech {
+    color: #8b93a7;
+    font-size: 0.7rem;
+    font-weight: 400;
+    margin: -10px 0 10px;
+    font-variant-numeric: tabular-nums;
+    min-height: 1em;
+}
+
 .vod-osd-tracks {
     color: #9db4ff;
     font-size: 0.72rem;

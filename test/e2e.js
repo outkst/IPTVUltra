@@ -273,13 +273,14 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         // ---- webOS media-service path (simulated): pipeline reports embedded tracks, app selects English natively
         await page.evaluate(() => {
             window.__ums = { calls: [] };
-            Object.defineProperty(videoPlayer, 'mediaId', { get: () => '_fakePipe1', configurable: true });
+            window.__loads = 0; const origLoad = videoPlayer.load.bind(videoPlayer); videoPlayer.load = function () { window.__loads++; return origLoad(); };
+            Object.defineProperty(videoPlayer, 'mediaId', { get: () => '_fakePipe' + window.__loads, configurable: true });
             window.__realWebOS = window.webOS;
             window.webOS = { service: { request: (uri, o) => {
                 window.__ums.calls.push([o.method, JSON.stringify(o.parameters)]);
                 if (o.method === 'subscribe') {
                     setTimeout(() => o.onSuccess({ subscription: true, returnValue: true }), 5);
-                    setTimeout(() => o.onSuccess({ returnValue: true, sourceInfo: { container: 'mkv', programInfo: [{ audioTrackInfo: [{ language: 'en', codec: 'eac3', channels: 6 }, { language: 'es', codec: 'aac', channels: 2 }], videoTrackInfo: [{ codec: 'HEVC', width: 3840, height: 1600, profile: 'main-10' }], subtitleTrackInfo: [{ trackNum: 0, language: 'ar', languageName: 'Arabic', type: 'text' }, { trackNum: 1, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 2, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 3, language: 'es', languageName: 'Spanish; Castilian', type: 'text' }] }] } }), 40);
+                    setTimeout(() => o.onSuccess({ returnValue: true, sourceInfo: { container: 'mkv', programInfo: [{ audioTrackInfo: [{ language: 'en', codec: 'eac3', channels: 6 }, { language: 'es', codec: 'aac', channels: 2 }], videoTrackInfo: [{ codec: 'HEVC', width: 3840, height: 1600, profile: 'main-10', frameRate: 23.976 }], subtitleTrackInfo: [{ trackNum: 0, language: 'ar', languageName: 'Arabic', type: 'text' }, { trackNum: 1, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 2, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 3, language: 'es', languageName: 'Spanish; Castilian', type: 'text' }] }] } }), 40);
                     return { cancel: () => { window.__ums.cancelled = true; } };
                 }
                 setTimeout(() => o.onSuccess({ returnValue: true, errorCode: 0, mediaId: '_fakePipe1' }), 2);
@@ -293,19 +294,64 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('pipeline sourceInfo → first English subtitle track selected natively and enabled', um.sel === 1 && um.calls.includes('subscribe') && um.lastSel.some(p => /"type":"text","index":1/.test(p)) && um.calls.includes('setSubtitleEnable') && /Subtitles: English 1/.test(um.hint), JSON.stringify(um));
         await key('ColorF1Green', 404);
         const um2 = await page.evaluate(() => ({ rows: [...document.querySelectorAll('.vod-track')].map(r => r.textContent.trim()), headers: [...document.querySelectorAll('.vod-tracks-h')].map(h => h.textContent) }));
-        check('tracks menu lists pipeline audio and subtitle tracks with language names', um2.headers.join(',') === 'Audio,Subtitles' && um2.rows.length === 2 + 5 && um2.rows.some(r => /English 2/.test(r)) && um2.rows.some(r => /Spanish/.test(r)) && um2.rows.some(r => /English · EAC3 · 5\.1/.test(r)), JSON.stringify(um2));
+        check('tracks menu lists pipeline audio and subtitle tracks with language names', um2.headers.join(',') === 'Audio,Subtitles,Timing' && um2.rows.length === 2 + 5 + 1 && um2.rows.some(r => /English 2/.test(r)) && um2.rows.some(r => /Spanish/.test(r)) && um2.rows.some(r => /English · EAC3 · 5\.1/.test(r)), JSON.stringify(um2));
         await key('ArrowDown', 40); await key('ArrowDown', 40); // from English 1 → English 2 → Spanish
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(100);
         check('picking Spanish calls selectTrack text index 3 and marks it manual', await page.evaluate(() => vodPlay.ums.selectedSub === 3 && vodPlay.subManual && window.__ums.calls.some(c => c[0] === 'selectTrack' && /"index":3/.test(c[1]))));
+        const style = await page.evaluate(() => { const c = window.__ums.calls; const last = n => (c.filter(x => x[0] === n).pop() || [])[1] || ''; return { size: last('setSubtitleCharacterFontSize'), bg: last('setSubtitleBackgroundOpacity'), edge: last('setSubtitleCharacterEdge'), color: last('setSubtitleCharacterColor'), sync: last('setSubtitleSync') }; });
+        check('subtitle style applied after enabling: medium, white, translucent, outline, sync 0', /"charFontSize":"medium"/.test(style.size) && /"charColor":"white"/.test(style.color) && /"bgOpacity":50/.test(style.bg) && /"charEdgeType":"uniform"/.test(style.edge) && /"sync":0/.test(style.sync), JSON.stringify(style));
+        await page.evaluate(() => { const r = settingsRows().find(x => x.id === 'subSize'); r.set('large'); });
+        await sleep(100);
+        check('changing subtitle size in Settings re-applies live', await page.evaluate(() => settings.subSize === 'large' && /"charFontSize":"large"/.test((window.__ums.calls.filter(x => x[0] === 'setSubtitleCharacterFontSize').pop() || [])[1])));
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'subSize').set('medium'); });
+        // Sync offset row: Down to it, Right twice → +0.5 s, remembered; OK resets
+        await page.evaluate(() => { vodPlay.tracksFocus = vodPlay.tracksItems.findIndex(i => i.kind === 'sync'); renderVodTracks(); });
+        await key('ArrowRight', 39); await key('ArrowRight', 39); await sleep(50);
+        const sy = await page.evaluate(() => ({ ms: vodPlay.syncMs, stored: JSON.parse(localStorage.getItem('iptv_vod_subsync'))[vodPlay.key], call: (window.__ums.calls.filter(x => x[0] === 'setSubtitleSync').pop() || [])[1], row: document.querySelector('.vod-track.focused').textContent }));
+        check('sync offset Right Right → +0.50 s, sent to the pipeline and remembered for the title', sy.ms === 500 && sy.stored === 500 && /"sync":500/.test(sy.call) && /\+0\.50 s/.test(sy.row), JSON.stringify(sy));
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(50);
+        check('OK on the sync row resets it to 0 and forgets it', await page.evaluate(() => vodPlay.syncMs === 0 && !(vodPlay.key in JSON.parse(localStorage.getItem('iptv_vod_subsync')))));
+        await back(); // close menu
+        // Codec/HDR line in the OSD and stored for the details page
+        check('OSD shows codec, bit depth, resolution, frame rate and audio from the pipeline', await page.evaluate(() => document.getElementById('vodOsdTech').textContent === 'HEVC · 10-bit · 3840×1600 · 23.98 fps · E-AC-3 5.1' && JSON.parse(localStorage.getItem('iptv_vod_tech'))[vodPlay.key] === 'HEVC · 10-bit · 3840×1600 · 23.98 fps · E-AC-3 5.1'), await page.evaluate(() => document.getElementById('vodOsdTech').textContent));
+        // Native speed playback: hold Right → setPlayRate 2 with picture; release → rate 1
+        await page.evaluate(() => { window.__ums.calls.length = 0; videoPlayer.currentTime = 2; });
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }); Object.defineProperty(d, 'keyCode', { get: () => 39 }); document.dispatchEvent(d); });
+        await sleep(900);
+        const nr = await page.evaluate(() => ({ holding: _isHolding(), rate: _nativeRate, scrub: _scrubPos, paused: videoPlayer.paused, badge: document.getElementById('pbTrickBadge').textContent, calls: window.__ums.calls.filter(c => c[0] === 'setPlayRate').map(c => c[1]) }));
+        check('holding Right uses native setPlayRate 2× with the picture running', nr.holding && nr.rate === 2 && nr.scrub === null && !nr.paused && /▶▶ 2×/.test(nr.badge) && nr.calls.some(p => /"playRate":2,/.test(p)), JSON.stringify(nr));
+        await page.evaluate(() => { const u = new KeyboardEvent('keyup', { key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }); Object.defineProperty(u, 'keyCode', { get: () => 39 }); document.dispatchEvent(u); });
+        await sleep(200);
+        check('release returns to 1× with audio', await page.evaluate(() => !_isHolding() && _nativeRate === 0 && /"playRate":1,"audioOutput":true/.test((window.__ums.calls.filter(c => c[0] === 'setPlayRate').pop() || [])[1])));
+        // Rewind cannot move backwards in the headless player → fallback to the scrub bar after 1.5 s
+        await page.evaluate(() => { videoPlayer.currentTime = 14; });
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true }); Object.defineProperty(d, 'keyCode', { get: () => 37 }); document.dispatchEvent(d); });
+        await sleep(2200);
+        const fb = await page.evaluate(() => ({ holding: _isHolding(), broken: _umsRateBroken, scrub: _scrubPos, rate: _nativeRate, t: videoPlayer.currentTime }));
+        check('when the pipeline ignores the rate, the hold falls back to scrubbing', fb.holding && fb.broken && fb.scrub !== null && fb.scrub < fb.t && fb.rate === 0, JSON.stringify(fb));
+        await page.evaluate(() => { const u = new KeyboardEvent('keyup', { key: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true }); Object.defineProperty(u, 'keyCode', { get: () => 37 }); document.dispatchEvent(u); });
+        await sleep(300);
+        await page.evaluate(() => { _umsRateBroken = false; });
+        // Yellow opens Settings over the player; OK there must not pause playback
+        await key('ColorF2Yellow', 405);
+        const pb = await page.evaluate(() => videoPlayer.paused);
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(100);
+        check('Yellow opens Settings over the player and OK stays inside Settings', await page.evaluate(pb => settingsOpen && videoPlayer.paused === pb && settings.textScale === 1.5, pb)); // OK cycled the focused Text size row
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'textScale').set(1.375); });
         await back();
-        await back(); await sleep(200);
+        check('Back closes Settings and keeps playing', await page.evaluate(() => !settingsOpen && vodPlay.active));
+        await back();
+        await sleep(200);
         check('stopping playback cancels the pipeline subscription', await page.evaluate(() => window.__ums.cancelled === true && vodPlay.ums === null));
-        await page.evaluate(() => { window.webOS = window.__realWebOS; delete videoPlayer.mediaId; });
+        check('details page shows the stored codec line for the last played episode', await page.evaluate(() => /HEVC · 10-bit/.test(document.querySelector('.vod-dmeta').textContent)), await page.evaluate(() => JSON.stringify({ meta: document.querySelector('.vod-dmeta') && document.querySelector('.vod-dmeta').textContent, screen: vodNav.screen, techKeys: Object.keys(vodTech), last: lastEpisodeEntry(vodNav.detail.item.id) && lastEpisodeEntry(vodNav.detail.item.id).epId })));
+        await page.evaluate(() => { window.webOS = window.__realWebOS; delete videoPlayer.mediaId; delete videoPlayer.load; });
 
         // Series home shows Continue Watching
         await back(); await back(); await sleep(300);
-        check('Series home shows the show in Continue Watching', await page.evaluate(() => vodNav.screen === 'home' && document.querySelectorAll('.vod-card[data-pos^="cw:"]').length === 1 && /S1 E3/.test(document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent)));
+        check('Series home shows the show in Continue Watching (last played S2 E1)', await page.evaluate(() => vodNav.screen === 'home' && document.querySelectorAll('.vod-card[data-pos^="cw:"]').length === 1 && /S2 E1/.test(document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent)), await page.evaluate(() => document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m') && document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent));
         // Adult toggle in settings
         await page.evaluate(() => { settings.showAdult = true; saveSettings(); renderGroupsList(); });
         check('Show adult categories reveals the hidden category', await page.evaluate(() => [...document.querySelectorAll('#groupsList .group-item')].some(g => /Adult/.test(g.textContent))));
