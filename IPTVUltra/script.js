@@ -93,6 +93,9 @@ let liveUms = null;                                 // media-service state for t
 let _umsRateBroken = false;                         // set when native setPlayRate does not move the position on this session
 let _nativeRate = 0;                                // signed rate currently applied via setPlayRate, 0 = normal
 const player = { focus: 'bar', btn: 0, btns: [] };  // OSD focus: 'bar' (default) or 'buttons'; btn = index into btns
+const livePlayer = { active: false };               // live TV shown in the app-owned full-viewport player (same OSD as VOD)
+function playerActive() { return vodPlay.active || livePlayer.active; }
+function activeUms() { return vodPlay.active ? vodPlay.ums : (livePlayer.active || vodMode === 'live') ? liveUms : null; }
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
 let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
@@ -1083,17 +1086,47 @@ function showStreamError(msg) {
     hideEPGToast(7000);
 }
 
+// Enter on the already-playing row (or a click on the live picture): open the app-owned player
 function toggleVideoFullscreen() {
-    if (document.fullscreenElement) {
-        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
-        return;
+    if (livePlayer.active) { exitLivePlayer(); return; }
+    if (currentChannelIndex < 0 || vodPlay.active) return;
+    enterLivePlayer();
+}
+function enterLivePlayer() {
+    if (livePlayer.active || vodPlay.active || currentChannelIndex < 0) return;
+    livePlayer.active = true;
+    const playerEl = document.getElementById('vodPlayer'), slot = document.getElementById('vodVideoSlot');
+    if (videoPlayer.parentNode !== slot) slot.appendChild(videoPlayer);
+    const badge = document.getElementById('pbTrickBadge'); if (badge && badge.parentNode !== playerEl) playerEl.appendChild(badge);
+    if (streamInfoOverlay.parentNode !== playerEl) playerEl.appendChild(streamInfoOverlay);
+    playerEl.classList.remove('hidden');
+    document.getElementById('vodPaused').classList.toggle('hidden', !videoPlayer.paused);
+    document.getElementById('vodLoading').classList.add('hidden');
+    document.getElementById('vodNext').classList.add('hidden');
+    player.focus = 'bar'; player.btn = 0; player.btns = [];
+    const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = liveUms ? umsTechString(liveUms) : '';
+    updateVodTracksHint();
+    showVodOsd();
+}
+function exitLivePlayer() {
+    if (!livePlayer.active) return;
+    closeVodTracks();
+    hideVodOsd();
+    if (_isHolding()) _stopHold();
+    _holdKeyDir = null;
+    livePlayer.active = false;
+    document.getElementById('vodPlayer').classList.add('hidden');
+    restoreLiveVideoSlot();
+    // Put the cursor on the playing channel so the next key press continues from it
+    if (currentChannelIndex >= 0) {
+        if (epgMode) { const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]); if (fi >= 0) { epgFocusedRowIdx = fi; updateEPGRowFocus(); } }
+        else { const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]); if (fi >= 0) { stdFocusIdx = fi; stdFocusZone = 'channels'; updateStdChannelFocus(); } }
     }
-    if (currentChannelIndex < 0) return;
-    try {
-        const p = videoPlayer.requestFullscreen ? videoPlayer.requestFullscreen()
-            : (videoPlayer.webkitRequestFullscreen ? videoPlayer.webkitRequestFullscreen() : null);
-        if (p && p.catch) p.catch(() => {});
-    } catch (_) { /* fullscreen unavailable */ }
+}
+function toggleLivePause() {
+    if (videoPlayer.paused) videoPlayer.play().catch(() => {}); else videoPlayer.pause();
+    document.getElementById('vodPaused').classList.toggle('hidden', !videoPlayer.paused);
+    showVodOsd();
 }
 
 // ----- Video Control -----
@@ -1140,7 +1173,8 @@ function selectChannel(index) {
     }
     if (ch.tvgId) queueEpgFetch([ch.tvgId], true);
     updateNowNext();
-    showTopControls();
+    if (livePlayer.active) { document.getElementById('vodPaused').classList.add('hidden'); const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = ''; updateVodTracksHint(); showVodOsd(); }
+    else showTopControls();
 
     // Reset per-stream state
     if (subtitlePanelOpen) { subtitlePanel.classList.add('hidden'); subtitlePanelOpen = false; }
@@ -1469,6 +1503,7 @@ function goToHomeScreen() {
 
     // Reset app state (also restores the standard layout if the guide was showing)
     if (vodPlay.active) stopVodPlayback(false);
+    if (livePlayer.active) exitLivePlayer();
     umsRelease(liveUms); liveUms = null;
     resetVodState(false);
     exitEPGMode();
@@ -2151,6 +2186,7 @@ function epgMinuteTick() {
         if (currentEpgUrl && !epgLoading && _epgLoadedAt && now - _epgLoadedAt > EPG_M3U_REFRESH_MS) loadEPG(currentEpgUrl);
     }
     updateNowNext();
+    if (livePlayer.active && document.getElementById('vodOsd').classList.contains('visible')) updateLiveOsd();
 }
 
 async function loadXtreamPlaylist(serverUrl, username, password) {
@@ -2580,6 +2616,7 @@ function setVodMode(mode) {
     if (mode === vodMode) return;
     if (mode !== 'live' && currentPlaylistType !== 'xtream') return;
     if (vodPlay.active) stopVodPlayback(false);
+    if (livePlayer.active) exitLivePlayer();
     const prev = vodMode;
     vodMode = mode;
     document.querySelectorAll('#modeSwitch .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
@@ -3084,13 +3121,14 @@ function handleVodBrowseKey(e, up, down, left, right, enter) {
 }
 
 // ── playback ─────────────────────────────────────────────────
-function _inPlayerMode() { return (!!document.fullscreenElement || vodPlay.active) && !settingsOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
-function showPlayerControls() { if (vodPlay.active) showVodOsd(); else showTopControls(); }
+function _inPlayerMode() { return (!!document.fullscreenElement || playerActive()) && !settingsOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
+function showPlayerControls() { if (playerActive()) showVodOsd(); else showTopControls(); }
 function vodNextVisible() { return !document.getElementById('vodNext').classList.contains('hidden'); }
 function restoreLiveVideoSlot() {
+    if (livePlayer.active) return; // the live player owns the element until exitLivePlayer()
     const wrap = (currentPlaylistType === 'xtream' && epgMode) ? document.getElementById('epgVideoWrap') : videoArea;
     if (videoPlayer.parentNode !== wrap) { if (wrap === videoArea) videoArea.insertBefore(videoPlayer, videoArea.firstChild); else wrap.appendChild(videoPlayer); }
-    videoPlayer.setAttribute('controls', '');
+    if (streamInfoOverlay.parentNode !== wrap) { if (wrap === videoArea) videoArea.insertBefore(streamInfoOverlay, document.getElementById('epgNowNext')); else wrap.appendChild(streamInfoOverlay); }
     const badge = document.getElementById('pbTrickBadge');
     if (badge && badge.parentNode !== videoArea) videoArea.appendChild(badge);
 }
@@ -3189,6 +3227,7 @@ function saveVodProgress(force) {
     saveJson('iptv_vod_progress', vodProgress);
 }
 function updateVodOsd(posOverride) {
+    if (livePlayer.active && !vodPlay.active) { updateLiveOsd(); return; }
     const pos = posOverride !== undefined ? posOverride : (videoPlayer.currentTime || 0);
     const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) || vodPlay.dur || 0;
     document.getElementById('vodOsdTitle').textContent = vodPlay.title || '';
@@ -3198,6 +3237,21 @@ function updateVodOsd(posOverride) {
     document.getElementById('vodBarKnob').style.left = pct + '%';
     document.getElementById('vodTimePos').textContent = fmtClock(pos);
     document.getElementById('vodTimeRem').textContent = dur ? '−' + fmtClock(Math.max(0, dur - pos)) : '';
+}
+// Live banner: channel number + name, group and current programme, programme progress as the bar
+function updateLiveOsd() {
+    const ch = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+    if (!ch) return;
+    const now = getCurrentProgramme(ch.tvgId), next = getNextProgramme(ch.tvgId);
+    document.getElementById('vodOsdTitle').textContent = `${currentChannelIndex + 1}  ${ch.name}`;
+    const subBits = [ch.group || '', now ? now.title : ''].filter(Boolean);
+    document.getElementById('vodOsdSub').textContent = subBits.join(' · ');
+    let pct = 0;
+    if (now && now.stop > now.start) pct = Math.min(100, Math.max(0, (Date.now() - now.start) / (now.stop - now.start) * 100));
+    document.getElementById('vodBarFill').style.width = pct + '%';
+    document.getElementById('vodBarKnob').style.left = pct + '%';
+    document.getElementById('vodTimePos').textContent = now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : 'LIVE';
+    document.getElementById('vodTimeRem').textContent = next ? `Next: ${next.title} · ${formatClock(next.start)}` : (now ? `${Math.max(0, Math.ceil((now.stop - Date.now()) / 60000))} min left` : '');
 }
 function showVodOsd() {
     const osd = document.getElementById('vodOsd');
@@ -3232,6 +3286,12 @@ function playerButtonsFor() {
         if (vodPlay.kind === 'episode' && nextEpisode()) btns.push({ id: 'next', label: '⏭ Next episode', act: () => { vodPlay.nextEp = nextEpisode(); clearVodNext(); playNextEpisode(); } });
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
+    } else if (livePlayer.active) {
+        btns.push({ id: 'pause', label: videoPlayer.paused ? '▶ Play' : '⏸ Pause', act: toggleLivePause });
+        btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
+        btns.push({ id: 'info', label: 'ℹ️ Stream Info', act: () => { showStreamInfo(); showVodOsd(); } });
+        btns.push({ id: 'guide', label: currentPlaylistType === 'xtream' ? '📺 Guide' : '📡 Channels', act: exitLivePlayer });
+        btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
     }
     return btns;
 }
@@ -3259,7 +3319,7 @@ function updatePlayerFocus() {
     osd.classList.toggle('bar-focused', player.focus === 'bar');
     const els = osd.querySelectorAll('.vod-osd-btn');
     els.forEach((el, i) => el.classList.toggle('focused', player.focus === 'buttons' && i === player.btn));
-    const u = vodPlay.ums; const on = u ? u.selectedSub >= 0 : getSubtitleTracks().some(t => t.mode === 'showing');
+    const u = activeUms(); const on = u ? u.selectedSub >= 0 : getSubtitleTracks().some(t => t.mode === 'showing');
     const cc = document.getElementById('vodCcBtn'); if (cc) cc.classList.toggle('on', on);
 }
 function activatePlayerButton() {
@@ -3390,7 +3450,7 @@ function applyVodTrackPrefs() {
 function updateVodTracksHint() {
     const el = document.getElementById('vodOsdTracks');
     if (!el) return;
-    const u = vodPlay.ums;
+    const u = activeUms();
     if (u && u.subTracks.length) {
         const on = u.subTracks.find(t => t.trackNum === u.selectedSub);
         const bits = ['Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off')];
@@ -3413,14 +3473,14 @@ function updateVodTracksHint() {
 function vodTracksOpen() { const p = document.getElementById('vodTracks'); return !!p && !p.classList.contains('hidden'); }
 function vodTracksItems() {
     const items = [];
-    const u = vodPlay.ums;
+    const u = activeUms();
     if (u && (u.subTracks.length || u.audioTracks.length > 1)) {
         if (u.audioTracks.length > 1) { items.push({ header: 'Audio' }); u.audioTracks.forEach((t, i) => items.push({ kind: 'audio', ums: i, label: umsAudioLabel(t, i), on: i === u.selectedAudio })); }
         items.push({ header: 'Subtitles' });
         items.push({ kind: 'sub', ums: -1, label: 'Off', on: u.selectedSub < 0 });
         u.subTracks.forEach(t => items.push({ kind: 'sub', ums: t.trackNum, label: umsTrackLabel(t, u.subTracks), on: t.trackNum === u.selectedSub }));
-        if (!u.subTracks.length) items.push({ note: 'This file has no subtitle tracks.' });
-        else { items.push({ header: 'Timing' }); items.push({ kind: 'sync', label: `Sync offset  ◀ ${vodPlay.syncMs > 0 ? '+' : ''}${(vodPlay.syncMs / 1000).toFixed(2)} s ▶`, on: vodPlay.syncMs !== 0 }); }
+        if (!u.subTracks.length) items.push({ note: vodPlay.active ? 'This file has no subtitle tracks.' : 'This channel has no subtitle tracks.' });
+        else if (vodPlay.active) { items.push({ header: 'Timing' }); items.push({ kind: 'sync', label: `Sync offset  ◀ ${vodPlay.syncMs > 0 ? '+' : ''}${(vodPlay.syncMs / 1000).toFixed(2)} s ▶`, on: vodPlay.syncMs !== 0 }); }
         return items;
     }
     const auds = getAudioTracks();
@@ -3433,7 +3493,7 @@ function vodTracksItems() {
     return items;
 }
 function openVodTracks() {
-    if (!vodPlay.active) return;
+    if (!playerActive()) return;
     const items = vodTracksItems();
     vodPlay.tracksItems = items;
     // Open on the active subtitle row (the menu's main purpose); fall back to the first selectable row
@@ -3471,8 +3531,9 @@ function activateVodTrack() {
     if (!it || !it.kind) return;
     if (it.kind === 'sync') { umsSetSync(0); renderVodTracks(); showVodOsd(); return; } // OK resets the offset
     if (it.ums !== undefined) {
-        if (it.kind === 'sub') { umsSelectSubtitle(it.ums); vodPlay.subManual = true; }
-        else { umsSelectAudio(it.ums); vodPlay.audioManual = true; }
+        const u = activeUms();
+        if (it.kind === 'sub') { umsSelectSubtitle(it.ums, u); if (u) u.subManual = true; vodPlay.subManual = true; }
+        else { umsSelectAudio(it.ums, u); if (u) u.audioManual = true; vodPlay.audioManual = true; }
         updateVodTracksHint(); renderVodTracks(); showVodOsd();
         return;
     }
@@ -3546,11 +3607,27 @@ function umsOnMessage(u, m) {
         u.video = (p.videoTrackInfo || [])[0] || null;
         techChanged = true;
         if (u.kind === 'vod' && vodPlay.ums === u) { applyVodTrackPrefs(); if (vodTracksOpen()) renderVodTracks(); }
+        else if (u.kind === 'live' && liveUms === u) { applyLiveTrackPrefs(u); if (vodTracksOpen()) renderVodTracks(); if (livePlayer.active) updateVodTracksHint(); }
     }
     if (m.videoInfo) { u.videoInfo = Object.assign(u.videoInfo || {}, m.videoInfo); techChanged = true; }
     if (m.audioInfo) { u.audioInfo = Object.assign(u.audioInfo || {}, m.audioInfo); techChanged = true; }
     if (techChanged) umsTechUpdated(u);
     if (m.error) { /* keep playing; the HTML error handler reports real failures */ }
+}
+// Live: same subtitle/audio language preferences as VOD, applied to the live pipeline unless chosen manually
+function applyLiveTrackPrefs(u) {
+    if (!u || u.subManual) { if (u && u.audioTracks.length > 1 && !u.audioManual && settings.audioLang !== 'default') { const i = u.audioTracks.findIndex(t => trackMatchesLang({ language: t.language, label: '' }, settings.audioLang)); if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i, u); } return; }
+    if (u.subTracks.length) {
+        const pref = settings.subLang;
+        let chosen = null;
+        if (pref === 'any') chosen = u.subTracks[0];
+        else if (pref !== 'off') chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+        umsSelectSubtitle(chosen ? chosen.trackNum : -1, u);
+    }
+    if (u.audioTracks.length > 1 && !u.audioManual && settings.audioLang !== 'default') {
+        const i = u.audioTracks.findIndex(t => trackMatchesLang({ language: t.language, label: '' }, settings.audioLang));
+        if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i, u);
+    }
 }
 // Codec / resolution / HDR summary from the pipeline, e.g. "HEVC · 10-bit · 3840×1600 · 23.98 fps · HDR10 · E-AC-3 5.1"
 function umsTechString(u) {
@@ -3581,11 +3658,12 @@ function umsTechUpdated(u) {
         if (s && vodPlay.key) { vodTech[vodPlay.key] = s; const ks = Object.keys(vodTech); if (ks.length > 300) delete vodTech[ks[0]]; saveJson('iptv_vod_tech', vodTech); }
     } else if (u.kind === 'live' && liveUms === u) {
         if (parseFloat(streamInfoOverlay.style.opacity) > 0) showStreamInfo();
+        if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s; }
     }
 }
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the pipeline
-async function umsApplySubtitleStyle() {
-    const u = vodPlay.ums; if (!u || !u.mediaId) return;
+async function umsApplySubtitleStyle(u) {
+    u = u || activeUms(); if (!u || !u.mediaId) return;
     const id = u.mediaId;
     const sizeIdx = Math.max(0, SUB_SIZE_OPTIONS.findIndex(o => o.v === settings.subSize));
     await umsCall('setSubtitleCharacterFontSize', { mediaId: id, charFontSize: settings.subSize });
@@ -3595,7 +3673,7 @@ async function umsApplySubtitleStyle() {
     await umsCall('setSubtitleBackgroundColor', { mediaId: id, bgColor: 'black' });
     await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity: settings.subBg === 'none' ? 0 : settings.subBg === 'solid' ? 100 : 50 });
     await umsCall('setSubtitleCharacterEdge', { mediaId: id, charEdgeType: settings.subEdge === 'outline' ? 'uniform' : settings.subEdge === 'shadow' ? 'dropShadow' : 'none' });
-    await umsCall('setSubtitleSync', { mediaId: id, sync: vodPlay.syncMs || 0 });
+    await umsCall('setSubtitleSync', { mediaId: id, sync: u.kind === 'vod' ? (vodPlay.syncMs || 0) : 0 });
 }
 function umsSetSync(ms) {
     ms = Math.max(-10000, Math.min(10000, Math.round(ms / 50) * 50));
@@ -3663,19 +3741,19 @@ function umsAudioLabel(t, i) {
     const ch = t.channels >= 6 ? '5.1' : t.channels === 2 ? 'Stereo' : t.channels === 1 ? 'Mono' : '';
     return [lang, (t.codec || '').toUpperCase(), ch].filter(Boolean).join(' · ');
 }
-async function umsSelectSubtitle(trackNum) {
-    const u = vodPlay.ums; if (!u) return;
+async function umsSelectSubtitle(trackNum, u) {
+    u = u || activeUms(); if (!u || !u.mediaId) return;
     u.selectedSub = trackNum;
     if (trackNum < 0) { await umsCall('setSubtitleEnable', { mediaId: u.mediaId, enable: false }); }
     else {
         await umsCall('selectTrack', { mediaId: u.mediaId, type: 'text', index: trackNum });
         await umsCall('setSubtitleEnable', { mediaId: u.mediaId, enable: true });
-        umsApplySubtitleStyle();
+        umsApplySubtitleStyle(u);
     }
     updateVodTracksHint();
 }
-async function umsSelectAudio(index) {
-    const u = vodPlay.ums; if (!u) return;
+async function umsSelectAudio(index, u) {
+    u = u || activeUms(); if (!u || !u.mediaId) return;
     u.selectedAudio = index;
     await umsCall('selectTrack', { mediaId: u.mediaId, type: 'audio', index });
     updateVodTracksHint();
@@ -4000,7 +4078,7 @@ function handleRemoteNav(e) {
 
     // Fullscreen playback keys (seek, trick-play, play/pause) have dedicated listeners
     if (document.fullscreenElement) return;
-    if (vodPlay.active) { handleVodPlayerKey(e, up, down, left, right, enter); return; }
+    if (playerActive()) { handleVodPlayerKey(e, up, down, left, right, enter); return; }
 
     // Yellow colour key opens Settings from any screen
     if (kc === 405 || k === 'ColorF2Yellow') { e.preventDefault(); openSettings(); return; }
@@ -4140,8 +4218,8 @@ videoPlayer.addEventListener('timeupdate', function () {
 videoPlayer.addEventListener('ended', onVodEnded);
 videoPlayer.addEventListener('waiting', function () { if (vodPlay.active) document.getElementById('vodLoading').classList.remove('hidden'); });
 videoPlayer.addEventListener('playing', function () { if (vodPlay.active) { document.getElementById('vodLoading').classList.add('hidden'); document.getElementById('vodPaused').classList.add('hidden'); } });
-videoPlayer.addEventListener('pause', function () { if (vodPlay.active && !vodPlay.ended && !videoPlayer.ended) { document.getElementById('vodPaused').classList.remove('hidden'); renderPlayerButtons(); } });
-videoPlayer.addEventListener('play', function () { if (vodPlay.active) renderPlayerButtons(); });
+videoPlayer.addEventListener('pause', function () { if (playerActive() && !vodPlay.ended && !videoPlayer.ended) { document.getElementById('vodPaused').classList.remove('hidden'); renderPlayerButtons(); } });
+videoPlayer.addEventListener('play', function () { if (playerActive()) { document.getElementById('vodPaused').classList.add('hidden'); renderPlayerButtons(); } });
 ['settingsBtn', 'settingsFooterBtn', 'epgSettingsBtn', 'vodSettingsBtn'].forEach(id => {
     const b = document.getElementById(id);
     if (b) b.addEventListener('click', openSettings);
@@ -4201,7 +4279,9 @@ videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
     if (audioPanelOpen && !audioPanel.contains(e.target) && e.target !== audioBtn) toggleAudioPanel();
+    if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer();
 });
+if (epgVideoWrap) epgVideoWrap.addEventListener('click', function (e) { if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer(); });
 videoPlayer.textTracks.addEventListener('addtrack', function () {
     updateSubtitleButton();
     if (subtitlePanelOpen) buildSubtitlePanel();
@@ -4238,10 +4318,12 @@ document.addEventListener('keyup', (e) => {
     _enterPressTime = 0;
     if (!_inPlayerMode()) return;
     e.preventDefault();
-    if (vodPlay.active) {
+    if (playerActive()) {
         if (vodTracksOpen()) activateVodTrack();
         else if (vodNextVisible()) activateVodNext();
         else if (player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) activatePlayerButton();
+        else if (livePlayer.active && held >= LONG_PRESS_MS) { if (lastChannelIndex >= 0 && channels[lastChannelIndex]) selectChannel(lastChannelIndex); }
+        else if (livePlayer.active) toggleLivePause();
         else toggleVodPause(); // OK on the bar: play/pause (no long-press action in VOD)
         return;
     }
@@ -4265,8 +4347,8 @@ document.addEventListener('fullscreenchange', () => {
 // Hold Left/Right in fullscreen: short-press = ±3s seek; hold = trick play
 document.addEventListener('keydown', (e) => {
     if (!_inPlayerMode()) return;
-    if (vodPlay.active && (vodNextVisible() || vodTracksOpen())) return; // Left/Right belong to the card / menu
-    if (vodPlay.active && player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) return; // moving between buttons
+    if (playerActive() && (vodNextVisible() || vodTracksOpen())) return; // Left/Right belong to the card / menu
+    if (playerActive() && player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) return; // moving between buttons
     if (e.repeat) return;
     const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
     const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
@@ -4287,8 +4369,8 @@ document.addEventListener('keyup', (e) => {
     const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
     if (!isLeft && !isRight) return;
     if (!_inPlayerMode()) { _holdKeyDir = null; return; }
-    if (vodPlay.active && (vodNextVisible() || vodTracksOpen())) { _holdKeyDir = null; return; }
-    if (vodPlay.active && player.focus === 'buttons' && !_holdKeyDir) return;
+    if (playerActive() && (vodNextVisible() || vodTracksOpen())) { _holdKeyDir = null; return; }
+    if (playerActive() && player.focus === 'buttons' && !_holdKeyDir) return;
     e.preventDefault();
     const held = Date.now() - _holdKeyStart;
     const dir  = _holdKeyDir;
@@ -4324,8 +4406,8 @@ document.addEventListener('keydown', (e) => {
     if (vodMode !== 'live' && !vodPlay.active) return;
     if (vodPlay.active && (kc === 427 || kc === 428)) return;
     e.preventDefault();
-    if (kc === 415) { videoPlayer.play().catch(() => {}); showPlayerControls(); if (vodPlay.active) document.getElementById('vodPaused').classList.add('hidden'); }
-    else if (kc === 19) { videoPlayer.pause(); showPlayerControls(); if (vodPlay.active) document.getElementById('vodPaused').classList.remove('hidden'); }
+    if (kc === 415) { videoPlayer.play().catch(() => {}); showPlayerControls(); if (playerActive()) document.getElementById('vodPaused').classList.add('hidden'); }
+    else if (kc === 19) { videoPlayer.pause(); showPlayerControls(); if (playerActive()) document.getElementById('vodPaused').classList.remove('hidden'); }
     else zapChannel(kc === 427 ? 1 : -1);
 }, true);
 
@@ -4342,8 +4424,9 @@ document.addEventListener('keydown', (e) => {
     if (settingsOpen) { e.preventDefault(); closeSettings(); return; }
 
     // VOD: player → details → list → Home → Live
-    if (vodPlay.active && vodTracksOpen()) { e.preventDefault(); closeVodTracks(); return; }
+    if (playerActive() && vodTracksOpen()) { e.preventDefault(); closeVodTracks(); return; }
     if (vodPlay.active) { e.preventDefault(); stopVodPlayback(true); return; }
+    if (livePlayer.active) { e.preventDefault(); exitLivePlayer(); return; }
     if (vodMode !== 'live' && mainApp && mainApp.style.display !== 'none') {
         e.preventDefault();
         if (vodNav.screen === 'details') closeVodDetails();

@@ -17,6 +17,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const errors = [];
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
     page.on('console', m => { if (m.type() === 'error' && !/net::|404|Failed to load resource|MEDIA/.test(m.text())) errors.push('console: ' + m.text()); });
+    const channelsName = () => 'Channel ';
     const key = (k, kc) => page.evaluate((k, kc) => {
         const ev = new KeyboardEvent('keydown', { key: k, keyCode: kc, bubbles: true, cancelable: true });
         Object.defineProperty(ev, 'keyCode', { get: () => kc });
@@ -71,18 +72,30 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await sleep(300);
     const after = await page.evaluate(() => ({ idx: currentChannelIndex, expected: getChannelIndex(currentFilteredChannels[epgFocusedRowIdx]) }));
     check('Enter on scrolled EPG row selects that channel', after.idx === after.expected && after.idx !== before, `before=${before} after=${after.idx} expected=${after.expected}`);
-    // Enter again on the playing row → fullscreen toggle attempted (no gesture in headless, must not throw)
-    let fsCalled = false;
-    await page.exposeFunction('__fs', () => { fsCalled = true; });
-    await page.evaluate(() => { const o = videoPlayer.requestFullscreen.bind(videoPlayer); videoPlayer.requestFullscreen = () => { window.__fs(); return o(); }; });
+    // Enter again on the playing row → the app-owned live player
+    check('video element has no native controls', await page.evaluate(() => !videoPlayer.hasAttribute('controls')));
     await key('Enter', 13);
-    await sleep(200);
-    check('Enter on playing row toggles fullscreen', fsCalled);
-    check('channel unchanged after fullscreen toggle', await page.evaluate(() => currentChannelIndex) === after.idx);
-    // Headless Chrome may grant fullscreen; leave it so Back behaves as in the TV's non-fullscreen state
-    await page.evaluate(async () => { if (document.fullscreenElement) await document.exitFullscreen(); });
     await sleep(300);
-    check('left fullscreen for the remaining checks', await page.evaluate(() => !document.fullscreenElement));
+    const lp = await page.evaluate(() => ({ active: livePlayer.active, visible: !document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, title: document.getElementById('vodOsdTitle').textContent, osd: document.getElementById('vodOsd').classList.contains('visible'), btns: player.btns.map(b => b.id).join(), idx: currentChannelIndex, pos: document.getElementById('vodTimePos').textContent }));
+    check('Enter on the playing row opens the live player with the channel banner', lp.active && lp.visible && lp.slot === 'vodVideoSlot' && lp.title.includes(channelsName(lp.idx)) && lp.osd && lp.btns === 'pause,cc,info,guide,settings' && lp.idx === after.idx, JSON.stringify(lp));
+    check('live banner shows the current programme time range from the EPG', /\d{1,2}:\d{2}(AM|PM) – \d{1,2}:\d{2}(AM|PM)/.test(lp.pos) || lp.pos === 'LIVE', lp.pos);
+    await key('ChannelUp', 427); await sleep(300);
+    check('CH+ in the live player zaps and refreshes the banner', await page.evaluate(idx => currentChannelIndex !== idx && livePlayer.active && document.getElementById('vodOsdTitle').textContent.includes(channels[currentChannelIndex].name), after.idx));
+    await key('ChannelDown', 428); await sleep(300);
+    await key('ArrowUp', 38); await sleep(50);
+    check('Up focuses CC first in the live player too', await page.evaluate(() => player.focus === 'buttons' && player.btns[player.btn].id === 'cc'));
+    await key('ArrowRight', 39); await key('ArrowRight', 39); await sleep(50);
+    check('Right×2 focuses the Guide button', await page.evaluate(() => player.focus === 'buttons' && player.btns[player.btn].id === 'guide'), await page.evaluate(() => player.btns[player.btn].id));
+    await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+    await sleep(300);
+    const lx = await page.evaluate(() => ({ active: livePlayer.active, hidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, focusRow: epgFocusedRowIdx, playingRow: currentFilteredChannels.indexOf(channels[currentChannelIndex]), ev: document.getElementById('epgView').style.display }));
+    check('OK on Guide leaves the player: video back in the guide, cursor on the playing channel', !lx.active && lx.hidden && lx.slot === 'epgVideoWrap' && lx.focusRow === lx.playingRow && lx.ev === 'flex', JSON.stringify(lx));
+    // Pointer: a click on the live picture opens the player; Back closes it
+    await page.evaluate(() => videoPlayer.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await sleep(200);
+    check('clicking the live picture opens the player', await page.evaluate(() => livePlayer.active));
+    await back(); await sleep(200);
+    check('Back leaves the live player and returns to the guide', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode.id === 'epgVideoWrap'));
 
     // Minute tick: in-place refresh and hour rollover
     const tickOk = await page.evaluate(() => { try { epgMinuteTick(); return true; } catch (e) { return e.message; } });
@@ -212,7 +225,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await back();
         await sleep(300);
         const afterBack = await page.evaluate(() => ({ screen: vodNav.screen, playerHidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, controls: videoPlayer.hasAttribute('controls'), btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, prog: Object.values(vodProgress).filter(p => p.kind === 'movie').length, stored: !!localStorage.getItem('iptv_vod_progress') }));
-        check('Back from player returns to details with a Resume button; progress saved; video returned to the guide', afterBack.screen === 'details' && afterBack.playerHidden && afterBack.slot === 'epgVideoWrap' && afterBack.controls && /Resume from 0:1\d/.test(afterBack.btn) && afterBack.prog === 1 && afterBack.stored, JSON.stringify(afterBack));
+        check('Back from player returns to details with a Resume button; progress saved; video returned to the guide', afterBack.screen === 'details' && afterBack.playerHidden && afterBack.slot === 'epgVideoWrap' && !afterBack.controls && /Resume from 0:1\d/.test(afterBack.btn) && afterBack.prog === 1 && afterBack.stored, JSON.stringify(afterBack));
         // Start over button exists; Favorite toggles
         await key('ArrowRight', 39); await key('ArrowRight', 39); await key('Enter', 13); await sleep(100);
         check('Favorite toggles on from details', await page.evaluate(() => document.querySelector('.vod-btn.focused').textContent === '★ Favorite' && Object.keys(JSON.parse(localStorage.getItem('iptv_vod_favorites'))[localStorage.getItem('iptv_last_playlist')].movies).length === 1));
@@ -358,6 +371,31 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await sleep(200);
         check('stopping playback cancels the pipeline subscription', await page.evaluate(() => window.__ums.cancelled === true && vodPlay.ums === null));
         check('details page shows the stored codec line for the last played episode', await page.evaluate(() => /HEVC · 10-bit/.test(document.querySelector('.vod-dmeta').textContent)), await page.evaluate(() => JSON.stringify({ meta: document.querySelector('.vod-dmeta') && document.querySelector('.vod-dmeta').textContent, screen: vodNav.screen, techKeys: Object.keys(vodTech), last: lastEpisodeEntry(vodNav.detail.item.id) && lastEpisodeEntry(vodNav.detail.item.id).epId })));
+        // Live subtitles through the same pipeline path: back to Live, zap a channel, English auto-selected, menu in the live player
+        await page.evaluate(() => { setVodMode('live'); });
+        await sleep(400);
+        await page.evaluate(() => { window.__ums.calls.length = 0; zapChannel(1); });
+        await page.waitForFunction(() => liveUms && liveUms.subTracks.length === 4 && liveUms.selectedSub === 1, { timeout: 8000 });
+        await sleep(300);
+        check('live channel: pipeline subtitle tracks read and English selected automatically', await page.evaluate(() => window.__ums.calls.some(c => c[0] === 'selectTrack' && /"type":"text","index":1/.test(c[1])) && window.__ums.calls.some(c => c[0] === 'setSubtitleEnable')), await page.evaluate(() => JSON.stringify(window.__ums.calls.map(c => c[0] + ' ' + c[1]).slice(0, 12))));
+        await page.evaluate(() => enterLivePlayer());
+        await sleep(200);
+        await key('ColorF1Green', 404);
+        const lm = await page.evaluate(() => ({ open: vodTracksOpen(), rows: [...document.querySelectorAll('.vod-track')].map(r => r.textContent.trim()), hint: document.getElementById('vodOsdTracks').textContent, tech: document.getElementById('vodOsdTech').textContent }));
+        check('live player Green menu lists the channel\'s tracks; banner shows subtitle state and codec line', lm.open && lm.rows.some(r => /English 1/.test(r)) && !lm.rows.some(r => /Sync offset/.test(r)) && /Subtitles: English 1/.test(lm.hint) && /HEVC/.test(lm.tech), JSON.stringify(lm));
+        await key('ArrowUp', 38); await key('ArrowUp', 38); // Off
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(50);
+        check('live: picking Off disables subtitles on the live pipeline and is remembered as manual', await page.evaluate(() => liveUms.selectedSub === -1 && liveUms.subManual && /"enable":false/.test((window.__ums.calls.filter(c => c[0] === 'setSubtitleEnable').pop() || [])[1])));
+        await back(); await back(); await sleep(200);
+        check('Back closes the menu, Back leaves the live player', await page.evaluate(() => !livePlayer.active && !vodTracksOpen()));
+        await page.evaluate(() => { setVodMode('series'); });
+        await page.waitForFunction(() => vodMode === 'series' && vodNav.screen === 'home', { timeout: 8000 });
+        await page.evaluate(() => { document.querySelectorAll('#groupsList .group-item')[0].click(); });
+        await page.waitForFunction(() => vodNav.screen === 'grid' && vodNav.items.length === 20, { timeout: 8000 });
+        await page.evaluate(() => { vodNav.zone = 'content'; vodNav.focus = 0; updateVodGridFocus(); });
+        await key('Enter', 13);
+        await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 8000 });
         await page.evaluate(() => { window.webOS = window.__realWebOS; delete videoPlayer.mediaId; delete videoPlayer.load; });
 
         // Series home shows Continue Watching
@@ -372,7 +410,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => vodMode === 'live', { timeout: 5000 });
         await sleep(400);
         const live = await page.evaluate(() => ({ ev: document.getElementById('epgView').style.display, vv: document.getElementById('vodView').style.display, slot: videoPlayer.parentNode.id, src: videoPlayer.getAttribute('src') || '', controls: videoPlayer.hasAttribute('controls'), rows: epgRenderedRows.size }));
-        check('Back from Home returns to Live: guide visible, live stream reloaded, controls restored', live.ev === 'flex' && live.vv === 'none' && live.slot === 'epgVideoWrap' && /\/live\//.test(live.src) && live.controls && live.rows > 0, JSON.stringify(live));
+        check('Back from Home returns to Live: guide visible, live stream reloaded, no native controls', live.ev === 'flex' && live.vv === 'none' && live.slot === 'epgVideoWrap' && /\/live\//.test(live.src) && !live.controls && live.rows > 0, JSON.stringify(live));
     }
 
     // ---------- Back + confirm dialog with D-pad ----------
@@ -404,6 +442,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await key('Enter', 13);
     await sleep(200);
     check('standard view: Enter plays focused channel', await page.evaluate(() => currentChannelIndex === getChannelIndex(currentFilteredChannels[2]) && renderedItems.get(2).classList.contains('active')));
+    await key('Enter', 13); await sleep(200);
+    check('standard view: Enter on the playing row opens the live player', await page.evaluate(() => livePlayer.active && videoPlayer.parentNode.id === 'vodVideoSlot' && player.btns.map(b => b.id).join() === 'pause,cc,info,guide,settings' && /Channels/.test(player.btns[3].label)));
+    await back(); await sleep(200);
+    check('Back returns the video to the channel-list layout', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode === videoArea && stdFocusIdx === 2));
     await key('ArrowLeft', 37);
     check('standard view: Left moves to groups column', await page.evaluate(() => stdFocusZone === 'groups' && !!document.querySelector('.group-item.focused')));
     await key('ArrowDown', 40); await key('ArrowDown', 40); await key('Enter', 13);
