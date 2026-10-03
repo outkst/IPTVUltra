@@ -3274,8 +3274,11 @@ function updateVodTracksHint() {
     const bits = [];
     if (subs.length) bits.push('Subtitles: ' + (on ? trackDisplayName(on, subs.indexOf(on)) : 'Off'));
     if (auds.length > 1) { const a = auds.find(t => t.enabled); if (a) bits.push('Audio: ' + trackDisplayName(a, auds.indexOf(a))); }
-    if (subs.length || auds.length > 1) bits.push('Green: audio & subtitles');
+    if (!subs.length) bits.push('No subtitle tracks in this file');
+    bits.push('Green: audio & subtitles');
     el.textContent = bits.join(' · ');
+    const cc = document.getElementById('vodCcBtn');
+    if (cc) cc.classList.toggle('on', !!on);
 }
 function vodTracksOpen() { const p = document.getElementById('vodTracks'); return !!p && !p.classList.contains('hidden'); }
 function vodTracksItems() {
@@ -3286,7 +3289,7 @@ function vodTracksItems() {
     items.push({ header: 'Subtitles' });
     items.push({ kind: 'sub', track: null, label: 'Off', on: !subs.some(t => t.mode === 'showing') });
     subs.forEach((t, i) => items.push({ kind: 'sub', track: t, label: trackDisplayName(t, i), on: t.mode === 'showing' }));
-    if (!subs.length) items.push({ note: 'This file has no subtitle tracks' });
+    if (!subs.length) items.push({ note: 'This file has no subtitle tracks. Only subtitles embedded in the provider\'s file can be shown.' });
     return items;
 }
 function openVodTracks() {
@@ -3779,7 +3782,9 @@ if (vodNextCancelEl) vodNextCancelEl.addEventListener('click', () => { vodPlay.n
 const vodPlayerEl = document.getElementById('vodPlayer');
 if (vodPlayerEl) {
     vodPlayerEl.addEventListener('mousemove', () => { if (vodPlay.active) showVodOsd(); });
-    vodPlayerEl.addEventListener('click', e => { if (vodPlay.active && !e.target.closest('.vod-next')) toggleVodPause(); });
+    vodPlayerEl.addEventListener('click', e => { if (vodPlay.active && !e.target.closest('.vod-next') && !e.target.closest('.vod-tracks') && !e.target.closest('.vod-cc-btn')) toggleVodPause(); });
+    const ccBtn = document.getElementById('vodCcBtn');
+    if (ccBtn) ccBtn.addEventListener('click', e => { e.stopPropagation(); if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); });
 }
 videoPlayer.addEventListener('timeupdate', function () {
     if (!vodPlay.active) return;

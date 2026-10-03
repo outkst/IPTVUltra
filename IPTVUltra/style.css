@@ -2749,10 +2749,40 @@ video {
     opacity: 1;
 }
 
+.vod-osd-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+}
+
 .vod-osd-title {
     font-size: 1.3rem;
     font-weight: 700;
     margin-bottom: 4px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vod-cc-btn {
+    pointer-events: auto;
+    flex-shrink: 0;
+    background: rgba(36, 39, 49, 0.9);
+    border: 2px solid #4a4e5c;
+    color: #ddd;
+    border-radius: 10px;
+    padding: 8px 18px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.vod-cc-btn:hover,
+.vod-cc-btn.on {
+    border-color: #6c8eff;
+    color: #fff;
 }
 
 .vod-osd-sub {
