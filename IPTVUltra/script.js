@@ -92,6 +92,7 @@ let vodTech = loadJson('iptv_vod_tech', {});       // progress key -> codec/HDR 
 let liveUms = null;                                 // media-service state for the live pipeline (Stream Info codec line)
 let _umsRateBroken = false;                         // set when native setPlayRate does not move the position on this session
 let _nativeRate = 0;                                // signed rate currently applied via setPlayRate, 0 = normal
+const player = { focus: 'bar', btn: 0, btns: [] };  // OSD focus: 'bar' (default) or 'buttons'; btn = index into btns
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
 let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
@@ -3121,6 +3122,7 @@ function startVodPlayback(p) {
     vodNav.screen = 'player';
     const url = p.kind === 'movie' ? vodStreamUrl(p.item.id, (p.info && p.info.ext) || p.item.ext) : episodeUrl(p.ep);
     vodPlay.syncMs = vodSubSync[key] || 0;
+    player.focus = 'bar'; player.btn = 0; player.btns = [];
     _nativeRate = 0;
     umsRelease(liveUms); liveUms = null;
     umsNoteCurrentId();
@@ -3153,7 +3155,7 @@ function stopVodPlayback(backToDetails) {
     videoPlayer.load();
     vodPlay.active = false;
     document.getElementById('vodPlayer').classList.add('hidden');
-    document.getElementById('vodOsd').classList.remove('visible');
+    hideVodOsd();
     restoreLiveVideoSlot();
     if (backToDetails !== false && vodMode !== 'live') {
         vodNav.screen = 'details';
@@ -3200,14 +3202,69 @@ function updateVodOsd(posOverride) {
 function showVodOsd() {
     const osd = document.getElementById('vodOsd');
     updateVodOsd();
+    renderPlayerButtons();
     osd.classList.add('visible');
     if (vodPlay.osdTimer) clearTimeout(vodPlay.osdTimer);
-    vodPlay.osdTimer = setTimeout(() => { if (!videoPlayer.paused) osd.classList.remove('visible'); }, 3000);
+    vodPlay.osdTimer = setTimeout(() => {
+        if (videoPlayer.paused) return; // keep it up while paused
+        osd.classList.remove('visible');
+        player.focus = 'bar'; // next Up always starts from the bar
+        updatePlayerFocus();
+    }, 3000);
+}
+function hideVodOsd() {
+    const osd = document.getElementById('vodOsd');
+    osd.classList.remove('visible');
+    if (vodPlay.osdTimer) { clearTimeout(vodPlay.osdTimer); vodPlay.osdTimer = null; }
+    player.focus = 'bar';
+    updatePlayerFocus();
 }
 function toggleVodPause() {
     if (videoPlayer.paused) videoPlayer.play().catch(() => {}); else videoPlayer.pause();
     document.getElementById('vodPaused').classList.toggle('hidden', !videoPlayer.paused);
     showVodOsd();
+}
+// OSD button row. Up from the bar focuses it (CC first), Left/Right move, OK activates; Down returns to the bar.
+function playerButtonsFor() {
+    const btns = [];
+    if (vodPlay.active) {
+        btns.push({ id: 'pause', label: videoPlayer.paused ? '▶ Play' : '⏸ Pause', act: toggleVodPause });
+        if (vodPlay.kind === 'episode' && nextEpisode()) btns.push({ id: 'next', label: '⏭ Next episode', act: () => { vodPlay.nextEp = nextEpisode(); clearVodNext(); playNextEpisode(); } });
+        btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
+        btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
+    }
+    return btns;
+}
+function renderPlayerButtons() {
+    const box = document.getElementById('vodOsdBtns'); if (!box) return;
+    const btns = playerButtonsFor();
+    const keep = player.btns[player.btn] && player.btns[player.btn].id;
+    player.btns = btns;
+    let idx = btns.findIndex(b => b.id === keep);
+    if (idx < 0) idx = btns.findIndex(b => b.id === 'cc');
+    player.btn = Math.max(0, idx);
+    box.innerHTML = '';
+    btns.forEach((b, i) => {
+        const el = document.createElement('button');
+        el.className = 'vod-osd-btn' + (b.id === 'cc' ? ' vod-cc-btn' : '');
+        if (b.id === 'cc') el.id = 'vodCcBtn';
+        el.textContent = b.label;
+        el.addEventListener('click', e => { e.stopPropagation(); player.btn = i; b.act(); });
+        box.appendChild(el);
+    });
+    updatePlayerFocus();
+}
+function updatePlayerFocus() {
+    const osd = document.getElementById('vodOsd'); if (!osd) return;
+    osd.classList.toggle('bar-focused', player.focus === 'bar');
+    const els = osd.querySelectorAll('.vod-osd-btn');
+    els.forEach((el, i) => el.classList.toggle('focused', player.focus === 'buttons' && i === player.btn));
+    const u = vodPlay.ums; const on = u ? u.selectedSub >= 0 : getSubtitleTracks().some(t => t.mode === 'showing');
+    const cc = document.getElementById('vodCcBtn'); if (cc) cc.classList.toggle('on', on);
+}
+function activatePlayerButton() {
+    const b = player.btns[player.btn];
+    if (b) b.act();
 }
 function handleVodPlayerKey(e, up, down, left, right, enter) {
     if (e.keyCode === 404 || e.key === 'ColorF1Green') { e.preventDefault(); if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); return; }
@@ -3224,8 +3281,14 @@ function handleVodPlayerKey(e, up, down, left, right, enter) {
         else if (up || down) e.preventDefault();
         return; // Enter is handled by the shared keyup listener
     }
-    if (up || down) { e.preventDefault(); _seekBy(up ? 60 : -60); showVodOsd(); }
-    else if (enter) e.preventDefault(); // play/pause on keyup (shared with live fullscreen)
+    if (up) { e.preventDefault(); if (player.focus === 'bar') player.focus = 'buttons'; showVodOsd(); }
+    else if (down) { e.preventDefault(); player.focus = 'bar'; showVodOsd(); }
+    else if ((left || right) && player.focus === 'buttons') {
+        e.preventDefault();
+        if (player.btns.length) player.btn = (player.btn + (right ? 1 : -1) + player.btns.length) % player.btns.length;
+        showVodOsd();
+    }
+    else if (enter) e.preventDefault(); // handled on keyup: button activation or play/pause on the bar
 }
 function nextEpisode() {
     if (vodPlay.kind !== 'episode' || !vodPlay.seasons) return null;
@@ -3334,7 +3397,7 @@ function updateVodTracksHint() {
         if (u.audioTracks.length > 1) { const a = u.audioTracks[u.selectedAudio]; if (a) bits.push('Audio: ' + umsAudioLabel(a, u.selectedAudio)); }
         bits.push('Green: audio & subtitles');
         el.textContent = bits.join(' · ');
-        const cc = document.getElementById('vodCcBtn'); if (cc) cc.classList.toggle('on', !!on);
+        updatePlayerFocus();
         return;
     }
     const subs = getSubtitleTracks(), auds = getAudioTracks();
@@ -3345,8 +3408,7 @@ function updateVodTracksHint() {
     if (!subs.length) bits.push('No subtitle tracks in this file');
     bits.push('Green: audio & subtitles');
     el.textContent = bits.join(' · ');
-    const cc = document.getElementById('vodCcBtn');
-    if (cc) cc.classList.toggle('on', !!on);
+    updatePlayerFocus();
 }
 function vodTracksOpen() { const p = document.getElementById('vodTracks'); return !!p && !p.classList.contains('hidden'); }
 function vodTracksItems() {
@@ -4068,8 +4130,7 @@ const vodPlayerEl = document.getElementById('vodPlayer');
 if (vodPlayerEl) {
     vodPlayerEl.addEventListener('mousemove', () => { if (vodPlay.active) showVodOsd(); });
     vodPlayerEl.addEventListener('click', e => { if (vodPlay.active && !e.target.closest('.vod-next') && !e.target.closest('.vod-tracks') && !e.target.closest('.vod-cc-btn')) toggleVodPause(); });
-    const ccBtn = document.getElementById('vodCcBtn');
-    if (ccBtn) ccBtn.addEventListener('click', e => { e.stopPropagation(); if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); });
+
 }
 videoPlayer.addEventListener('timeupdate', function () {
     if (!vodPlay.active) return;
@@ -4079,7 +4140,8 @@ videoPlayer.addEventListener('timeupdate', function () {
 videoPlayer.addEventListener('ended', onVodEnded);
 videoPlayer.addEventListener('waiting', function () { if (vodPlay.active) document.getElementById('vodLoading').classList.remove('hidden'); });
 videoPlayer.addEventListener('playing', function () { if (vodPlay.active) { document.getElementById('vodLoading').classList.add('hidden'); document.getElementById('vodPaused').classList.add('hidden'); } });
-videoPlayer.addEventListener('pause', function () { if (vodPlay.active && !vodPlay.ended && !videoPlayer.ended) document.getElementById('vodPaused').classList.remove('hidden'); });
+videoPlayer.addEventListener('pause', function () { if (vodPlay.active && !vodPlay.ended && !videoPlayer.ended) { document.getElementById('vodPaused').classList.remove('hidden'); renderPlayerButtons(); } });
+videoPlayer.addEventListener('play', function () { if (vodPlay.active) renderPlayerButtons(); });
 ['settingsBtn', 'settingsFooterBtn', 'epgSettingsBtn', 'vodSettingsBtn'].forEach(id => {
     const b = document.getElementById(id);
     if (b) b.addEventListener('click', openSettings);
@@ -4179,7 +4241,8 @@ document.addEventListener('keyup', (e) => {
     if (vodPlay.active) {
         if (vodTracksOpen()) activateVodTrack();
         else if (vodNextVisible()) activateVodNext();
-        else toggleVodPause(); // no long-press action in VOD
+        else if (player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) activatePlayerButton();
+        else toggleVodPause(); // OK on the bar: play/pause (no long-press action in VOD)
         return;
     }
     if (held >= LONG_PRESS_MS) {
@@ -4203,6 +4266,7 @@ document.addEventListener('fullscreenchange', () => {
 document.addEventListener('keydown', (e) => {
     if (!_inPlayerMode()) return;
     if (vodPlay.active && (vodNextVisible() || vodTracksOpen())) return; // Left/Right belong to the card / menu
+    if (vodPlay.active && player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) return; // moving between buttons
     if (e.repeat) return;
     const isLeft  = e.key === 'ArrowLeft'  || e.keyCode === 37;
     const isRight = e.key === 'ArrowRight' || e.keyCode === 39;
@@ -4224,6 +4288,7 @@ document.addEventListener('keyup', (e) => {
     if (!isLeft && !isRight) return;
     if (!_inPlayerMode()) { _holdKeyDir = null; return; }
     if (vodPlay.active && (vodNextVisible() || vodTracksOpen())) { _holdKeyDir = null; return; }
+    if (vodPlay.active && player.focus === 'buttons' && !_holdKeyDir) return;
     e.preventDefault();
     const held = Date.now() - _holdKeyStart;
     const dir  = _holdKeyDir;

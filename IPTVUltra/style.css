@@ -2766,6 +2766,14 @@ video {
     white-space: nowrap;
 }
 
+.vod-osd-btns {
+    display: flex;
+    gap: 10px;
+    flex-shrink: 0;
+    pointer-events: auto;
+}
+
+.vod-osd-btn,
 .vod-cc-btn {
     pointer-events: auto;
     flex-shrink: 0;
@@ -2779,10 +2787,25 @@ video {
     cursor: pointer;
 }
 
+.vod-osd-btn:hover,
 .vod-cc-btn:hover,
 .vod-cc-btn.on {
     border-color: #6c8eff;
     color: #fff;
+}
+
+.vod-osd-btn.focused {
+    border-color: #ffd265;
+    box-shadow: 0 0 0 3px rgba(255, 210, 101, 0.55);
+    color: #fff;
+}
+
+.vod-osd.bar-focused .vod-bar {
+    height: 10px;
+}
+
+.vod-osd.bar-focused .vod-bar-knob {
+    box-shadow: 0 0 0 5px rgba(255, 210, 101, 0.6);
 }
 
 .vod-osd-sub {
