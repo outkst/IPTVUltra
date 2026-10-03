@@ -270,6 +270,39 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('Cancel returns to details on S2 E1; Play button advances; S1 fully ticked', !canc.active && canc.screen === 'details' && canc.btn === '▶ Play S2 E1' && canc.season === 1 && canc.ep === 0 && canc.zone === 'episodes' && /E1/.test(canc.focusedEp), JSON.stringify(canc));
         await key('ArrowLeft', 37); await key('ArrowLeft', 37); await sleep(100);
         check('season 1 shows both watched episodes ticked', await page.evaluate(() => vodNav.season === 0 && document.querySelectorAll('.vod-ep .vod-chk').length === 2));
+        // ---- webOS media-service path (simulated): pipeline reports embedded tracks, app selects English natively
+        await page.evaluate(() => {
+            window.__ums = { calls: [] };
+            Object.defineProperty(videoPlayer, 'mediaId', { get: () => '_fakePipe1', configurable: true });
+            window.__realWebOS = window.webOS;
+            window.webOS = { service: { request: (uri, o) => {
+                window.__ums.calls.push([o.method, JSON.stringify(o.parameters)]);
+                if (o.method === 'subscribe') {
+                    setTimeout(() => o.onSuccess({ subscription: true, returnValue: true }), 5);
+                    setTimeout(() => o.onSuccess({ returnValue: true, sourceInfo: { container: 'mkv', programInfo: [{ audioTrackInfo: [{ language: 'en', codec: 'eac3', channels: 6 }, { language: 'es', codec: 'aac', channels: 2 }], videoTrackInfo: [{ codec: 'HEVC', width: 3840, height: 1600, profile: 'main-10' }], subtitleTrackInfo: [{ trackNum: 0, language: 'ar', languageName: 'Arabic', type: 'text' }, { trackNum: 1, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 2, language: 'en', languageName: 'English', type: 'text' }, { trackNum: 3, language: 'es', languageName: 'Spanish; Castilian', type: 'text' }] }] } }), 40);
+                    return { cancel: () => { window.__ums.cancelled = true; } };
+                }
+                setTimeout(() => o.onSuccess({ returnValue: true, errorCode: 0, mediaId: '_fakePipe1' }), 2);
+                return {};
+            } } };
+        });
+        await page.evaluate(() => { vodNav.detailZone = 'episodes'; vodNav.season = 1; vodNav.epIdx = 0; playFocusedEpisode(); });
+        await page.waitForFunction(() => vodPlay.active && vodPlay.ums && vodPlay.ums.subTracks.length === 4, { timeout: 8000 });
+        await sleep(200);
+        const um = await page.evaluate(() => ({ sel: vodPlay.ums.selectedSub, calls: window.__ums.calls.map(c => c[0]), lastSel: window.__ums.calls.filter(c => c[0] === 'selectTrack').map(c => c[1]), hint: document.getElementById('vodOsdTracks').textContent }));
+        check('pipeline sourceInfo → first English subtitle track selected natively and enabled', um.sel === 1 && um.calls.includes('subscribe') && um.lastSel.some(p => /"type":"text","index":1/.test(p)) && um.calls.includes('setSubtitleEnable') && /Subtitles: English 1/.test(um.hint), JSON.stringify(um));
+        await key('ColorF1Green', 404);
+        const um2 = await page.evaluate(() => ({ rows: [...document.querySelectorAll('.vod-track')].map(r => r.textContent.trim()), headers: [...document.querySelectorAll('.vod-tracks-h')].map(h => h.textContent) }));
+        check('tracks menu lists pipeline audio and subtitle tracks with language names', um2.headers.join(',') === 'Audio,Subtitles' && um2.rows.length === 2 + 5 && um2.rows.some(r => /English 2/.test(r)) && um2.rows.some(r => /Spanish/.test(r)) && um2.rows.some(r => /English · EAC3 · 5\.1/.test(r)), JSON.stringify(um2));
+        await key('ArrowDown', 40); await key('ArrowDown', 40); // from English 1 → English 2 → Spanish
+        await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
+        await sleep(100);
+        check('picking Spanish calls selectTrack text index 3 and marks it manual', await page.evaluate(() => vodPlay.ums.selectedSub === 3 && vodPlay.subManual && window.__ums.calls.some(c => c[0] === 'selectTrack' && /"index":3/.test(c[1]))));
+        await back();
+        await back(); await sleep(200);
+        check('stopping playback cancels the pipeline subscription', await page.evaluate(() => window.__ums.cancelled === true && vodPlay.ums === null));
+        await page.evaluate(() => { window.webOS = window.__realWebOS; delete videoPlayer.mediaId; });
+
         // Series home shows Continue Watching
         await back(); await back(); await sleep(300);
         check('Series home shows the show in Continue Watching', await page.evaluate(() => vodNav.screen === 'home' && document.querySelectorAll('.vod-card[data-pos^="cw:"]').length === 1 && /S1 E3/.test(document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent)));

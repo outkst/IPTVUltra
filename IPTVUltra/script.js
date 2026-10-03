@@ -80,7 +80,8 @@ const vodNav = { screen: 'home', list: 'home', catId: null, items: [], baseItems
                  homeRow: 0, homeCol: {}, homeRows: [], gridScroll: 0, query: '', detail: null, detailZone: 'buttons', detailBtn: 0, season: 0, epIdx: 0 };
 const vodPlay = { active: false, kind: null, key: null, item: null, ep: null, season: null, epIdx: 0, seasons: null, dur: 0, resumeAt: 0,
                   title: '', sub: '', osdTimer: null, saveAt: 0, nextTimer: null, nextCountdown: 0, nextEp: null, nextFocus: 'play', ended: false,
-                  subManual: false, audioManual: false, tracksFocus: 0, tracksItems: [] };
+                  subManual: false, audioManual: false, tracksFocus: 0, tracksItems: [],
+                  ums: null };  // webOS media-service pipeline info: { mediaId, sub, subTracks, audioTracks, video, selectedSub, selectedAudio, keys }
 let epgRenderedRows = new Map(); // rowIdx → DOM element currently in the DOM
 let epgVirtualScrollListener = null;
 let _epgWinStart = 0;
@@ -3092,6 +3093,7 @@ function startVodPlayback(p) {
     videoPlayer.pause();
     videoPlayer.src = url;
     videoPlayer.load();
+    umsAttach();
     if (resumeAt > 0) videoPlayer.addEventListener('loadedmetadata', function seekOnce() { try { videoPlayer.currentTime = resumeAt; } catch (_) { /* not seekable yet */ } }, { once: true });
     videoPlayer.addEventListener('loadedmetadata', function tracksOnce() { applyVodTrackPrefs(); }, { once: true });
     setTimeout(() => { if (vodPlay.active) applyVodTrackPrefs(); }, 4000); // some files announce tracks late
@@ -3107,6 +3109,7 @@ function stopVodPlayback(backToDetails) {
     if (_isHolding()) _stopHold();
     _holdKeyDir = null;
     closeVodTracks();
+    umsDetach();
     videoPlayer.querySelectorAll('track').forEach(t => t.remove());
     if (vodPlay.osdTimer) { clearTimeout(vodPlay.osdTimer); vodPlay.osdTimer = null; }
     videoPlayer.pause();
@@ -3251,6 +3254,22 @@ function trackDisplayName(track, i) {
 // Apply the Settings preferences to whatever tracks the file exposes (unless the user picked manually)
 function applyVodTrackPrefs() {
     if (!vodPlay.active) return;
+    const u = vodPlay.ums;
+    if (u && u.subTracks.length) {
+        if (!vodPlay.subManual) {
+            const pref = settings.subLang;
+            let chosen = null;
+            if (pref === 'any') chosen = u.subTracks[0];
+            else if (pref !== 'off') chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+            umsSelectSubtitle(chosen ? chosen.trackNum : -1);
+        }
+        if (u.audioTracks.length > 1 && !vodPlay.audioManual && settings.audioLang !== 'default') {
+            const i = u.audioTracks.findIndex(t => trackMatchesLang({ language: t.language, label: '' }, settings.audioLang));
+            if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i);
+        }
+        updateVodTracksHint();
+        return;
+    }
     const subs = getSubtitleTracks();
     if (subs.length && !vodPlay.subManual) {
         const pref = settings.subLang;
@@ -3269,6 +3288,16 @@ function applyVodTrackPrefs() {
 function updateVodTracksHint() {
     const el = document.getElementById('vodOsdTracks');
     if (!el) return;
+    const u = vodPlay.ums;
+    if (u && u.subTracks.length) {
+        const on = u.subTracks.find(t => t.trackNum === u.selectedSub);
+        const bits = ['Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off')];
+        if (u.audioTracks.length > 1) { const a = u.audioTracks[u.selectedAudio]; if (a) bits.push('Audio: ' + umsAudioLabel(a, u.selectedAudio)); }
+        bits.push('Green: audio & subtitles');
+        el.textContent = bits.join(' · ');
+        const cc = document.getElementById('vodCcBtn'); if (cc) cc.classList.toggle('on', !!on);
+        return;
+    }
     const subs = getSubtitleTracks(), auds = getAudioTracks();
     const on = subs.find(t => t.mode === 'showing');
     const bits = [];
@@ -3283,6 +3312,15 @@ function updateVodTracksHint() {
 function vodTracksOpen() { const p = document.getElementById('vodTracks'); return !!p && !p.classList.contains('hidden'); }
 function vodTracksItems() {
     const items = [];
+    const u = vodPlay.ums;
+    if (u && (u.subTracks.length || u.audioTracks.length > 1)) {
+        if (u.audioTracks.length > 1) { items.push({ header: 'Audio' }); u.audioTracks.forEach((t, i) => items.push({ kind: 'audio', ums: i, label: umsAudioLabel(t, i), on: i === u.selectedAudio })); }
+        items.push({ header: 'Subtitles' });
+        items.push({ kind: 'sub', ums: -1, label: 'Off', on: u.selectedSub < 0 });
+        u.subTracks.forEach(t => items.push({ kind: 'sub', ums: t.trackNum, label: umsTrackLabel(t, u.subTracks), on: t.trackNum === u.selectedSub }));
+        if (!u.subTracks.length) items.push({ note: 'This file has no subtitle tracks.' });
+        return items;
+    }
     const auds = getAudioTracks();
     if (auds.length > 1) { items.push({ header: 'Audio' }); auds.forEach((t, i) => items.push({ kind: 'audio', track: t, label: trackDisplayName(t, i), on: !!t.enabled })); }
     const subs = getSubtitleTracks();
@@ -3296,7 +3334,9 @@ function openVodTracks() {
     if (!vodPlay.active) return;
     const items = vodTracksItems();
     vodPlay.tracksItems = items;
-    const first = items.findIndex(it => it.kind && it.on);
+    // Open on the active subtitle row (the menu's main purpose); fall back to the first selectable row
+    let first = items.findIndex(it => it.kind === 'sub' && it.on);
+    if (first < 0) first = items.findIndex(it => it.kind && it.on);
     vodPlay.tracksFocus = first >= 0 ? first : items.findIndex(it => it.kind);
     document.getElementById('vodTracks').classList.remove('hidden');
     renderVodTracks();
@@ -3327,6 +3367,12 @@ function moveVodTracksFocus(dir) {
 function activateVodTrack() {
     const it = vodPlay.tracksItems[vodPlay.tracksFocus];
     if (!it || !it.kind) return;
+    if (it.ums !== undefined) {
+        if (it.kind === 'sub') { umsSelectSubtitle(it.ums); vodPlay.subManual = true; }
+        else { umsSelectAudio(it.ums); vodPlay.audioManual = true; }
+        updateVodTracksHint(); renderVodTracks(); showVodOsd();
+        return;
+    }
     if (it.kind === 'sub') {
         getSubtitleTracks().forEach(t => { t.mode = t === it.track ? 'showing' : 'disabled'; });
         vodPlay.subManual = true;
@@ -3337,6 +3383,89 @@ function activateVodTrack() {
     updateVodTracksHint();
     renderVodTracks();
     showVodOsd();
+}
+
+// ── webOS media service (luna://com.webos.media) ─────────────
+// The HTML <video> on webOS never exposes subtitle tracks embedded in MKV
+// files, but the app may subscribe to its own pipeline (video.mediaId) and
+// call selectTrack / setSubtitleEnable on it. sourceInfo arrives on load with
+// the full subtitle/audio/video track lists. getActivePipelines and
+// getPipelineState are denied to third-party apps, so subscribe early.
+function umsAvailable() { return typeof webOS !== 'undefined' && webOS.service && typeof webOS.service.request === 'function'; }
+function umsCall(method, parameters) {
+    return new Promise(res => {
+        if (!umsAvailable()) return res({ ok: false, e: 'no webOS' });
+        try { webOS.service.request('luna://com.webos.media', { method, parameters, onSuccess: r => res({ ok: !!r.returnValue, r }), onFailure: e => res({ ok: false, e }) }); }
+        catch (ex) { res({ ok: false, e: String(ex) }); }
+        setTimeout(() => res({ ok: false, e: 'timeout' }), 5000);
+    });
+}
+function umsAttach() {
+    umsDetach();
+    if (!umsAvailable()) return;
+    const gen = (vodPlay.umsGen = (vodPlay.umsGen || 0) + 1);
+    const t0 = Date.now();
+    const poll = () => {
+        if (!vodPlay.active || vodPlay.umsGen !== gen) return;
+        const id = videoPlayer.mediaId;
+        if (!id || typeof id !== 'string' || id.charAt(0) === '<') {
+            if (Date.now() - t0 < 10000) setTimeout(poll, 25);
+            return;
+        }
+        const u = { mediaId: id, sub: null, subTracks: [], audioTracks: [], video: null, selectedSub: -1, selectedAudio: 0, keys: {} };
+        vodPlay.ums = u;
+        try {
+            u.sub = webOS.service.request('luna://com.webos.media', { method: 'subscribe', parameters: { mediaId: id }, subscribe: true,
+                onSuccess: m => { if (vodPlay.ums === u) umsOnMessage(u, m); },
+                onFailure: () => { /* subscription refused: HTML track fallback stays in place */ } });
+        } catch (_) { vodPlay.ums = null; }
+    };
+    poll();
+}
+function umsDetach() {
+    const u = vodPlay.ums;
+    if (u && u.sub && typeof u.sub.cancel === 'function') { try { u.sub.cancel(); } catch (_) { /* already gone */ } }
+    vodPlay.ums = null;
+}
+function umsOnMessage(u, m) {
+    for (const k of Object.keys(m)) if (k !== 'returnValue') u.keys[k] = (u.keys[k] || 0) + 1;
+    if (m.sourceInfo && Array.isArray(m.sourceInfo.programInfo) && m.sourceInfo.programInfo.length) {
+        const p = m.sourceInfo.programInfo[0];
+        u.container = m.sourceInfo.container || '';
+        u.subTracks = (p.subtitleTrackInfo || []).map((t, i) => ({ trackNum: typeof t.trackNum === 'number' ? t.trackNum : i, language: t.language || '', languageName: t.languageName || '', type: t.type || 'text' }));
+        u.audioTracks = (p.audioTrackInfo || []).map(t => ({ language: t.language || '', codec: t.codec || '', channels: t.channels || 0 }));
+        u.video = (p.videoTrackInfo || [])[0] || null;
+        applyVodTrackPrefs();
+        if (vodTracksOpen()) renderVodTracks();
+    }
+    if (m.error) { /* keep playing; the HTML error handler reports real failures */ }
+}
+function umsTrackLabel(t, all) {
+    const base = t.languageName ? t.languageName.split(/[;,]/)[0].trim() : (t.language ? resolveLanguage(t.language) : ('Track ' + (t.trackNum + 1)));
+    const same = all.filter(x => (x.languageName || x.language) === (t.languageName || t.language));
+    if (same.length > 1) return `${base} ${same.indexOf(t) + 1}`;
+    return base;
+}
+function umsAudioLabel(t, i) {
+    const lang = t.language ? resolveLanguage(t.language) : ('Track ' + (i + 1));
+    const ch = t.channels >= 6 ? '5.1' : t.channels === 2 ? 'Stereo' : t.channels === 1 ? 'Mono' : '';
+    return [lang, (t.codec || '').toUpperCase(), ch].filter(Boolean).join(' · ');
+}
+async function umsSelectSubtitle(trackNum) {
+    const u = vodPlay.ums; if (!u) return;
+    u.selectedSub = trackNum;
+    if (trackNum < 0) { await umsCall('setSubtitleEnable', { mediaId: u.mediaId, enable: false }); }
+    else {
+        await umsCall('selectTrack', { mediaId: u.mediaId, type: 'text', index: trackNum });
+        await umsCall('setSubtitleEnable', { mediaId: u.mediaId, enable: true });
+    }
+    updateVodTracksHint();
+}
+async function umsSelectAudio(index) {
+    const u = vodPlay.ums; if (!u) return;
+    u.selectedAudio = index;
+    await umsCall('selectTrack', { mediaId: u.mediaId, type: 'audio', index });
+    updateVodTracksHint();
 }
 
 function onVodError() {
