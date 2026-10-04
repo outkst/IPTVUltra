@@ -95,7 +95,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     // Pointer: a click on the live picture opens the player; Back closes it
     await page.evaluate(() => videoPlayer.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     await sleep(200);
-    check('clicking the live picture opens the player', await page.evaluate(() => livePlayer.active));
+    check('a single click on the live picture does nothing', await page.evaluate(() => !livePlayer.active));
+    await page.evaluate(() => videoPlayer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    await sleep(200);
+    check('double-clicking the live picture opens the player', await page.evaluate(() => livePlayer.active));
+    await page.evaluate(() => { hideVodOsd(); document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); });
+    check('moving the pointer in the player brings up the OSD', await page.evaluate(() => document.getElementById('vodOsd').classList.contains('visible')));
+    check('paused icon is the themed bars, not an emoji', await page.evaluate(() => document.querySelectorAll('#vodPaused .vod-paused-bars i').length === 2 && !/⏸/.test(document.getElementById('vodPaused').textContent)));
     await back(); await sleep(200);
     check('Back leaves the live player and returns to the guide', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode.id === 'epgVideoWrap'));
 
@@ -104,6 +110,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('minute tick runs without error', tickOk === true, String(tickOk));
     const roll = await page.evaluate(() => { const old = _epgSkeletonWinStart; _epgSkeletonWinStart = old - 3600000; epgMinuteTick(); return _epgSkeletonWinStart === old && epgRenderedRows.size > 0; });
     check('hour rollover rebuilds guide skeleton once', roll);
+    const nowLines = await page.evaluate(() => { const tm = document.getElementById('epgTimeMarks'); const line = tm.querySelector('.epg-now-line'); const before = line.style.left; line.style.left = '0px'; updateEPGNowMarker(); const expected = ((Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1) + 'px'; return { before, after: line.style.left, expected, full: document.querySelector('.epg-now-fullmarker').style.left }; });
+    check('minute tick moves the time-strip NOW line as well as the tall marker', nowLines.after === nowLines.expected && nowLines.full !== '', JSON.stringify(nowLines));
     check('programme blocks carry data-start/stop for tick updates', await page.evaluate(() => { const b = document.querySelector('#epgBody .epg-prog-block'); return !!b && !!b.dataset.start && !!b.dataset.stop; }));
 
     // EPG cache TTL: expire one visible channel and make sure it is re-queued
@@ -204,6 +212,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(200);
         check('OK pauses VOD playback', await page.evaluate(() => videoPlayer.paused && !document.getElementById('vodPaused').classList.contains('hidden')));
+        // Pointer: click at 75% of the timeline → seek there and play
+        await page.evaluate(() => { const bar = document.querySelector('#vodOsd .vod-bar'); const r = bar.getBoundingClientRect(); bar.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width * 0.75, clientY: r.top + r.height / 2 })); });
+        await sleep(300);
+        check('clicking the timeline at 75% seeks there and resumes', await page.evaluate(() => Math.abs(videoPlayer.currentTime - 15) < 1.5 && !videoPlayer.paused && document.getElementById('vodPaused').classList.contains('hidden')), await page.evaluate(() => videoPlayer.currentTime + ''));
+        await page.evaluate(() => { videoPlayer.pause(); });
         // Subtitles: simulate tracks announced by the file; English auto-selects per Settings default
         await page.evaluate(() => { for (const [l, n] of [['es', 'Spanish'], ['en', 'English']]) { const t = document.createElement('track'); t.kind = 'subtitles'; t.srclang = l; t.label = n; videoPlayer.appendChild(t); } });
         await sleep(300);
@@ -326,7 +339,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await sleep(100);
         check('picking Spanish calls selectTrack text index 3 and marks it manual', await page.evaluate(() => vodPlay.ums.selectedSub === 3 && vodPlay.subManual && window.__ums.calls.some(c => c[0] === 'selectTrack' && /"index":3/.test(c[1]))));
         const style = await page.evaluate(() => { const c = window.__ums.calls; const last = n => (c.filter(x => x[0] === n).pop() || [])[1] || ''; return { size: last('setSubtitleCharacterFontSize'), bg: last('setSubtitleBackgroundOpacity'), edge: last('setSubtitleCharacterEdge'), color: last('setSubtitleCharacterColor'), sync: last('setSubtitleSync') }; });
-        check('subtitle style applied after enabling: medium, grey (white @75% + gray), translucent, outline, sync 0', /"charFontSize":"medium"/.test(style.size) && /"charColor":"gray"/.test(style.color) && /"bgOpacity":50/.test(style.bg) && /"charEdgeType":"uniform"/.test(style.edge) && /"sync":0/.test(style.sync) && await page.evaluate(() => settings.subColor === 'gray' && window.__ums.calls.some(c => c[0] === 'setSubtitleCharacterOpacity' && /"charOpacity":75/.test(c[1]))), JSON.stringify(style));
+        check('subtitle style applied after enabling: medium, grey (white @85% + gray), translucent, outline, sync 0', /"charFontSize":"medium"/.test(style.size) && /"charColor":"gray"/.test(style.color) && /"bgOpacity":50/.test(style.bg) && /"charEdgeType":"uniform"/.test(style.edge) && /"sync":0/.test(style.sync) && await page.evaluate(() => settings.subColor === 'gray' && window.__ums.calls.some(c => c[0] === 'setSubtitleCharacterOpacity' && /"charOpacity":85/.test(c[1]))), JSON.stringify(style));
         await page.evaluate(() => { settingsRows().find(x => x.id === 'subBg').set('solid'); });
         await sleep(100);
         check('solid background sends opacity 100 then 255', await page.evaluate(() => { const o = window.__ums.calls.filter(c => c[0] === 'setSubtitleBackgroundOpacity').map(c => c[1]); return /"bgOpacity":255/.test(o[o.length - 1]) && /"bgOpacity":100/.test(o[o.length - 2]); }));
@@ -383,6 +396,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(() => { window.__ums.calls.length = 0; zapChannel(1); });
         await page.waitForFunction(() => liveUms && liveUms.subTracks.length === 4 && liveUms.selectedSub === 1, { timeout: 8000 });
         await sleep(300);
+        check('feed stats chip appears over the live picture when the pipeline describes the channel', await page.evaluate(() => { const c = document.getElementById('feedStats'); return !!c && c.classList.contains('visible') && /HEVC/.test(c.textContent) && c.parentNode.id === 'epgVideoWrap'; }), await page.evaluate(() => { const c = document.getElementById('feedStats'); return c ? c.className + ' ' + c.textContent : 'no chip'; }));
         check('live channel: pipeline subtitle tracks read and English selected automatically', await page.evaluate(() => window.__ums.calls.some(c => c[0] === 'selectTrack' && /"type":"text","index":1/.test(c[1])) && window.__ums.calls.some(c => c[0] === 'setSubtitleEnable')), await page.evaluate(() => JSON.stringify(window.__ums.calls.map(c => c[0] + ' ' + c[1]).slice(0, 12))));
         await page.evaluate(() => enterLivePlayer());
         await sleep(200);

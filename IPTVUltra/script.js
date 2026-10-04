@@ -1689,6 +1689,8 @@ function updateEPGNowMarker() {
     if (!fullMarker) return;
     const nowOffsetPx = ((Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
     fullMarker.style.left = `${timeMarks.offsetLeft + parseFloat(nowOffsetPx)}px`;
+    const stripLine = timeMarks.querySelector('.epg-now-line'); // the labelled NOW line in the time strip
+    if (stripLine) stripLine.style.left = `${nowOffsetPx}px`;
 }
 
 function rebuildEPGSkeleton(winStart, winEnd) {
@@ -3569,8 +3571,22 @@ function umsTechUpdated(u) {
         const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s;
         if (s && vodPlay.key) { vodTech[vodPlay.key] = s; const ks = Object.keys(vodTech); if (ks.length > 300) delete vodTech[ks[0]]; saveJson('iptv_vod_tech', vodTech); }
     } else if (u.kind === 'live' && liveUms === u) {
-        if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s; }
+        if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s; if (s) showVodOsd(); }
+        else if (s) showFeedStats(s);
     }
+}
+// Brief chip over the live picture (panel view) with the feed's codec/resolution/audio
+let _feedStatsTimer = null;
+function showFeedStats(text) {
+    if (vodMode !== 'live' || vodPlay.active || livePlayer.active || !text) return;
+    const wrap = (currentPlaylistType === 'xtream' && epgMode) ? document.getElementById('epgVideoWrap') : videoArea;
+    let chip = document.getElementById('feedStats');
+    if (!chip) { chip = document.createElement('div'); chip.id = 'feedStats'; chip.className = 'feed-stats'; }
+    if (chip.parentNode !== wrap) wrap.appendChild(chip);
+    chip.textContent = text;
+    chip.classList.add('visible');
+    if (_feedStatsTimer) clearTimeout(_feedStatsTimer);
+    _feedStatsTimer = setTimeout(() => chip.classList.remove('visible'), 4000);
 }
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the pipeline
 async function umsApplySubtitleStyle(u) {
@@ -3583,7 +3599,7 @@ async function umsApplySubtitleStyle(u) {
     const grey = settings.subColor === 'gray';
     await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: grey ? 'white' : settings.subColor });
     if (grey) await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: 'gray' });
-    await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: grey ? 75 : 100 });
+    await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: grey ? 85 : 100 });
     await umsCall('setSubtitleBackgroundColor', { mediaId: id, bgColor: 'black' });
     const bgOpacity = settings.subBg === 'none' ? 0 : settings.subBg === 'solid' ? 100 : 50;
     await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity });
@@ -4121,8 +4137,25 @@ if (vodNextPlayEl) vodNextPlayEl.addEventListener('click', () => { vodPlay.nextF
 if (vodNextCancelEl) vodNextCancelEl.addEventListener('click', () => { vodPlay.nextFocus = 'cancel'; activateVodNext(); });
 const vodPlayerEl = document.getElementById('vodPlayer');
 if (vodPlayerEl) {
-    vodPlayerEl.addEventListener('mousemove', () => { if (vodPlay.active) showVodOsd(); });
-    vodPlayerEl.addEventListener('click', e => { if (vodPlay.active && !e.target.closest('.vod-next') && !e.target.closest('.vod-tracks') && !e.target.closest('.vod-cc-btn')) toggleVodPause(); });
+    vodPlayerEl.addEventListener('mousemove', () => { if (playerActive()) showVodOsd(); });
+    vodPlayerEl.addEventListener('click', e => {
+        if (!playerActive() || e.target.closest('.vod-next') || e.target.closest('.vod-tracks') || e.target.closest('.vod-osd-btn') || e.target.closest('.vod-bar')) return;
+        if (vodPlay.active) toggleVodPause(); else toggleLivePause();
+    });
+    // Click on the timeline (VOD) jumps there and plays
+    const barEl = vodPlayerEl.querySelector('#vodOsd .vod-bar');
+    if (barEl) barEl.addEventListener('click', e => {
+        e.stopPropagation();
+        if (!vodPlay.active) return;
+        const r = barEl.getBoundingClientRect();
+        const f = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
+        const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) || vodPlay.dur || 0;
+        if (!dur) return;
+        try { videoPlayer.currentTime = f * dur; } catch (_) { /* not seekable yet */ }
+        videoPlayer.play().catch(() => {});
+        document.getElementById('vodPaused').classList.add('hidden');
+        showVodOsd();
+    });
 
 }
 videoPlayer.addEventListener('timeupdate', function () {
@@ -4174,7 +4207,12 @@ if (epgClearSearchBtn) {
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
-videoPlayer.addEventListener('loadedmetadata', function () { updateSubtitleButton(); updateAudioButton(); });
+videoPlayer.addEventListener('loadedmetadata', function () {
+    updateSubtitleButton(); updateAudioButton();
+    if (vodMode === 'live' && !vodPlay.active && !livePlayer.active) {
+        setTimeout(() => { if (!(liveUms && liveUms.video) && videoPlayer.videoWidth) showFeedStats(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`); }, 1500);
+    }
+});
 videoPlayer.addEventListener('error', function () {
     if (vodPlay.active) { if (videoPlayer.getAttribute('src')) onVodError(); return; }
     if (vodMode !== 'live') return; // live video is parked while browsing Movies/Series
@@ -4193,9 +4231,9 @@ videoArea.addEventListener('mousemove', showTopControls);
 videoArea.addEventListener('click', function (e) {
     if (subtitlePanelOpen && !subtitlePanel.contains(e.target) && e.target !== subtitleBtn) toggleSubtitlePanel();
     if (audioPanelOpen && !audioPanel.contains(e.target) && e.target !== audioBtn) toggleAudioPanel();
-    if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer();
 });
-if (epgVideoWrap) epgVideoWrap.addEventListener('click', function (e) { if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer(); });
+videoArea.addEventListener('dblclick', function (e) { if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer(); });
+if (epgVideoWrap) epgVideoWrap.addEventListener('dblclick', function (e) { if (e.target === videoPlayer && currentChannelIndex >= 0 && !livePlayer.active) enterLivePlayer(); });
 videoPlayer.textTracks.addEventListener('addtrack', function () {
     updateSubtitleButton();
     if (subtitlePanelOpen) buildSubtitlePanel();

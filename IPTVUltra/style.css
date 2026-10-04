@@ -2820,6 +2820,18 @@ video {
     background: rgba(255, 255, 255, 0.2);
     border-radius: 4px;
     position: relative;
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+/* generous hit area for the pointer without changing the drawn bar */
+.vod-bar::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -16px;
+    bottom: -16px;
 }
 
 .vod-bar-fill {
@@ -2855,15 +2867,30 @@ video {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(14, 16, 22, 0.86);
+    border: 2px solid #6c8eff;
+    box-shadow: 0 0 0 6px rgba(108, 142, 255, 0.25), 0 12px 40px rgba(0, 0, 0, 0.6);
     border-radius: 50%;
-    width: 5rem;
-    height: 5rem;
+    width: 5.2rem;
+    height: 5.2rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 2.4rem;
     pointer-events: none;
+    z-index: 4;
+}
+
+.vod-paused-bars {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.vod-paused-bars i {
+    display: block;
+    width: 0.62rem;
+    height: 1.9rem;
+    border-radius: 0.2rem;
+    background: #fff;
 }
 
 .vod-paused.hidden,
@@ -3046,4 +3073,32 @@ body.live-player #videoPlayer {
     color: #8b93a7;
     padding: 10px 18px 12px;
     border-top: 1px solid #262a33;
+}
+
+/* ----- Live feed stats chip (shown briefly when a channel loads, panel view) ----- */
+.feed-stats {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    background: rgba(14, 16, 22, 0.92);
+    border: 1px solid #2a2d3a;
+    border-left: 4px solid #6c8eff;
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #dde;
+    opacity: 0;
+    transition: opacity 0.25s;
+    pointer-events: none;
+    z-index: 18;
+    font-variant-numeric: tabular-nums;
+    max-width: 70%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.feed-stats.visible {
+    opacity: 1;
 }
