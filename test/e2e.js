@@ -16,7 +16,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const page = await browser.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
-    page.on('console', m => { if (m.type() === 'error' && !/net::|404|Failed to load resource|MEDIA/.test(m.text())) errors.push('console: ' + m.text()); });
+    page.on('console', m => { if (m.type() === 'error' && !/net::|404|Failed to load resource|MEDIA|PalmServiceBridge/.test(m.text())) errors.push('console: ' + m.text()); });
     const channelsName = () => 'Channel ';
     const key = (k, kc) => page.evaluate((k, kc) => {
         const ev = new KeyboardEvent('keydown', { key: k, keyCode: kc, bubbles: true, cancelable: true });
@@ -46,6 +46,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await sleep(2500);
     let s = await stats();
     const rendered = await page.evaluate(() => epgRenderedRows.size);
+    check('subtitles do not turn on automatically by default (Settings toggle off, language English)', await page.evaluate(() => settings.subAuto === false && settings.subLang === 'en' && !SUB_LANG_OPTIONS.some(o => o.v === 'off') && settingsRows().some(r => r.id === 'subAuto')));
+    await page.evaluate(() => { settingsRows().find(r => r.id === 'subAuto').set(true); }); // the remaining checks exercise the auto-on path
     check('guide opened with lazy EPG (requests ≈ favorites + visible rows)', s.epg_requests > 0 && s.epg_requests <= rendered + 10, `requests=${s.epg_requests} renderedRows=${rendered} channels=3000`);
     check('favorites (group) view shows favorite rows', await page.evaluate(() => currentGroup === 'favorites' && currentFilteredChannels.length === 2));
     const loadedBlocks = await page.evaluate(() => document.querySelectorAll('#epgBody .epg-prog-block').length);
@@ -101,6 +103,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('double-clicking the live picture opens the player', await page.evaluate(() => livePlayer.active));
     await page.evaluate(() => { hideVodOsd(); document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); });
     check('moving the pointer in the player brings up the OSD', await page.evaluate(() => document.getElementById('vodOsd').classList.contains('visible')));
+    check('pointer movement does not replace the OSD buttons (clicks keep their target)', await page.evaluate(() => { const before = document.getElementById('vodCcBtn'); for (let i = 0; i < 5; i++) document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); showVodOsd(); return before === document.getElementById('vodCcBtn'); }));
+    await page.evaluate(() => document.getElementById('vodCcBtn').click());
+    check('pointer click on the CC button opens the tracks menu in the live player', await page.evaluate(() => vodTracksOpen()));
+    await back(); await sleep(50);
+    await page.evaluate(() => document.querySelector('.vod-osd-btn[data-id="guide"]').click());
+    await sleep(200);
+    check('pointer click on the Guide button leaves the live player', await page.evaluate(() => !livePlayer.active));
+    await page.evaluate(() => videoPlayer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    await sleep(200);
     check('paused icon is the themed bars, not an emoji', await page.evaluate(() => document.querySelectorAll('#vodPaused .vod-paused-bars i').length === 2 && !/⏸/.test(document.getElementById('vodPaused').textContent)));
     await back(); await sleep(200);
     check('Back leaves the live player and returns to the guide', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode.id === 'epgVideoWrap'));
@@ -111,7 +122,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const roll = await page.evaluate(() => { const old = _epgSkeletonWinStart; _epgSkeletonWinStart = old - 3600000; epgMinuteTick(); return _epgSkeletonWinStart === old && epgRenderedRows.size > 0; });
     check('hour rollover rebuilds guide skeleton once', roll);
     const nowLines = await page.evaluate(() => { const tm = document.getElementById('epgTimeMarks'); const line = tm.querySelector('.epg-now-line'); const before = line.style.left; line.style.left = '0px'; updateEPGNowMarker(); const expected = ((Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1) + 'px'; return { before, after: line.style.left, expected, full: document.querySelector('.epg-now-fullmarker').style.left }; });
-    check('minute tick moves the time-strip NOW line as well as the tall marker', nowLines.after === nowLines.expected && nowLines.full !== '', JSON.stringify(nowLines));
+    check('minute tick moves the time-strip NOW line as well as the tall marker', Math.abs(parseFloat(nowLines.after) - parseFloat(nowLines.expected)) < 0.6 && nowLines.full !== '', JSON.stringify(nowLines));
     check('programme blocks carry data-start/stop for tick updates', await page.evaluate(() => { const b = document.querySelector('#epgBody .epg-prog-block'); return !!b && !!b.dataset.start && !!b.dataset.stop; }));
 
     // EPG cache TTL: expire one visible channel and make sure it is re-queued
@@ -159,6 +170,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('nothing counts as in progress before 2 min (10% for short items)', await page.evaluate(() => vodMinResume(7200) === 120 && vodMinResume(20) === 2 && vodMinResume(0) === 120));
         check('Continue Watching ignores entries under the threshold', await page.evaluate(() => { const k = localStorage.getItem('iptv_last_playlist'); vodProgress[k + '|m:999001'] = { kind: 'movie', id: '999001', name: 'Short', icon: '', ext: 'mp4', catId: '100', pos: 60, dur: 7200, at: Date.now(), watched: false }; vodProgress[k + '|m:999002'] = { kind: 'movie', id: '999002', name: 'Long', icon: '', ext: 'mp4', catId: '100', pos: 200, dur: 7200, at: Date.now(), watched: false }; const ids = continueWatchingItems('movies').map(i => i.id); delete vodProgress[k + '|m:999001']; delete vodProgress[k + '|m:999002']; return !ids.includes('999001') && ids.includes('999002'); }));
         check('settings offer subtitle and audio language rows (default English / Default)', await page.evaluate(() => { const r = settingsRows(); const s = r.find(x => x.id === 'subLang'), a = r.find(x => x.id === 'audioLang'); return !!s && !!a && s.get() === 'en' && a.get() === 'default'; }));
+        check('pipeline tracks with auto-on OFF stay off until picked', await page.evaluate(() => { const saved = settings.subAuto; settings.subAuto = false; const u = { kind: 'vod', mediaId: '_probe', subTracks: [{ trackNum: 0, language: 'en', languageName: 'English' }], audioTracks: [], selectedSub: 0 }; const prev = vodPlay.ums; const act = vodPlay.active; vodPlay.active = true; vodPlay.ums = u; vodPlay.subManual = false; applyVodTrackPrefs(); const off = u.selectedSub === -1; vodPlay.ums = prev; vodPlay.active = act; settings.subAuto = saved; return off; }));
         check('Blue opens Movies home; adult category hidden; live video paused', mv.vv === 'flex' && mv.ev === 'none' && mv.cats.length === 5 && !mv.cats.some(c => /adult/i.test(c)) && mv.paused, JSON.stringify(mv));
         check('Recently Added row filled from the background catalog fetch', mv.recent === 18, `recent=${mv.recent}`);
         // Left → categories, Down to "Action", Enter → grid

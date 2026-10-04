@@ -55,12 +55,12 @@ const SETTINGS_KEY = 'iptv_settings';
 const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
 const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
 const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
-const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'gray', subBg: 'translucent', subEdge: 'outline', schema: 2 };
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'gray', subBg: 'translucent', subEdge: 'outline', subAuto: false, schema: 3 };
 const SUB_SIZE_OPTIONS = [{ v: 'small', label: 'Small' }, { v: 'medium', label: 'Medium' }, { v: 'large', label: 'Large' }, { v: 'extraLarge', label: 'Extra large' }];
 const SUB_COLOR_OPTIONS = [{ v: 'gray', label: 'Grey' }, { v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
 const SUB_BG_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'translucent', label: 'Translucent' }, { v: 'solid', label: 'Solid black' }];
 const SUB_EDGE_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'outline', label: 'Outline' }, { v: 'shadow', label: 'Shadow' }];
-const SUB_LANG_OPTIONS = [{ v: 'off', label: 'Off' }, { v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }, { v: 'any', label: 'First available' }];
+const SUB_LANG_OPTIONS = [{ v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }, { v: 'any', label: 'First available' }];
 const AUDIO_LANG_OPTIONS = [{ v: 'default', label: 'Default' }, { v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }];
 let settings = loadSettings();          // global: textScale, clock, autoLoad
 let playlistState = loadPlaylistState(); // per playlist key: startGroup, resume, lastChannel, lastGroup
@@ -3217,14 +3217,24 @@ function renderPlayerButtons() {
     let idx = btns.findIndex(b => b.id === keep);
     if (idx < 0) idx = btns.findIndex(b => b.id === 'cc');
     player.btn = Math.max(0, idx);
-    box.innerHTML = '';
-    btns.forEach((b, i) => {
-        const el = document.createElement('button');
-        el.className = 'vod-osd-btn' + (b.id === 'cc' ? ' vod-cc-btn' : '');
-        if (b.id === 'cc') el.id = 'vodCcBtn';
-        el.textContent = b.label;
-        el.addEventListener('click', e => { e.stopPropagation(); player.btn = i; b.act(); });
-        box.appendChild(el);
+    // Rebuild only when the set of buttons changes. The pointer's mousemove calls this constantly;
+    // replacing the elements under the Magic Remote cursor made clicks land on nothing.
+    const sig = btns.map(b => b.id).join(',');
+    if (box.dataset.sig !== sig || box.children.length !== btns.length) {
+        box.innerHTML = '';
+        btns.forEach(b => {
+            const el = document.createElement('button');
+            el.className = 'vod-osd-btn' + (b.id === 'cc' ? ' vod-cc-btn' : '');
+            el.dataset.id = b.id;
+            if (b.id === 'cc') el.id = 'vodCcBtn';
+            box.appendChild(el);
+        });
+        box.dataset.sig = sig;
+    }
+    Array.from(box.children).forEach((el, i) => {
+        const b = btns[i];
+        if (el.textContent !== b.label) el.textContent = b.label;
+        el.onclick = e => { e.stopPropagation(); player.btn = i; b.act(); };
     });
     updatePlayerFocus();
 }
@@ -3335,8 +3345,10 @@ function applyVodTrackPrefs() {
         if (!vodPlay.subManual) {
             const pref = settings.subLang;
             let chosen = null;
-            if (pref === 'any') chosen = u.subTracks[0];
-            else if (pref !== 'off') chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+            if (settings.subAuto) {
+                if (pref === 'any') chosen = u.subTracks[0];
+                else chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+            }
             umsSelectSubtitle(chosen ? chosen.trackNum : -1);
         }
         if (u.audioTracks.length > 1 && !vodPlay.audioManual && settings.audioLang !== 'default') {
@@ -3350,8 +3362,10 @@ function applyVodTrackPrefs() {
     if (subs.length && !vodPlay.subManual) {
         const pref = settings.subLang;
         let chosen = null;
-        if (pref === 'any') chosen = subs[0];
-        else if (pref !== 'off') chosen = subs.find(t => trackMatchesLang(t, pref)) || null;
+        if (settings.subAuto) {
+            if (pref === 'any') chosen = subs[0];
+            else chosen = subs.find(t => trackMatchesLang(t, pref)) || null;
+        }
         subs.forEach(t => { const want = t === chosen ? 'showing' : 'disabled'; if (t.mode !== want) t.mode = want; });
     }
     const auds = getAudioTracks();
@@ -3528,14 +3542,21 @@ function umsOnMessage(u, m) {
     if (techChanged) umsTechUpdated(u);
     if (m.error) { /* keep playing; the HTML error handler reports real failures */ }
 }
+// Re-apply the subtitle preferences to whatever is playing (Settings changed)
+function reapplySubtitlePrefs() {
+    if (vodPlay.active) { vodPlay.subManual = false; applyVodTrackPrefs(); }
+    else if (liveUms) { liveUms.subManual = false; applyLiveTrackPrefs(liveUms); }
+}
 // Live: same subtitle/audio language preferences as VOD, applied to the live pipeline unless chosen manually
 function applyLiveTrackPrefs(u) {
     if (!u || u.subManual) { if (u && u.audioTracks.length > 1 && !u.audioManual && settings.audioLang !== 'default') { const i = u.audioTracks.findIndex(t => trackMatchesLang({ language: t.language, label: '' }, settings.audioLang)); if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i, u); } return; }
     if (u.subTracks.length) {
         const pref = settings.subLang;
         let chosen = null;
-        if (pref === 'any') chosen = u.subTracks[0];
-        else if (pref !== 'off') chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+        if (settings.subAuto) {
+            if (pref === 'any') chosen = u.subTracks[0];
+            else chosen = u.subTracks.find(t => trackMatchesLang({ language: t.language, label: t.languageName }, pref)) || null;
+        }
         umsSelectSubtitle(chosen ? chosen.trackNum : -1, u);
     }
     if (u.audioTracks.length > 1 && !u.audioManual && settings.audioLang !== 'default') {
@@ -3713,6 +3734,9 @@ function loadSettings() {
     if (!AUDIO_LANG_OPTIONS.some(o => o.v === out.audioLang)) out.audioLang = DEFAULT_SETTINGS.audioLang;
     for (const [k, opts] of [['subSize', SUB_SIZE_OPTIONS], ['subColor', SUB_COLOR_OPTIONS], ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS]]) if (!opts.some(o => o.v === out[k])) out[k] = DEFAULT_SETTINGS[k];
     if (!(st.schema >= 2)) { out.subColor = 'gray'; out.schema = 2; } // one-time switch of the default colour to Grey (v3.6.0)
+    if (!(st.schema >= 3)) { out.subAuto = false; out.schema = 3; }  // v3.8.0: subtitles no longer turn on by themselves unless asked
+    out.subAuto = !!out.subAuto;
+    if (out.subLang === 'off') out.subLang = 'en';
     return out;
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
@@ -3787,8 +3811,10 @@ function settingsRows() {
           get: () => (ps && ps.startGroup) || 'favorites', set: v => { ps.startGroup = v; savePlaylistState(); } },
         { id: 'resume', type: 'toggle', label: 'Resume last channel', sub: forName, disabled: !t,
           get: () => !ps || ps.resume !== false, set: v => { ps.resume = v; savePlaylistState(); } },
-        { id: 'subLang', type: 'choice', label: 'Subtitles', sub: 'Movies and Series: turned on automatically when the file has them',
-          options: SUB_LANG_OPTIONS, get: () => settings.subLang, set: v => { settings.subLang = v; saveSettings(); if (vodPlay.active) { vodPlay.subManual = false; applyVodTrackPrefs(); } } },
+        { id: 'subAuto', type: 'toggle', label: 'Subtitles on automatically', sub: 'Turn on the subtitle language below whenever a file or channel has it',
+          get: () => !!settings.subAuto, set: v => { settings.subAuto = v; saveSettings(); reapplySubtitlePrefs(); } },
+        { id: 'subLang', type: 'choice', label: 'Subtitle language', sub: 'Used when subtitles turn on automatically',
+          options: SUB_LANG_OPTIONS, get: () => settings.subLang, set: v => { settings.subLang = v; saveSettings(); reapplySubtitlePrefs(); } },
         { id: 'audioLang', type: 'choice', label: 'Audio language', sub: 'Movies and Series: picked when the file offers it',
           options: AUDIO_LANG_OPTIONS, get: () => settings.audioLang, set: v => { settings.audioLang = v; saveSettings(); if (vodPlay.active) { vodPlay.audioManual = false; applyVodTrackPrefs(); } } },
         { id: 'subSize', type: 'choice', label: 'Subtitle size', sub: 'Movies and Series', options: SUB_SIZE_OPTIONS, get: () => settings.subSize, set: v => { settings.subSize = v; saveSettings(); umsApplySubtitleStyle(); } },
@@ -4137,7 +4163,14 @@ if (vodNextPlayEl) vodNextPlayEl.addEventListener('click', () => { vodPlay.nextF
 if (vodNextCancelEl) vodNextCancelEl.addEventListener('click', () => { vodPlay.nextFocus = 'cancel'; activateVodNext(); });
 const vodPlayerEl = document.getElementById('vodPlayer');
 if (vodPlayerEl) {
-    vodPlayerEl.addEventListener('mousemove', () => { if (playerActive()) showVodOsd(); });
+    vodPlayerEl.addEventListener('mousemove', () => {
+        if (!playerActive()) return;
+        const osd = document.getElementById('vodOsd');
+        if (!osd.classList.contains('visible')) { showVodOsd(); return; }
+        // already visible: just extend the hide timer
+        if (vodPlay.osdTimer) clearTimeout(vodPlay.osdTimer);
+        vodPlay.osdTimer = setTimeout(() => { if (videoPlayer.paused) return; osd.classList.remove('visible'); player.focus = 'bar'; updatePlayerFocus(); }, 3000);
+    });
     vodPlayerEl.addEventListener('click', e => {
         if (!playerActive() || e.target.closest('.vod-next') || e.target.closest('.vod-tracks') || e.target.closest('.vod-osd-btn') || e.target.closest('.vod-bar')) return;
         if (vodPlay.active) toggleVodPause(); else toggleLivePause();
