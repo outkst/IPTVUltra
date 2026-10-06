@@ -105,6 +105,13 @@
 		</div>
 
 		<!-- Settings Overlay -->
+		<div id="catsOverlay" class="settings-overlay hidden">
+			<div class="settings-card" role="dialog" aria-label="Manage categories">
+				<div class="settings-title">📁 Manage categories</div>
+				<div id="catsList" class="settings-list"></div>
+				<div class="settings-footer"><span class="settings-hint">OK hide / show · ◀ ▶ or Red / Green move · Back close</span></div>
+			</div>
+		</div>
 		<div id="settingsOverlay" class="settings-overlay hidden">
 			<div class="settings-card" role="dialog" aria-label="Settings">
 				<div class="settings-title">⚙️ Settings</div>
@@ -227,7 +234,7 @@
 							<div id="epgTimeStrip" class="epg-time-strip">
 								<div id="epgChCorner" class="epg-ch-corner">
 							<div class="epg-corner-search">
-								<input type="text" id="epgSearchInput" class="epg-corner-search-input" placeholder="Search…">
+								<input type="text" id="epgSearchInput" class="epg-corner-search-input" placeholder="Search channels or what’s on…">
 								<button id="epgClearSearchBtn" class="epg-corner-clear-btn">✕</button>
 							</div>
 							<div id="epgCornerGroupsBtn"></div>

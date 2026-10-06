@@ -71,6 +71,61 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('scrolling 40 rows fetched a bounded number of EPGs', s.epg_requests > 0 && s.epg_requests < 70, `requests=${s.epg_requests}`);
     const focusedVisible = await page.evaluate(() => { const el = epgRenderedRows.get(epgFocusedRowIdx); return !!el && el.classList.contains('epg-focused'); });
     check('focused row is rendered and highlighted after scrolling', focusedVisible);
+
+    // ---------- Catch-up: archive channel, programme cursor into the past, OK plays the timeshift stream ----------
+    await page.evaluate(() => { epgFocusedRowIdx = 49; updateEPGRowFocus(); }); // Channel 00050: 3-day archive in the mock
+    await page.waitForFunction(() => epgData.has('ch50.test'), { timeout: 10000 }).catch(() => {});
+    await sleep(200);
+    const win = await page.evaluate(() => ({ past: epgPastHours(), winH: EPG_WIN_HOURS, archive: currentFilteredChannels[49].archive, num: currentFilteredChannels[49].num, dayLabels: document.querySelectorAll('.epg-day-label').length, cursor: !!document.querySelector('.epg-row.epg-focused .epg-block-focused.now-playing') }));
+    check('guide window spans 72 h back for a playlist with archive channels; day labels; cursor on the current programme', win.past === 72 && win.winH === 78 && win.archive === 3 && win.num === 50 && win.dayLabels >= 3 && win.cursor, JSON.stringify(win));
+    await key('ArrowLeft', 37); await key('ArrowLeft', 37); await sleep(100);
+    await page.waitForFunction(() => _epgFullFetched.has('ch50.test') && (epgData.get('ch50.test') || []).some(p => p.hasArchive === true), { timeout: 10000 }).catch(() => {});
+    await sleep(150);
+    const cur = await page.evaluate(() => { const p = epgFocusedProg(); const b = document.querySelector('.epg-row.epg-focused .epg-block-focused'); return { past: !!p && p.stop <= Date.now(), catchup: !!b && b.classList.contains('catchup'), hist: (epgData.get('ch50.test') || []).filter(p => p.stop <= Date.now()).length, x: _epgX }; });
+    check('Left moves the programme cursor into the past; history arrives from get_simple_data_table; block marked as catch-up', cur.past && cur.catchup && cur.hist > 10, JSON.stringify(cur));
+    await key('Enter', 13); await sleep(400);
+    const cu = await page.evaluate(() => ({ active: !!catchup, player: livePlayer.active, src: videoPlayer.getAttribute('src') || '', title: document.getElementById('vodOsdTitle').textContent, btn: player.btns.map(b => b.id).join(), tz: _xt.tz, pos: document.getElementById('vodTimePos').textContent }));
+    check('OK on a past programme plays the provider timeshift stream in the live player, banner in catch-up mode', cu.active && cu.player && /\/timeshift\/user\/pass\/30\/\d{4}-\d{2}-\d{2}:\d{2}-\d{2}\/50\.ts$/.test(cu.src) && /Catch-up/.test(cu.title) && /^live,/.test(cu.btn) && cu.tz === 'Europe/Amsterdam' && /^\d+:\d{2}$/.test(cu.pos), JSON.stringify(cu));
+    const tsStats = await stats();
+    check('timeshift stream was requested from the provider', tsStats.timeshift_requests >= 1 && /\/timeshift\//.test(tsStats.last_timeshift || ''), JSON.stringify({ n: tsStats.timeshift_requests, last: tsStats.last_timeshift }));
+    await page.evaluate(() => catchupBackToLive()); await sleep(300);
+    check('Back to live returns to the channel\'s live stream', await page.evaluate(() => !catchup && /\/live\/user\/pass\/50\.m3u8$/.test(videoPlayer.getAttribute('src') || '') && currentChannelIndex === getChannelIndex(currentFilteredChannels[49])));
+    await back(); await back(); await sleep(200); // banner, then leave the player
+    check('left the player after catch-up; guide visible', await page.evaluate(() => !livePlayer.active && epgMode));
+
+    // ---------- Direct channel number entry: digits select the provider channel number ----------
+    await key('5', 53); await key('1', 49);
+    check('digits show in the number overlay', await page.evaluate(() => { const o = document.getElementById('chNumOverlay'); return !!o && o.textContent === '51' && o.classList.contains('typing'); }));
+    await sleep(2300);
+    const dig = await page.evaluate(() => ({ idx: currentChannelIndex, num: channels[currentChannelIndex] && channels[currentChannelIndex].num, name: channels[currentChannelIndex] && channels[currentChannelIndex].name, focus: epgFocusedRowIdx, overlay: document.getElementById('chNumOverlay').textContent }));
+    check('after 2 s the typed number selects provider channel 51 and moves the guide cursor there', dig.num === 51 && dig.name === 'Channel 00051' && dig.focus === 50 && /51/.test(dig.overlay), JSON.stringify(dig));
+    await key('9', 57); await key('9', 57); await key('9', 57); await key('9', 57); await key('9', 57);
+    await sleep(100);
+    check('a number with no channel reports it and keeps the current channel', await page.evaluate(() => /no such channel/.test(document.getElementById('chNumOverlay').textContent) && channels[currentChannelIndex].num === 51));
+
+    // ---------- Search also matches what is on now (programme titles from loaded EPG) ----------
+    await page.evaluate(() => { const si = document.getElementById('epgSearchInput'); si.value = 'Show 3-1'; si.dispatchEvent(new Event('input', { bubbles: true })); });
+    await sleep(400);
+    const srch = await page.evaluate(() => ({ n: currentFilteredChannels.length, first: currentFilteredChannels[0] && currentFilteredChannels[0].name, prog: (getCurrentProgramme('ch3.test') || {}).title }));
+    check('searching a programme title finds the channel airing it now', srch.first === 'Channel 00003' && srch.prog === 'Show 3-1', JSON.stringify(srch));
+    await page.evaluate(() => { document.getElementById('epgClearSearchBtn').click(); });
+    await sleep(300);
+
+    // ---------- Categories manager: hide and reorder, persisted per playlist ----------
+    await page.evaluate(() => { settingsRows().find(r => r.id === 'manageCats').run(); });
+    check('Manage categories opens with the groups of the playlist', await page.evaluate(() => catsOpen && !document.getElementById('catsOverlay').classList.contains('hidden') && document.querySelectorAll('#catsList .cats-row').length === 30));
+    await key('Enter', 13); // hide the focused (first) group
+    await key('ArrowDown', 40); await key('ArrowRight', 39); // move the second group one step down
+    const catsSt = await page.evaluate(() => ({ hidden: [..._hiddenGroups], order: _groupOrder.slice(0, 3), saved: getPlaylistState(_activePlaylistKey).hiddenGroups }));
+    await back(); await sleep(300);
+    const catsAfter = await page.evaluate(() => ({ open: catsOpen, groups: groupsList.slice(0, 4), hiddenInAll: currentGroup === 'all' && currentFilteredChannels.some(ch => ch.group === 'Group 01'), total: currentFilteredChannels.length }));
+    check('hidden group leaves the list and All Channels; order change applied and saved', catsSt.hidden.length === 1 && catsSt.hidden[0] === 'Group 01' && catsSt.saved[0] === 'Group 01' && catsSt.order[0] === 'Group 01' && catsSt.order[1] === 'Group 03' && catsSt.order[2] === 'Group 02' && !catsAfter.open && !catsAfter.groups.includes('Group 01') && catsAfter.groups[2] === 'Group 03' && !catsAfter.hiddenInAll && catsAfter.total === 2900, JSON.stringify({ catsSt, catsAfter }));
+    await page.evaluate(() => { openCatsManager(); catsFocus = 0; catsToggleHidden(); closeCatsManager(); }); // restore for the rest of the suite
+    await sleep(300);
+    check('unhiding restores the group and its channels', await page.evaluate(() => groupsList.includes('Group 01') && currentFilteredChannels.length === 3000));
+
+    await page.evaluate(() => { epgFocusedRowIdx = 40; epgFocusT = 0; updateEPGRowFocus(); });
+    await sleep(200);
     // Enter on a scrolled row must select that channel (old DOM-index lookup broke this)
     const before = await page.evaluate(() => currentChannelIndex);
     await key('Enter', 13);
@@ -116,6 +171,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await page.evaluate(() => videoPlayer.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
     await sleep(200);
     check('paused icon is the themed bars, not an emoji', await page.evaluate(() => document.querySelectorAll('#vodPaused .vod-paused-bars i').length === 2 && !/⏸/.test(document.getElementById('vodPaused').textContent)));
+    await back(); await sleep(100);
+    check('Back with the live banner up hides the banner first', await page.evaluate(() => livePlayer.active && !document.getElementById('vodOsd').classList.contains('visible')));
     await back(); await sleep(200);
     check('Back leaves the live player and returns to the guide', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode.id === 'epgVideoWrap'));
 
@@ -250,8 +307,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(100);
         check('Up Up OK picks Off: all subtitle tracks disabled, manual choice remembered', await page.evaluate(() => getSubtitleTracks().every(t => t.mode === 'disabled') && vodPlay.subManual && /Subtitles: Off/.test(document.getElementById('vodOsdTracks').textContent)));
+        // Pointer OK on a menu row (a real click that bubbles to the player) must not toggle pause
+        check('clicking a tracks-menu row does not pause the video', await page.evaluate(() => { const p = videoPlayer.paused; const row = document.querySelector('.vod-track'); row.click(); return vodTracksOpen() && videoPlayer.paused === p; }));
+        check('clicking outside the menu while it is open closes it without pausing', await page.evaluate(() => { const p = videoPlayer.paused; document.getElementById('vodPlayer').click(); return !vodTracksOpen() && videoPlayer.paused === p; }));
+        await page.evaluate(() => openVodTracks());
         await back();
         check('Back closes the tracks menu but keeps the player', await page.evaluate(() => !vodTracksOpen() && vodPlay.active));
+        check('OSD is up after the menu closed', await page.evaluate(() => document.getElementById('vodOsd').classList.contains('visible')));
+        await back();
+        check('Back with the OSD up hides the OSD and stays in the player', await page.evaluate(() => vodPlay.active && !document.getElementById('vodOsd').classList.contains('visible')));
         await back();
         await sleep(300);
         const afterBack = await page.evaluate(() => ({ screen: vodNav.screen, playerHidden: document.getElementById('vodPlayer').classList.contains('hidden'), slot: videoPlayer.parentNode.id, controls: videoPlayer.hasAttribute('controls'), btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, prog: Object.values(vodProgress).filter(p => p.kind === 'movie').length, stored: !!localStorage.getItem('iptv_vod_progress') }));
@@ -412,6 +476,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await back();
         check('Back closes Settings and keeps playing', await page.evaluate(() => !settingsOpen && vodPlay.active));
         await back();
+        if (await page.evaluate(() => vodPlay.active)) await back(); // first Back only hides the OSD when it is up
         await sleep(200);
         check('stopping playback cancels the pipeline subscription', await page.evaluate(() => window.__ums.cancelled === true && vodPlay.ums === null));
         check('details page shows the stored codec line for the last played episode', await page.evaluate(() => /HEVC · 10-bit/.test(document.querySelector('.vod-dmeta').textContent)), await page.evaluate(() => JSON.stringify({ meta: document.querySelector('.vod-dmeta') && document.querySelector('.vod-dmeta').textContent, screen: vodNav.screen, techKeys: Object.keys(vodTech), last: lastEpisodeEntry(vodNav.detail.item.id) && lastEpisodeEntry(vodNav.detail.item.id).epId })));
@@ -433,8 +498,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(d, 'keyCode', { get: () => 13 }); document.dispatchEvent(d); const u = new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, bubbles: true }); Object.defineProperty(u, 'keyCode', { get: () => 13 }); document.dispatchEvent(u); });
         await sleep(50);
         check('live: picking Off disables subtitles on the live pipeline and is remembered as manual', await page.evaluate(() => liveUms.selectedSub === -1 && liveUms.subManual && /"enable":false/.test((window.__ums.calls.filter(c => c[0] === 'setSubtitleEnable').pop() || [])[1])));
-        await back(); await back(); await sleep(200);
-        check('Back closes the menu, Back leaves the live player', await page.evaluate(() => !livePlayer.active && !vodTracksOpen()));
+        await back(); await back();
+        check('live: Back closes the menu, Back hides the banner, player stays', await page.evaluate(() => livePlayer.active && !vodTracksOpen() && !document.getElementById('vodOsd').classList.contains('visible')));
+        await back(); await sleep(200);
+        check('live: Back with the banner hidden leaves the live player', await page.evaluate(() => !livePlayer.active && !vodTracksOpen()));
         await page.evaluate(() => { setVodMode('series'); });
         await page.waitForFunction(() => vodMode === 'series' && vodNav.screen === 'home', { timeout: 8000 });
         await page.evaluate(() => { document.querySelectorAll('#groupsList .group-item')[0].click(); });
@@ -490,6 +557,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('standard view: Enter plays focused channel', await page.evaluate(() => currentChannelIndex === getChannelIndex(currentFilteredChannels[2]) && renderedItems.get(2).classList.contains('active')));
     await key('Enter', 13); await sleep(200);
     check('standard view: Enter on the playing row opens the live player', await page.evaluate(() => livePlayer.active && videoPlayer.parentNode === videoArea && player.btns.map(b => b.id).join() === 'cc,guide,settings' && /Channels/.test(player.btns[1].label)));
+    await back(); await sleep(100);
+    check('standard view: Back hides the live banner first', await page.evaluate(() => livePlayer.active && !document.getElementById('vodOsd').classList.contains('visible')));
     await back(); await sleep(200);
     check('Back returns the video to the channel-list layout', await page.evaluate(() => !livePlayer.active && videoPlayer.parentNode === videoArea && stdFocusIdx === 2));
     await key('ArrowLeft', 37);
@@ -525,7 +594,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('clock Left → 12-hour', await page.evaluate(() => settings.clock === '12' && /[AP]M$/.test(formatClock(Date.now()))));
     await key('ArrowDown', 40); await key('Enter', 13); await sleep(100);
     check('auto-load toggle Enter → On, persisted', await page.evaluate(() => settings.autoLoad === true && JSON.parse(localStorage.getItem('iptv_settings')).autoLoad === true));
-    check('per-playlist rows disabled for the demo', await page.evaluate(() => [...document.querySelectorAll('.settings-row')].filter(r => r.classList.contains('disabled')).map(r => r.dataset.id).join(',') === 'startGroup,resume'));
+    check('per-playlist rows disabled for the demo', await page.evaluate(() => [...document.querySelectorAll('.settings-row')].filter(r => r.classList.contains('disabled')).map(r => r.dataset.id).join(',') === 'startGroup,resume,manageCats,refreshPlaylist')); // the demo has no per-playlist state, cache or categories
     await back();
     check('Back closes settings', await page.evaluate(() => !settingsOpen && document.getElementById('settingsOverlay').classList.contains('hidden')));
     await key('ColorF2Yellow', 405);
@@ -582,6 +651,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await sleep(500);
     const al = await page.evaluate(() => ({ type: currentPlaylistType, group: currentGroup, idx: currentChannelIndex, name: channels[currentChannelIndex] && channels[currentChannelIndex].name, focus: epgFocusedRowIdx, rowOk: !!epgRenderedRows.get(epgFocusedRowIdx) && epgRenderedRows.get(epgFocusedRowIdx).classList.contains('epg-focused') }));
     check('auto-load relaunch opens the last playlist in the guide', al.type === 'xtream', JSON.stringify(al));
+    // ---------- Local cache: the relaunch came from IndexedDB, with last session's EPG restored ----------
+    const cacheInfo = await page.evaluate(async () => {
+        const rec = await cacheGet('playlists', localStorage.getItem('iptv_last_playlist'));
+        const restored = [..._epgFetchMeta.values()].filter(m => m.status === 'done' && m.at < performance.timeOrigin).length;
+        return { has: !!rec && Array.isArray(rec.channels) && rec.channels.length === channels.length, at: rec && rec.at, cacheAt: _playlistCacheAt, restored, epg: epgData.size, num: channels[0].num, archive: channels[0].archive };
+    });
+    check('relaunch applied the cached channel list and restored cached EPG entries', cacheInfo.has && cacheInfo.cacheAt > 0 && cacheInfo.cacheAt === cacheInfo.at && cacheInfo.restored > 0 && cacheInfo.epg >= cacheInfo.restored && typeof cacheInfo.num === 'number' && typeof cacheInfo.archive === 'number', JSON.stringify(cacheInfo));
+    // Background refresh: an unchanged list is a no-op; a changed one is swapped in place with the playing channel kept
+    const refresh = await page.evaluate(async () => {
+        const before = currentChannelIndex;
+        const unchanged = await refreshPlaylistInBackground(true);
+        channels[5].name = 'LOCALLY EDITED'; channels[5].group = 'Nowhere';
+        const changed = await refreshPlaylistInBackground(true);
+        return { unchanged, changed, name: channels[5].name, idx: currentChannelIndex, before, toast: document.getElementById('epgToastMsg').textContent, groups: groupsList.includes('Nowhere') };
+    });
+    check('background refresh: no-op when unchanged, in-place swap when the provider list differs', refresh.unchanged === false && refresh.changed === true && /^Channel/.test(refresh.name) && refresh.idx === refresh.before && /Playlist updated/.test(refresh.toast) && !refresh.groups, JSON.stringify(refresh));
+    check('Settings offers Refresh playlist now for a loaded playlist', await page.evaluate(() => { const r = settingsRows().find(x => x.id === 'refreshPlaylist'); return !!r && !r.disabled && /fetched/.test(r.sub); }));
     check('starting group "All Channels" applied', al.group === 'all');
     check('resumes last channel and focuses its row', al.name === 'Channel 01234' && al.focus === 1233 && al.rowOk, JSON.stringify(al));
     await page.click('#epgSettingsBtn');

@@ -16,8 +16,27 @@ CATS = [{'category_id': str(i), 'category_name': f'Group {i:02d}'} for i in rang
 STREAMS = [{
     'num': i, 'name': f'Channel {i:05d}', 'stream_type': 'live', 'stream_id': i,
     'stream_icon': '', 'epg_channel_id': f'ch{i}.test' if i % 7 else '',
-    'category_id': str((i % 30) + 1), 'tv_archive': 0,
-} for i in range(1, N_CHANNELS + 1)]
+    'category_id': str((i % 30) + 1), 'tv_archive': 1 if i % 50 == 0 else 0, 'tv_archive_duration': 3 if i % 50 == 0 else 0,
+} for i in range(1, N_CHANNELS + 1)]  # every 50th channel offers a 3-day catch-up archive
+
+def simple_data_table(stream_id):
+    # Full table: 48 h of history plus the same future as the short EPG, half-hour slots, has_archive on past items
+    import base64
+    now = int(time.time())
+    first = now - (now % 1800) - 48 * 3600
+    out = []
+    k = 0
+    for s in range(first, now + 6 * 3600, 1800):
+        out.append({
+            'id': f'{stream_id}-full-{k}', 'epg_id': '1', 'lang': '',
+            'title': base64.b64encode(f'Show {stream_id}-{k}'.encode()).decode(),
+            'description': base64.b64encode(f'Description for show {k} on channel {stream_id}'.encode()).decode(),
+            'start': time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(s)), 'end': time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(s + 1800)),
+            'channel_id': f'ch{stream_id}.test', 'start_timestamp': str(s), 'stop_timestamp': str(s + 1800),
+            'now_playing': 1 if s <= now < s + 1800 else 0, 'has_archive': 1 if s + 1800 <= now else 0,
+        })
+        k += 1
+    return {'epg_listings': out}
 
 def short_epg(stream_id, limit):
     now = int(time.time())
@@ -97,6 +116,11 @@ class H(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(u.query)
+        if u.path.startswith('/timeshift/'):
+            with lock:
+                stats['timeshift_requests'] = stats.get('timeshift_requests', 0) + 1
+                stats['last_timeshift'] = u.path
+            return self.send_clip()
         if u.path.startswith('/movie/') or u.path.startswith('/series/'):
             with lock:
                 stats['media_requests'] = stats.get('media_requests', 0) + 1
@@ -109,13 +133,14 @@ class H(http.server.SimpleHTTPRequestHandler):
             with lock:
                 stats['epg_requests'] = 0; stats['epg_stream_ids'] = []
                 stats['vod_requests'] = 0; stats['vod_actions'] = []; stats['media_requests'] = 0
+                stats['timeshift_requests'] = 0; stats['full_epg_requests'] = 0
             return self.send_json({'ok': True})
         if u.path == '/player_api.php':
             if q.get('username', [''])[0] != 'user' or q.get('password', [''])[0] != 'pass':
                 return self.send_json({'user_info': {'auth': 0}})
             action = q.get('action', [''])[0]
             if action == '':
-                return self.send_json({'user_info': {'auth': 1, 'username': 'user', 'status': 'Active'}, 'server_info': {}})
+                return self.send_json({'user_info': {'auth': 1, 'username': 'user', 'status': 'Active'}, 'server_info': {'timezone': 'Europe/Amsterdam'}})
             if action == 'get_live_categories':
                 return self.send_json(CATS)
             if action == 'get_live_streams':
@@ -139,12 +164,17 @@ class H(http.server.SimpleHTTPRequestHandler):
                                            'movie_data': {'stream_id': vid, 'name': v['name'], 'container_extension': 'mp4', 'category_id': v['category_id']}})
                 if action == 'get_series_info':
                     return self.send_json(series_info(int(q.get('series_id', ['0'])[0])))
+            if action == 'get_simple_data_table':
+                sid = int(q.get('stream_id', ['0'])[0])
+                with lock:
+                    stats['full_epg_requests'] = stats.get('full_epg_requests', 0) + 1
+                return self.send_json(simple_data_table(sid))
             if action == 'get_short_epg':
                 sid = int(q.get('stream_id', ['0'])[0]); limit = int(q.get('limit', ['4'])[0])
                 with lock:
                     stats['epg_requests'] += 1; stats['epg_stream_ids'].append(sid)
-                if sid % 5 == 0:
-                    return self.send_json({'epg_listings': []})  # some channels have no EPG
+                if sid % 5 == 0 and sid % 50 != 0:
+                    return self.send_json({'epg_listings': []})  # some channels have no EPG (archive channels always do)
                 return self.send_json(short_epg(sid, limit))
             return self.send_json({})
         return super().do_GET()

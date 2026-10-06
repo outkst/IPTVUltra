@@ -1173,6 +1173,51 @@ body {
     border-color: #6c8eff;
 }
 
+/* Programmes that already aired: dimmed; replayable from the provider archive: normal, with a marker */
+.epg-prog-block.past {
+    opacity: 0.45;
+}
+
+.epg-prog-block.past.catchup {
+    opacity: 1;
+    border-color: #4a6a9a; /* solid on purpose: dashed borders are a GPU raster disaster on the TV (see .epg-prog-placeholder) */
+    background: #1a2140;
+}
+
+.epg-prog-block.past.catchup .epg-prog-title::before {
+    content: '⏪ ';
+    color: #8aa0ff;
+}
+
+/* Programme cursor on the focused row */
+.epg-row.epg-focused .epg-prog-block.epg-block-focused {
+    border: 2px solid #ffffff;
+    background: #2b3a78;
+    opacity: 1;
+}
+
+.epg-row.epg-focused .epg-prog-block.epg-block-focused .epg-prog-title {
+    color: #fff;
+}
+
+/* History being fetched for a catch-up channel */
+.epg-row.epg-row-loading-past .epg-ch-name::after {
+    content: ' …';
+    color: #6c8eff;
+}
+
+/* Day labels in the time strip when the window spans several days */
+.epg-day-label {
+    position: absolute;
+    top: 1px;
+    font-size: 0.65rem;
+    color: #e8a820;
+    padding-left: 6px;
+    border-left: 2px solid #e8a820;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
 .epg-row.active .epg-prog-block.now-playing {
     border-color: #ffd700;
 }
@@ -1206,7 +1251,10 @@ body {
     bottom: 5px;
     border-radius: 5px;
     background: #161820;
-    border: 1px dashed #2a2d3a;
+    /* Never a dashed border here: this box spans the whole guide window (3,000–37,000 px) and the TV's
+       GPU rasterizes dashes dash by dash. Measured 2026-10-06: dashed = 190 ms per key step, seconds in
+       the 78 h window; solid = 30 ms. */
+    border: 1px solid #23262f;
     padding: 0 8px;
     overflow: hidden;
     display: flex;
@@ -3138,3 +3186,26 @@ body.live-player #videoPlayer {
 .feed-stats.visible {
     opacity: 1;
 }
+
+/* Direct channel number entry */
+.ch-num-overlay {
+    position: fixed;
+    top: 40px;
+    right: 60px;
+    z-index: 1600;
+    background: rgba(10, 12, 20, 0.85);
+    border: 2px solid #6c8eff;
+    border-radius: 12px;
+    padding: 10px 22px;
+    font-size: 2rem;
+    font-weight: 700;
+    color: #fff;
+    letter-spacing: 2px;
+    pointer-events: none;
+}
+.ch-num-overlay.hidden { display: none; }
+.ch-num-overlay.found { font-size: 1.2rem; letter-spacing: 0; border-color: #4caf50; }
+.ch-num-overlay.missing { font-size: 1.2rem; letter-spacing: 0; border-color: #ff6666; color: #ffb3b3; }
+
+/* Categories manager rows */
+.cats-row.cats-hidden .settings-name { color: #6c7a93; text-decoration: line-through; }
