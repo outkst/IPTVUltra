@@ -27,9 +27,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
 
     await fetch(BASE + '/__reset'); // server may have been running across runs
     await page.goto(BASE + '/', { waitUntil: 'load' });
-    await page.evaluate(() => { localStorage.clear(); });
+    // The mock server has no HLS content, so the suite runs live TV on the native path (rewind buffer Off);
+    // the hls.js engine selection and its native fallback are checked explicitly below.
+    await page.evaluate(() => { localStorage.clear(); localStorage.setItem('iptv_settings', JSON.stringify({ liveBuffer: 0, schema: 3 })); });
     await page.reload({ waitUntil: 'load' });
     check('webOS library loaded', await page.evaluate(() => typeof webOS !== 'undefined' && !!webOS.platformBack));
+    check('hls.js loaded; live engine stays native while the rewind buffer is Off', await page.evaluate(() => typeof Hls !== 'undefined' && Hls.isSupported() && settings.liveBuffer === 0 && !hlsAvailable() && isHlsUrl('http://x/live/u/p/1.m3u8') && isHlsUrl('http://x/get.php?type=m3u8') && !isHlsUrl('http://x/live/u/p/1.ts') && LIVE_BUFFER_OPTIONS.some(o => o.v === 5)));
 
     // ---------- Xtream: add + load ----------
     await page.type('#xtreamServer', BASE);
@@ -351,7 +354,17 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await sleep(100);
         check('picking Spanish calls selectTrack text index 3 and marks it manual', await page.evaluate(() => vodPlay.ums.selectedSub === 3 && vodPlay.subManual && window.__ums.calls.some(c => c[0] === 'selectTrack' && /"index":3/.test(c[1]))));
         const style = await page.evaluate(() => { const c = window.__ums.calls; const last = n => (c.filter(x => x[0] === n).pop() || [])[1] || ''; return { size: last('setSubtitleCharacterFontSize'), bg: last('setSubtitleBackgroundOpacity'), edge: last('setSubtitleCharacterEdge'), color: last('setSubtitleCharacterColor'), sync: last('setSubtitleSync') }; });
-        check('subtitle style applied after enabling: medium, grey (white @85% + gray), translucent, outline, sync 0', /"charFontSize":"medium"/.test(style.size) && /"charColor":"gray"/.test(style.color) && /"bgOpacity":50/.test(style.bg) && /"charEdgeType":"uniform"/.test(style.edge) && /"sync":0/.test(style.sync) && await page.evaluate(() => settings.subColor === 'gray' && window.__ums.calls.some(c => c[0] === 'setSubtitleCharacterOpacity' && /"charOpacity":85/.test(c[1]))), JSON.stringify(style));
+        check('subtitle style applied after enabling: medium, white @85% (default opacity), translucent, outline, sync 0', /"charFontSize":"medium"/.test(style.size) && /"charColor":"white"/.test(style.color) && /"bgOpacity":50/.test(style.bg) && /"charEdgeType":"uniform"/.test(style.edge) && /"sync":0/.test(style.sync) && await page.evaluate(() => settings.subColor === 'white' && settings.subOpacity === 85 && !SUB_COLOR_OPTIONS.some(o => o.v === 'gray') && settingsRows().some(r => r.id === 'subOpacity') && window.__ums.calls.some(c => c[0] === 'setSubtitleCharacterOpacity' && /"charOpacity":217/.test(c[1]))), JSON.stringify(style));
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'subOpacity').set(55); });
+        await sleep(100);
+        check('Subtitle opacity setting is sent to the pipeline as charOpacity on the 0-255 scale (55% → 140)', await page.evaluate(() => settings.subOpacity === 55 && /"charOpacity":140/.test((window.__ums.calls.filter(c => c[0] === 'setSubtitleCharacterOpacity').pop() || [])[1] || '')));
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'subOpacity').set(85); });
+        await sleep(150); // let that apply finish before the next setting change starts another
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'subEdge').set('shadow'); });
+        await sleep(150);
+        check('Shadow edge uses the renderer vocabulary (right_drop_shadow) and a black edge colour is sent', await page.evaluate(() => { const c = window.__ums.calls; const last = n => (c.filter(x => x[0] === n).pop() || [])[1] || ''; return /"charEdgeType":"right_drop_shadow"/.test(last('setSubtitleCharacterEdge')) && /"charEdgeColor":"black"/.test(last('setSubtitleCharacterEdgeColor')) && SUB_EDGE_OPTIONS.some(o => o.v === 'raised'); }));
+        await page.evaluate(() => { settingsRows().find(x => x.id === 'subEdge').set('outline'); });
+        await sleep(150);
         await page.evaluate(() => { settingsRows().find(x => x.id === 'subBg').set('solid'); });
         await sleep(100);
         check('solid background sends opacity 100 then 255', await page.evaluate(() => { const o = window.__ums.calls.filter(c => c[0] === 'setSubtitleBackgroundOpacity').map(c => c[1]); return /"bgOpacity":255/.test(o[o.length - 1]) && /"bgOpacity":100/.test(o[o.length - 2]); }));
@@ -525,6 +538,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await key('ArrowLeft', 37); await key('Enter', 13); await sleep(100);
     check('confirm Yes clears favorites, settings still open', await page.evaluate(() => favoriteIds.size === 0 && settingsOpen && localStorage.getItem('iptv_favorites') === '[]'));
     await back();
+
+    // ---------- hls.js live engine: takes HLS channels when the buffer is on, falls back to native on a fatal error ----------
+    // (the demo playlist is loaded here; its channels are .m3u8 URLs)
+    await page.evaluate(() => { settings.liveBuffer = 5; saveSettings(); channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8'; selectChannel(2); });
+    const eng = await page.evaluate(() => ({ hls: liveEngineActive(), url: liveEngine.url, src: videoPlayer.getAttribute('src') || '', ums: liveUms === null, row: settingsRows().find(r => r.id === 'liveBuffer').get() }));
+    check('rewind buffer on: hls.js owns the HLS channel (MediaSource src, media service released)', eng.hls && /\.m3u8$/.test(eng.url) && /^blob:/.test(eng.src) && eng.ums && eng.row === 5, JSON.stringify(eng));
+    await page.waitForFunction(() => !liveEngineActive() && /no-such-stream/.test(videoPlayer.getAttribute('src') || ''), { timeout: 40000 }).catch(() => {});
+    const hlsFb = await page.evaluate(() => ({ hls: liveEngineActive(), broken: [..._hlsBroken], src: videoPlayer.getAttribute('src') || '', url: channels[currentChannelIndex].url }));
+    // A network failure is not held against the channel (no _hlsBroken entry); only media/mux/manifest-parse errors are
+    check('fatal hls.js network error (dead playlist) hands the channel to the native player without marking it incompatible', !hlsFb.hls && hlsFb.broken.length === 0 && hlsFb.src === hlsFb.url, JSON.stringify(hlsFb));
+    // Let the native player exhaust its reload budget on that dead channel, then clear the toast it leaves behind
+    await page.waitForFunction(() => document.getElementById('epgToastTitle').textContent === 'Stream Error', { timeout: 25000 }).catch(() => {});
+    await page.evaluate(() => { settings.liveBuffer = 0; saveSettings(); _hlsBroken.clear(); document.getElementById('epgToastTitle').textContent = ''; });
+    check('rewind buffer Off again: next channel load is native', await page.evaluate(() => { selectChannel(3); return !liveEngineActive() && (videoPlayer.getAttribute('src') || '') === channels[3].url; }));
 
     // ---------- Stream error budget ----------
     await page.evaluate(() => { channels[1].url = 'http://localhost:8765/does-not-exist.m3u8'; selectChannel(1); });

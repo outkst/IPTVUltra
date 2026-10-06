@@ -1,6 +1,6 @@
 {
   "id": "com.outkst.iptvultra",
-  "version": "3.8.0",
+  "version": "3.9.0",
   "vendor": "outkst",
   "type": "web",
   "main": "index.html",
@@ -8,6 +8,9 @@
   "appDescription": "Play IPTV channels from M3U playlists or Xtream Codes providers, with EPG",
   "icon": "icon.png",
   "largeIcon": "largeIcon.png",
+  "mediumLargeIcon": "mediumLargeIcon.png",
+  "extraLargeIcon": "extraLargeIcon.png",
+  "iconColor": "#f3b0a0",
   "splashBackground": "splash-screen.png",
   "splashColor": "#f3b0a0",
   "bgColor": "#f3b0a0",

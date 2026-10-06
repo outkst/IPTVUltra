@@ -55,11 +55,18 @@ const SETTINGS_KEY = 'iptv_settings';
 const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
 const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
 const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
-const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'gray', subBg: 'translucent', subEdge: 'outline', subAuto: false, schema: 3 };
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subOpacity: 85, subBg: 'translucent', subEdge: 'outline', subAuto: false, liveBuffer: 5, schema: 4 };
+// Subtitle text opacity (%), sent as charOpacity; the C4 honours it (verified with the old Grey = white at 85)
+const SUB_OPACITY_OPTIONS = [{ v: 100, label: '100%' }, { v: 85, label: '85%' }, { v: 70, label: '70%' }, { v: 55, label: '55%' }];
+// Live rewind buffer (minutes) for HLS channels played through hls.js; 0 = native player only
+const LIVE_BUFFER_OPTIONS = [{ v: 0, label: 'Off' }, { v: 2, label: '2 minutes' }, { v: 5, label: '5 minutes' }, { v: 10, label: '10 minutes' }];
 const SUB_SIZE_OPTIONS = [{ v: 'small', label: 'Small' }, { v: 'medium', label: 'Medium' }, { v: 'large', label: 'Large' }, { v: 'extraLarge', label: 'Extra large' }];
-const SUB_COLOR_OPTIONS = [{ v: 'gray', label: 'Grey' }, { v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
+// No Grey: the TV's caption pipeline has no grey colour (a 'gray' request renders as white); dimmer text is Subtitle opacity
+const SUB_COLOR_OPTIONS = [{ v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
 const SUB_BG_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'translucent', label: 'Translucent' }, { v: 'solid', label: 'Solid black' }];
-const SUB_EDGE_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'outline', label: 'Outline' }, { v: 'shadow', label: 'Shadow' }];
+// Edge types the TV's subtitle renderer (libstarfish-subtitle-task) understands: none, uniform, raised, left_/right_drop_shadow
+const SUB_EDGE_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'outline', label: 'Outline' }, { v: 'shadow', label: 'Shadow' }, { v: 'raised', label: 'Raised' }];
+const SUB_EDGE_UMS = { none: 'none', outline: 'uniform', shadow: 'right_drop_shadow', raised: 'raised' };
 const SUB_LANG_OPTIONS = [{ v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }, { v: 'any', label: 'First available' }];
 const AUDIO_LANG_OPTIONS = [{ v: 'default', label: 'Default' }, { v: 'en', label: 'English' }, { v: 'es', label: 'Spanish' }, { v: 'fr', label: 'French' }, { v: 'de', label: 'German' }, { v: 'pt', label: 'Portuguese' }, { v: 'it', label: 'Italian' }, { v: 'ar', label: 'Arabic' }];
 let settings = loadSettings();          // global: textScale, clock, autoLoad
@@ -202,6 +209,136 @@ let _reloadAttempts = 0;
 let _stallGoodChecks = 0;
 let _errRetryTimer = null;
 
+// ----- Live engine: native <video> or hls.js with a rewind buffer -----
+// HLS channels (.m3u8; Xtream live URLs are built that way) can be played through hls.js, which feeds
+// the <video> via Media Source Extensions so the app owns the buffer: `settings.liveBuffer` minutes
+// behind the playhead are kept for rewind, and the same amount is fetched ahead while paused so
+// playback resumes where it stopped. Raw MPEG-TS streams stay on the native pipeline, which decodes
+// everything but exposes no rewind buffer. Anything hls.js cannot play (HEVC or AC-3 inside TS
+// segments, a bad manifest) raises a fatal hls.js error and the channel goes back to the native
+// player for the rest of the session (`_hlsBroken`). The webOS media service (liveUms) is not used
+// on the hls.js path; the codec line comes from the HLS level instead.
+const liveEngine = { hls: null, url: '', tech: '', recovered: false, resumeUrl: '' };
+const _hlsBroken = new Set();
+function isHlsUrl(url) { return /\.m3u8(\?|#|$)/i.test(url || '') || /[?&](type|output)=m3u8/i.test(url || ''); }
+function hlsAvailable() { return settings.liveBuffer > 0 && typeof Hls !== 'undefined' && Hls.isSupported(); }
+function liveEngineActive() { return !!liveEngine.hls; }
+function liveEngineDestroy() {
+    if (liveEngine.hls) { try { liveEngine.hls.destroy(); } catch (_) { /* already gone */ } liveEngine.hls = null; }
+    liveEngine.url = ''; liveEngine.tech = '';
+}
+// Point the live <video> at a channel URL through whichever engine fits. Returns true when hls.js took it.
+function loadLiveSource(url) {
+    liveEngineDestroy();
+    if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
+        videoPlayer.src = url;
+        videoPlayer.load();
+        return false;
+    }
+    const secs = settings.liveBuffer * 60;
+    const hls = new Hls({
+        backBufferLength: secs,            // keep this much behind the playhead for rewind
+        maxBufferLength: secs,             // and fetch this far ahead, so a pause can be resumed from the buffer
+        maxMaxBufferLength: secs * 2,
+        maxBufferSize: 250 * 1000 * 1000,  // bytes; the browser's own quota still applies (hls.js backs off on QuotaExceeded)
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: Infinity, // never force the playhead back to the live edge
+        lowLatencyMode: false,
+        enableWorker: true,
+        capLevelToPlayerSize: false,
+        manifestLoadingMaxRetry: 2,
+        fragLoadingMaxRetry: 4,
+    });
+    liveEngine.hls = hls; liveEngine.url = url; liveEngine.tech = ''; liveEngine.recovered = false; liveEngine.resumeUrl = '';
+    videoPlayer.removeAttribute('src'); // hls.js attaches its own MediaSource URL
+    hls.on(Hls.Events.ERROR, (_, data) => onHlsError(url, data));
+    hls.on(Hls.Events.MANIFEST_PARSED, liveTechFromHls);
+    hls.on(Hls.Events.LEVEL_SWITCHED, liveTechFromHls);
+    hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, liveTechFromHls);
+    hls.loadSource(url);
+    hls.attachMedia(videoPlayer);
+    return true;
+}
+function onHlsError(url, data) {
+    if (!data || !data.fatal || liveEngine.url !== url) return;
+    console.log('hls.js fatal error', data.type, data.details);
+    const hls = liveEngine.hls;
+    // Hidden app: webOS freezes the page's timers and network, which hls.js reports as failed requests.
+    // Nothing is wrong with the channel; retry on the hls path when the app is visible again.
+    if (document.hidden) { liveEngine.resumeUrl = url; liveEngineDestroy(); return; }
+    // A media error gets one in-place recovery (hls.js re-creates its SourceBuffers) before we give up on it
+    if (hls && data.type === Hls.ErrorTypes.MEDIA_ERROR && !liveEngine.recovered && data.details !== Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR) {
+        liveEngine.recovered = true;
+        try { hls.recoverMediaError(); videoPlayer.play().catch(() => {}); return; } catch (_) { /* fall through to native */ }
+    }
+    // Content hls.js cannot handle (codecs it cannot demux, unparsable manifest) is remembered so the native
+    // pipeline takes the channel for the rest of the session; plain network failures are not held against it
+    const incompatible = data.type === Hls.ErrorTypes.MEDIA_ERROR || data.type === Hls.ErrorTypes.MUX_ERROR ||
+        data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR || data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
+    if (incompatible) _hlsBroken.add(url);
+    liveEngineDestroy();
+    // Hand the channel to the native pipeline; its own error handler and reload budget take over from here
+    if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 && channels[currentChannelIndex].url === url) {
+        umsNoteCurrentId();
+        videoPlayer.src = url;
+        videoPlayer.load();
+        liveUmsRefresh();
+        videoPlayer.play().catch(() => {});
+    }
+}
+// Codec / resolution / bitrate line from the HLS level (the media service does not describe MSE playback)
+function liveTechFromHls() {
+    const hls = liveEngine.hls; if (!hls || !hls.levels || !hls.levels.length) return;
+    const lvl = hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
+    const bits = [];
+    const vc = String(lvl.videoCodec || '').toLowerCase();
+    if (vc) bits.push(/^(avc|h264)/.test(vc) ? 'H.264' : /^(hvc|hev|h265)/.test(vc) ? 'HEVC' : vc.split('.')[0].toUpperCase());
+    if (lvl.width && lvl.height) bits.push(`${lvl.width}×${lvl.height}`);
+    else if (videoPlayer.videoWidth) bits.push(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`);
+    if (lvl.frameRate) bits.push(`${(+lvl.frameRate).toFixed(2).replace(/\.?0+$/, '')} fps`);
+    if (lvl.bitrate) bits.push(`${Math.round(lvl.bitrate / 1000)} kbps`);
+    const ac = String(lvl.audioCodec || '').toLowerCase();
+    if (ac) bits.push(/^mp4a\.40/.test(ac) ? 'AAC' : /^ac-3/.test(ac) ? 'AC-3' : /^ec-3/.test(ac) ? 'E-AC-3' : ac.toUpperCase());
+    bits.push(`⏪ ${settings.liveBuffer} min`);
+    liveEngine.tech = bits.join(' · ');
+    if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = liveEngine.tech; }
+    else showFeedStats(liveEngine.tech);
+}
+// Where the live playhead may go on the hls.js path: the buffered range around it, up to the live edge
+function liveBufferRange() {
+    const hls = liveEngine.hls;
+    const t = videoPlayer.currentTime || 0;
+    const b = videoPlayer.buffered;
+    let start = t, end = t;
+    for (let i = 0; i < b.length; i++) if (b.start(i) - 1 <= t && t <= b.end(i) + 1) { start = b.start(i); end = b.end(i); break; }
+    if (b.length && start === t && end === t) { start = b.start(0); end = b.end(b.length - 1); }
+    const live = hls && typeof hls.liveSyncPosition === 'number' && hls.liveSyncPosition > 0 ? hls.liveSyncPosition : end;
+    return { start, end: Math.max(end, live), live };
+}
+function liveBehindSecs() {
+    if (!liveEngine.hls) return 0;
+    const r = liveBufferRange();
+    return Math.max(0, r.live - (videoPlayer.currentTime || 0));
+}
+function liveGoLive() {
+    if (!liveEngine.hls) return;
+    try { videoPlayer.currentTime = liveBufferRange().live; } catch (_) { /* not seekable yet */ }
+    videoPlayer.play().catch(() => {});
+    if (livePlayer.active) showVodOsd();
+}
+// Hidden (another app in front, Home, screensaver): stop fetching segments so nothing times out while the
+// page is frozen; visible again: resume, or re-open the channel if the engine was torn down meanwhile.
+document.addEventListener('visibilitychange', () => {
+    if (liveEngine.hls) {
+        try { if (document.hidden) liveEngine.hls.stopLoad(); else liveEngine.hls.startLoad(-1); } catch (_) { /* engine gone */ }
+        return;
+    }
+    if (!document.hidden && liveEngine.resumeUrl && vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 && channels[currentChannelIndex].url === liveEngine.resumeUrl) {
+        liveEngine.resumeUrl = '';
+        reloadStream(false);
+    }
+});
+
 
 let _holdKeyDir   = null;  // 'left' | 'right' | null — tracks which key is physically held
 let _holdKeyStart = 0;
@@ -234,6 +371,7 @@ const _VOD_SCRUB_RAMP = [
 let _scrubPos = null;        // virtual position during a VOD scrub, null otherwise
 
 function _seekRange() {
+    if (liveEngineActive() && !vodPlay.active) { const r = liveBufferRange(); return { start: r.start, end: r.end }; }
     if (videoPlayer.seekable && videoPlayer.seekable.length > 0)
         return { start: videoPlayer.seekable.start(0), end: videoPlayer.seekable.end(0) };
     return { start: 0, end: videoPlayer.duration || 0 };
@@ -1104,7 +1242,7 @@ function enterLivePlayer() {
     document.getElementById('vodLoading').classList.add('hidden');
     document.getElementById('vodNext').classList.add('hidden');
     player.focus = 'bar'; player.btn = 0; player.btns = [];
-    const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = liveUms ? umsTechString(liveUms) : '';
+    const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = liveUms ? umsTechString(liveUms) : liveEngine.tech;
     updateVodTracksHint();
     showVodOsd();
 }
@@ -1143,9 +1281,7 @@ function selectChannel(index) {
     const ch = channels[index];
     videoPlayer.pause();
     umsNoteCurrentId();
-    videoPlayer.src = ch.url;
-    videoPlayer.load();
-    liveUmsRefresh();
+    if (loadLiveSource(ch.url)) { umsRelease(liveUms); liveUms = null; } else liveUmsRefresh();
     videoPlayer.play().catch(e => console.log);
     startStallWatchdog();
     channelInfoTag.innerText = `📺 ${ch.name}`;
@@ -1351,9 +1487,7 @@ function reloadStream(auto) {
     const wasPlaying = !videoPlayer.paused;
     videoPlayer.pause();
     umsNoteCurrentId();
-    videoPlayer.src = url;
-    videoPlayer.load();
-    liveUmsRefresh();
+    if (loadLiveSource(url)) { umsRelease(liveUms); liveUms = null; } else liveUmsRefresh();
     if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
     startStallWatchdog();
     statusArea.innerText = isAuto ? `🔄 Reloading (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …` : '🔄 Reloading ...';
@@ -1396,7 +1530,7 @@ function goToHomeScreen() {
         _scrollOuter.removeEventListener('scroll', epgVirtualScrollListener);
         epgVirtualScrollListener = null;
     }
-    _epgWinStart = 0; _epgWinEnd = 0; _epgTotalGuideW = 0; _epgSkeletonWinStart = 0;
+    _epgWinStart = 0; _epgWinEnd = 0; _epgTotalGuideW = 0; _epgSkeletonWinStart = 0; _epgX = 0; _epgPrevFocusIdx = -1;
 
     // Clear all data
     resetLazyEpg();
@@ -1433,6 +1567,7 @@ function goToHomeScreen() {
 
     // Stop and clear video
     videoPlayer.pause();
+    liveEngineDestroy();
     videoPlayer.removeAttribute('src');
     videoPlayer.load();
 
@@ -1601,26 +1736,32 @@ function refreshCurrentView() {
     else renderChannelList();
 }
 
-function buildEPGRow(i) {
-    const ch = currentFilteredChannels[i];
-    const origIdx = getChannelIndex(ch);
-    const isActive = origIdx === currentChannelIndex;
+// Logos that failed to load this session: never re-requested (the provider's CDN answers slowly for them)
+const _epgLogoFailed = new Set();
+function epgLogoFailed(img) {
+    img.style.display = 'none';
+    img.classList.add('failed');
+    if (img.dataset.src) _epgLogoFailed.add(img.dataset.src);
+    if (img.parentNode) img.parentNode.classList.remove('has-logo');
+}
+// Logos are not requested while the guide is being scrolled: rows carry data-src and the src is set
+// once scrolling has settled (epgOnScrollSettled). Otherwise every key repeat fetched and decoded
+// an image the user never saw, which is paint and network work the TV cannot afford.
+function epgLoadVisibleLogos() {
+    for (const [, el] of epgRenderedRows) {
+        const img = el.querySelector('.epg-ch-logo[data-src]:not([src])');
+        if (img) img.src = img.dataset.src;
+    }
+}
+// Descriptions are a single clipped line; the widest block shows ~1.5 lines of text at most, so the
+// rest of a long description is only layout work for the TV.
+const EPG_DESC_MAX = 160;
+// Programme blocks (or the placeholder) for one channel over the current window
+function epgProgsHtml(ch) {
     const now = Date.now();
-
-    const row = document.createElement('div');
-    row.className = 'epg-row' +
-        (isActive ? ' active' : '') +
-        (i === epgFocusedRowIdx ? ' epg-focused' : '');
-    row.style.cssText = `position:absolute;top:${i * EPG_ROW_H}px;width:${EPG_CH_W + _epgTotalGuideW}px`;
-
-    const logoSrc = ch.tvgLogo ? escapeHtml(ch.tvgLogo) : '';
-    const favId = ch.tvgId || `idx_${origIdx}`;
-    const isFav = favoriteIds.has(favId);
-    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" src="${logoSrc}" onerror="this.style.display='none';this.classList.add('failed')">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
-
     const resolvedId = resolveEpgId(ch.tvgId);
     const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
-    const progsParts = [`<div class="epg-progs" style="width:${_epgTotalGuideW}px">`];
+    const parts = [`<div class="epg-progs-clip"><div class="epg-progs" style="width:${_epgTotalGuideW}px">`];
     let hadBlock = false;
     for (const p of progs) {
         if (p.stop <= _epgWinStart || p.start >= _epgWinEnd) continue;
@@ -1631,20 +1772,39 @@ function buildEPGRow(i) {
         const isNow = p.start <= now && p.stop > now;
         const wNum = parseFloat(w);
         const descHtml = p.desc && wNum > 120 * TEXT_SCALE
-            ? `<span class="epg-prog-desc">${escapeHtml(p.desc)}</span>`
+            ? `<span class="epg-prog-desc">${escapeHtml(p.desc.length > EPG_DESC_MAX ? p.desc.slice(0, EPG_DESC_MAX) : p.desc)}</span>`
             : '';
-        progsParts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" data-start="${p.start}" data-stop="${p.stop}" style="left:${sx}px;width:${w}px">` +
+        parts.push(`<div class="epg-prog-block${isNow ? ' now-playing' : ''}" data-start="${p.start}" data-stop="${p.stop}" style="left:${sx}px;width:${w}px">` +
             `<span class="epg-prog-title">${escapeHtml(p.title)}</span>${descHtml}</div>`);
         hadBlock = true;
     }
     if (!hadBlock) {
         const label = epgPlaceholderText(ch.tvgId);
         const cls = label === 'Loading ...' ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
-        progsParts.push(`<div class="${cls}" style="left:2px;width:${(_epgTotalGuideW - 4).toFixed(1)}px">` +
+        parts.push(`<div class="${cls}" style="left:2px;width:${(_epgTotalGuideW - 4).toFixed(1)}px">` +
             `<span class="epg-prog-title">${label}</span></div>`);
     }
-    progsParts.push('</div>');
-    row.innerHTML = labelHtml + progsParts.join('');
+    parts.push('</div></div>');
+    return parts.join('');
+}
+
+function buildEPGRow(i) {
+    const ch = currentFilteredChannels[i];
+    const origIdx = getChannelIndex(ch);
+    const isActive = origIdx === currentChannelIndex;
+
+    const row = document.createElement('div');
+    row.className = 'epg-row' +
+        (isActive ? ' active' : '') +
+        (i === epgFocusedRowIdx ? ' epg-focused' : '');
+    row.style.cssText = `position:absolute;top:${i * EPG_ROW_H}px;left:0;right:0`;
+
+    const logoSrc = ch.tvgLogo && !_epgLogoFailed.has(ch.tvgLogo) ? escapeHtml(ch.tvgLogo) : '';
+    const favId = ch.tvgId || `idx_${origIdx}`;
+    const isFav = favoriteIds.has(favId);
+    const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap${logoSrc ? ' has-logo' : ''}"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" data-src="${logoSrc}" decoding="async" onerror="epgLogoFailed(this)">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
+
+    row.innerHTML = labelHtml + epgProgsHtml(ch);
     row.querySelector('.epg-fav-btn').addEventListener('click', e => {
         e.stopPropagation();
         toggleEPGFav(favId);
@@ -1658,6 +1818,24 @@ function buildEPGRow(i) {
     return row;
 }
 
+// Viewport size of the guide scroller, read once per layout change instead of on every key
+// (each read forces a synchronous layout, which is what made key repeats stutter on the TV).
+let _epgViewH = 0, _epgViewW = 0;
+let _epgRenderQueued = false;
+let _epgLastStartIdx = -1;
+function epgMeasureViewport() {
+    const so = document.getElementById('epgScrollOuter');
+    if (!so) return;
+    _epgViewH = so.clientHeight;
+    _epgViewW = so.clientWidth;
+}
+// One render per animation frame, however many scroll events or key repeats arrived in between
+function queueEPGRender() {
+    if (_epgRenderQueued) return;
+    _epgRenderQueued = true;
+    requestAnimationFrame(() => { _epgRenderQueued = false; renderEPGVisibleRows(); });
+}
+
 function renderEPGVisibleRows() {
     const body = document.getElementById('epgBody');
     const scrollOuter = document.getElementById('epgScrollOuter');
@@ -1665,20 +1843,47 @@ function renderEPGVisibleRows() {
     const BUFFER = 3;
     // Row i occupies content offset [strip + i*rowH, strip + (i+1)*rowH)
     const scrollTop = scrollOuter.scrollTop;
-    const viewH = scrollOuter.clientHeight;
+    if (!_epgViewH) epgMeasureViewport();
+    const viewH = _epgViewH;
     const startIdx = Math.max(0, Math.floor(scrollTop / EPG_ROW_H) - BUFFER);
     const endIdx = Math.min(currentFilteredChannels.length - 1,
         Math.ceil((scrollTop + viewH - EPG_TIME_STRIP_H) / EPG_ROW_H) + BUFFER);
+    let changed = false;
     for (const [idx, el] of epgRenderedRows) {
-        if (idx < startIdx || idx > endIdx) { el.remove(); epgRenderedRows.delete(idx); }
+        if (idx < startIdx || idx > endIdx) { el.remove(); epgRenderedRows.delete(idx); changed = true; }
     }
-    for (let i = startIdx; i <= endIdx; i++) {
-        if (epgRenderedRows.has(i)) continue;
-        const row = buildEPGRow(i);
-        body.appendChild(row);
-        epgRenderedRows.set(i, row);
+    if (epgRenderedRows.size < endIdx - startIdx + 1) {
+        const frag = document.createDocumentFragment();
+        for (let i = startIdx; i <= endIdx; i++) {
+            if (epgRenderedRows.has(i)) continue;
+            const row = buildEPGRow(i);
+            frag.appendChild(row);
+            epgRenderedRows.set(i, row);
+            changed = true;
+        }
+        body.appendChild(frag);
     }
-    scheduleEpgFetchForVisible();
+    if (changed || startIdx !== _epgLastStartIdx) {
+        _epgScrollDir = startIdx >= _epgLastStartIdx ? 1 : -1;
+        _epgLastStartIdx = startIdx;
+        scheduleEpgFetchForVisible();
+    }
+}
+let _epgScrollDir = 1;
+
+// Horizontal position of the guide in px (0 = window start). Applied as a CSS variable on the scroller
+// that the time strip and every row's programme area translate by; see .epg-progs in style.css.
+let _epgX = 0;
+function epgMaxPan() {
+    if (!_epgViewW) epgMeasureViewport();
+    return Math.max(0, EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, _epgViewW - EPG_CH_W));
+}
+function epgApplyPan() {
+    const so = document.getElementById('epgScrollOuter');
+    if (!so) return;
+    so.style.setProperty('--epg-x', `${-_epgX}px`);
+    updateEPGNowMarker();
+    updateEPGNavVisibility();
 }
 
 function updateEPGNowMarker() {
@@ -1687,10 +1892,12 @@ function updateEPGNowMarker() {
     if (!body || !timeMarks || !_epgWinStart) return;
     const fullMarker = body.querySelector('.epg-now-fullmarker');
     if (!fullMarker) return;
-    const nowOffsetPx = ((Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
-    fullMarker.style.left = `${timeMarks.offsetLeft + parseFloat(nowOffsetPx)}px`;
-    const stripLine = timeMarks.querySelector('.epg-now-line'); // the labelled NOW line in the time strip
-    if (stripLine) stripLine.style.left = `${nowOffsetPx}px`;
+    const nowOffsetPx = (Date.now() - _epgWinStart) / 60000 * EPG_PX_PER_MIN;
+    const x = EPG_CH_W + nowOffsetPx - _epgX;
+    fullMarker.style.display = x < EPG_CH_W ? 'none' : '';
+    fullMarker.style.left = `${x.toFixed(1)}px`;
+    const stripLine = timeMarks.querySelector('.epg-now-line'); // the labelled NOW line in the time strip (pans with it)
+    if (stripLine) stripLine.style.left = `${nowOffsetPx.toFixed(1)}px`;
 }
 
 function rebuildEPGSkeleton(winStart, winEnd) {
@@ -1727,7 +1934,6 @@ function refreshEPGRows() {
     const body = document.getElementById('epgBody');
     if (!body) return;
 
-    const prevScrollLeft = scrollOuter ? scrollOuter.scrollLeft : 0;
     const prevScrollTop = scrollOuter ? scrollOuter.scrollTop : 0;
 
     body.innerHTML = '';
@@ -1745,9 +1951,11 @@ function refreshEPGRows() {
     }
 
     body.style.height = `${currentFilteredChannels.length * EPG_ROW_H}px`;
+    epgMeasureViewport();
+    _epgLastStartIdx = -1;
     renderEPGVisibleRows();
-    epgVirtualScrollListener = () => requestAnimationFrame(renderEPGVisibleRows);
-    if (scrollOuter) scrollOuter.addEventListener('scroll', epgVirtualScrollListener);
+    epgVirtualScrollListener = queueEPGRender;
+    if (scrollOuter) scrollOuter.addEventListener('scroll', epgVirtualScrollListener, { passive: true });
 
     // Full-height "now" line — positioned after layout via rAF so offsetLeft is accurate
     if (scrollOuter) {
@@ -1760,18 +1968,18 @@ function refreshEPGRows() {
         requestAnimationFrame(updateEPGNowMarker);
     }
 
-    // Restore or initialise scroll position
+    // Restore the vertical position; keep the time pan, or centre it on "now" the first time
     if (scrollOuter) {
         if (prevScrollTop > 0) scrollOuter.scrollTop = prevScrollTop;
-        if (prevScrollLeft > 0) {
-            scrollOuter.scrollLeft = prevScrollLeft;
-            updateEPGNavVisibility();
+        if (_epgX > 0) {
+            epgApplyPan();
         } else {
             requestAnimationFrame(() => {
-                const nowOffsetPx = ((_epgWinStart ? (Date.now() - _epgWinStart) : 0) / 60000 * EPG_PX_PER_MIN).toFixed(1);
-                const visibleW = Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
-                scrollOuter.scrollLeft = Math.max(0, parseFloat(nowOffsetPx) - Math.floor(visibleW / 3));
-                updateEPGNavVisibility();
+                const nowOffsetPx = (_epgWinStart ? (Date.now() - _epgWinStart) : 0) / 60000 * EPG_PX_PER_MIN;
+                epgMeasureViewport();
+                const visibleW = Math.max(1, _epgViewW - EPG_CH_W);
+                _epgX = Math.max(0, Math.min(epgMaxPan(), Math.floor(nowOffsetPx - visibleW / 3)));
+                epgApplyPan();
             });
         }
     }
@@ -2012,39 +2220,64 @@ async function fetchXtreamEpgFor(tvgId) {
     onEpgChannelUpdated(tvgId);
 }
 
-// Refresh whatever is on screen for this channel, in place
+// Refresh whatever is on screen for this channel, in place. Completed fetches arrive in bursts after a
+// scroll stops, so they are batched: one animation frame swaps the programme area of every affected
+// row, and only that area (the label and its logo stay; rebuilding whole rows re-decoded every logo).
+const _epgDirtyIds = new Set();
+let _epgDirtyRaf = 0;
 function onEpgChannelUpdated(tvgId) {
     if (currentPlaylistType !== 'xtream') return;
+    _epgDirtyIds.add(tvgId);
+    if (!_epgDirtyRaf) _epgDirtyRaf = requestAnimationFrame(flushEpgRowUpdates);
+}
+function flushEpgRowUpdates() {
+    _epgDirtyRaf = 0;
+    const ids = new Set(_epgDirtyIds);
+    _epgDirtyIds.clear();
+    if (!ids.size) return;
     if (epgMode) {
         for (const [idx, el] of epgRenderedRows) {
             const ch = currentFilteredChannels[idx];
-            if (ch && ch.tvgId === tvgId) {
-                const fresh = buildEPGRow(idx);
-                el.replaceWith(fresh);
-                epgRenderedRows.set(idx, fresh);
-            }
+            if (!ch || !ids.has(ch.tvgId)) continue;
+            const progs = el.querySelector('.epg-progs-clip');
+            if (progs) progs.outerHTML = epgProgsHtml(ch);
         }
     }
     const cur = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
-    if (cur && cur.tvgId === tvgId) {
+    if (cur && ids.has(cur.tvgId)) {
         if (epgMode) updateEPGInfoPanel(cur);
         updateNowNext();
     }
 }
 
-// Debounced: once scrolling settles, fetch EPG for the rows that are rendered
+// Debounced: once scrolling settles, load the logos of the rendered rows and fetch EPG for them
+// (front of the queue), then prefetch the next rows in the direction of travel so they are already
+// filled in when they scroll into view (back of the queue; dropped first when the backlog is full).
+const EPG_LOOKAHEAD_ROWS = 12;
 function scheduleEpgFetchForVisible() {
-    if (!_xt) return;
     if (_epgVisibleFetchTimer) clearTimeout(_epgVisibleFetchTimer);
-    _epgVisibleFetchTimer = setTimeout(() => {
-        _epgVisibleFetchTimer = null;
-        const ids = [];
-        for (const idx of epgRenderedRows.keys()) {
-            const ch = currentFilteredChannels[idx];
-            if (ch && ch.tvgId) ids.push(ch.tvgId);
-        }
-        if (ids.length) queueEpgFetch(ids, true);
-    }, 150);
+    _epgVisibleFetchTimer = setTimeout(epgOnScrollSettled, 150);
+}
+function epgOnScrollSettled() {
+    _epgVisibleFetchTimer = null;
+    if (!epgMode) return;
+    epgLoadVisibleLogos();
+    if (!_xt) return;
+    const ids = [];
+    let lo = Infinity, hi = -1;
+    for (const idx of epgRenderedRows.keys()) {
+        if (idx < lo) lo = idx;
+        if (idx > hi) hi = idx;
+        const ch = currentFilteredChannels[idx];
+        if (ch && ch.tvgId) ids.push(ch.tvgId);
+    }
+    if (ids.length) queueEpgFetch(ids, true);
+    if (hi < 0) return;
+    const ahead = [];
+    const from = _epgScrollDir >= 0 ? hi + 1 : Math.max(0, lo - EPG_LOOKAHEAD_ROWS);
+    const to = _epgScrollDir >= 0 ? Math.min(currentFilteredChannels.length - 1, hi + EPG_LOOKAHEAD_ROWS) : lo - 1;
+    for (let i = from; i <= to; i++) { const ch = currentFilteredChannels[i]; if (ch && ch.tvgId) ahead.push(ch.tvgId); }
+    if (ahead.length) queueEpgFetch(ahead, false);
 }
 
 // Background prefetch so the Favorites group is populated without scrolling
@@ -2077,8 +2310,7 @@ function epgMinuteTick() {
         if (_epgSkeletonWinStart && winStart !== _epgSkeletonWinStart) {
             // Hour rolled over: shift the horizontal scroll so the same wall-clock
             // time stays in view, then rebuild the time strip and rows once.
-            const so = document.getElementById('epgScrollOuter');
-            if (so) so.scrollLeft = Math.max(0, so.scrollLeft - 60 * EPG_PX_PER_MIN);
+            _epgX = Math.max(0, _epgX - 60 * EPG_PX_PER_MIN);
             renderEPGGuide();
         } else {
             updateEPGNowMarker();
@@ -2548,7 +2780,7 @@ function setVodMode(mode) {
         if (prev !== 'live' && currentChannelIndex >= 0) selectChannel(currentChannelIndex); // live streams cannot resume; reload the channel
         return;
     }
-    if (prev === 'live') { stopStallWatchdog(); if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; } videoPlayer.pause(); }
+    if (prev === 'live') { stopStallWatchdog(); if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; } videoPlayer.pause(); liveEngineDestroy(); }
     sv.style.display = 'none'; ev.style.display = 'none'; vv.style.display = 'flex';
     vodNav.detail = null; document.getElementById('vodDetails').style.display = 'none';
     loadVodCats(mode).then(() => { if (vodMode === mode) openVodList('home'); })
@@ -3080,6 +3312,7 @@ function startVodPlayback(p) {
     player.focus = 'bar'; player.btn = 0; player.btns = [];
     _nativeRate = 0;
     umsRelease(liveUms); liveUms = null;
+    liveEngineDestroy();
     umsNoteCurrentId();
     const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = vodTech[key] || '';
     videoPlayer.pause();
@@ -3167,8 +3400,11 @@ function updateLiveOsd() {
     if (now && now.stop > now.start) pct = Math.min(100, Math.max(0, (Date.now() - now.start) / (now.stop - now.start) * 100));
     document.getElementById('vodBarFill').style.width = pct + '%';
     document.getElementById('vodBarKnob').style.left = pct + '%';
-    document.getElementById('vodTimePos').textContent = now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : 'LIVE';
+    const behind = liveBehindSecs();
+    document.getElementById('vodTimePos').textContent = behind > 5 ? `⏪ −${fmtClock(behind)} behind live` : (now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : 'LIVE');
     document.getElementById('vodTimeRem').textContent = next ? `Next: ${next.title} · ${formatClock(next.start)}` : (now ? `${Math.max(0, Math.ceil((now.stop - Date.now()) / 60000))} min left` : '');
+    const wasBehind = !!document.getElementById('vodOsd').dataset.behind;
+    if ((behind > 5) !== wasBehind) { document.getElementById('vodOsd').dataset.behind = behind > 5 ? '1' : ''; renderPlayerButtons(); } // Go live button appears/disappears
 }
 function showVodOsd() {
     const osd = document.getElementById('vodOsd');
@@ -3203,6 +3439,7 @@ function playerButtonsFor() {
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
     } else if (livePlayer.active) {
+        if (liveBehindSecs() > 5) btns.push({ id: 'live', label: '⏩ Go live', act: liveGoLive });
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
         btns.push({ id: 'guide', label: currentPlaylistType === 'xtream' ? '📺 Guide' : '📡 Channels', act: exitLivePlayer });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
@@ -3616,16 +3853,19 @@ async function umsApplySubtitleStyle(u) {
     const sizeIdx = Math.max(0, SUB_SIZE_OPTIONS.findIndex(o => o.v === settings.subSize));
     await umsCall('setSubtitleCharacterFontSize', { mediaId: id, charFontSize: settings.subSize });
     await umsCall('setSubtitleFontSize', { mediaId: id, fontSize: sizeIdx });
-    // Grey: LG's caption colours have no grey, so request white at reduced opacity (and 'gray' in case it is honoured)
-    const grey = settings.subColor === 'gray';
-    await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: grey ? 'white' : settings.subColor });
-    if (grey) await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: 'gray' });
-    await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: grey ? 85 : 100 });
+    await umsCall('setSubtitleCharacterColor', { mediaId: id, charColor: settings.subColor });
+    // charOpacity is on a 0–255 scale on the C4 (100 rendered visibly translucent, and 85 vs 100 looked the same);
+    // send the 0–255 value and fall back to the percentage if a firmware rejects values above 100
+    const op255 = Math.round(settings.subOpacity * 2.55);
+    const opRes = await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: op255 });
+    if (!opRes.ok && op255 > 100) await umsCall('setSubtitleCharacterOpacity', { mediaId: id, charOpacity: settings.subOpacity });
     await umsCall('setSubtitleBackgroundColor', { mediaId: id, bgColor: 'black' });
     const bgOpacity = settings.subBg === 'none' ? 0 : settings.subBg === 'solid' ? 100 : 50;
     await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity });
     if (settings.subBg === 'solid') await umsCall('setSubtitleBackgroundOpacity', { mediaId: id, bgOpacity: 255 }); // 0-255 scale on some firmware; ignored otherwise
-    await umsCall('setSubtitleCharacterEdge', { mediaId: id, charEdgeType: settings.subEdge === 'outline' ? 'uniform' : settings.subEdge === 'shadow' ? 'dropShadow' : 'none' });
+    // Edge colour is never set by the pipeline on its own; without it the edge is invisible
+    await umsCall('setSubtitleCharacterEdgeColor', { mediaId: id, charEdgeColor: 'black' });
+    await umsCall('setSubtitleCharacterEdge', { mediaId: id, charEdgeType: SUB_EDGE_UMS[settings.subEdge] || 'none' });
     await umsCall('setSubtitleSync', { mediaId: id, sync: u.kind === 'vod' ? (vodPlay.syncMs || 0) : 0 });
 }
 function umsSetSync(ms) {
@@ -3733,10 +3973,14 @@ function loadSettings() {
     if (!SUB_LANG_OPTIONS.some(o => o.v === out.subLang)) out.subLang = DEFAULT_SETTINGS.subLang;
     if (!AUDIO_LANG_OPTIONS.some(o => o.v === out.audioLang)) out.audioLang = DEFAULT_SETTINGS.audioLang;
     for (const [k, opts] of [['subSize', SUB_SIZE_OPTIONS], ['subColor', SUB_COLOR_OPTIONS], ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS]]) if (!opts.some(o => o.v === out[k])) out[k] = DEFAULT_SETTINGS[k];
-    if (!(st.schema >= 2)) { out.subColor = 'gray'; out.schema = 2; } // one-time switch of the default colour to Grey (v3.6.0)
     if (!(st.schema >= 3)) { out.subAuto = false; out.schema = 3; }  // v3.8.0: subtitles no longer turn on by themselves unless asked
+    // v3.9.0: Grey (white at 85 % opacity) became the separate Subtitle opacity setting
+    if (!(st.schema >= 4)) { if (st.subColor === 'gray' || st.subColor === undefined) { out.subColor = 'white'; out.subOpacity = 85; } else out.subOpacity = 100; out.schema = 4; }
+    if (out.subColor === 'gray') out.subColor = 'white';
+    if (!SUB_OPACITY_OPTIONS.some(o => o.v === out.subOpacity)) out.subOpacity = DEFAULT_SETTINGS.subOpacity;
     out.subAuto = !!out.subAuto;
     if (out.subLang === 'off') out.subLang = 'en';
+    if (!LIVE_BUFFER_OPTIONS.some(o => o.v === out.liveBuffer)) out.liveBuffer = DEFAULT_SETTINGS.liveBuffer;
     return out;
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
@@ -3811,6 +4055,9 @@ function settingsRows() {
           get: () => (ps && ps.startGroup) || 'favorites', set: v => { ps.startGroup = v; savePlaylistState(); } },
         { id: 'resume', type: 'toggle', label: 'Resume last channel', sub: forName, disabled: !t,
           get: () => !ps || ps.resume !== false, set: v => { ps.resume = v; savePlaylistState(); } },
+        { id: 'liveBuffer', type: 'choice', label: 'Live rewind buffer', sub: 'HLS channels: pause and rewind live TV this far back (uses TV memory)',
+          options: LIVE_BUFFER_OPTIONS, get: () => settings.liveBuffer,
+          set: v => { settings.liveBuffer = v; saveSettings(); if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 && (liveEngineActive() || v > 0)) reloadStream(false); } },
         { id: 'subAuto', type: 'toggle', label: 'Subtitles on automatically', sub: 'Turn on the subtitle language below whenever a file or channel has it',
           get: () => !!settings.subAuto, set: v => { settings.subAuto = v; saveSettings(); reapplySubtitlePrefs(); } },
         { id: 'subLang', type: 'choice', label: 'Subtitle language', sub: 'Used when subtitles turn on automatically',
@@ -3819,6 +4066,7 @@ function settingsRows() {
           options: AUDIO_LANG_OPTIONS, get: () => settings.audioLang, set: v => { settings.audioLang = v; saveSettings(); if (vodPlay.active) { vodPlay.audioManual = false; applyVodTrackPrefs(); } } },
         { id: 'subSize', type: 'choice', label: 'Subtitle size', sub: 'Movies and Series', options: SUB_SIZE_OPTIONS, get: () => settings.subSize, set: v => { settings.subSize = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'subColor', type: 'choice', label: 'Subtitle colour', sub: 'Movies and Series', options: SUB_COLOR_OPTIONS, get: () => settings.subColor, set: v => { settings.subColor = v; saveSettings(); umsApplySubtitleStyle(); } },
+        { id: 'subOpacity', type: 'choice', label: 'Subtitle opacity', sub: 'Text transparency; lower is dimmer', options: SUB_OPACITY_OPTIONS, get: () => settings.subOpacity, set: v => { settings.subOpacity = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'subBg', type: 'choice', label: 'Subtitle background', sub: 'Movies and Series', options: SUB_BG_OPTIONS, get: () => settings.subBg, set: v => { settings.subBg = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'subEdge', type: 'choice', label: 'Subtitle edge', sub: 'Movies and Series', options: SUB_EDGE_OPTIONS, get: () => settings.subEdge, set: v => { settings.subEdge = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'showAdult', type: 'toggle', label: 'Show adult categories', sub: 'Movies and Series',
@@ -3950,10 +4198,16 @@ function _isTextInput(el) {
 }
 
 // ── EPG Remote Navigation ─────────────────────────────────────
+let _epgPrevFocusIdx = -1;
 function updateEPGRowFocus() {
-    for (const [idx, el] of epgRenderedRows) {
-        el.classList.toggle('epg-focused', idx === epgFocusedRowIdx);
+    // Only the row losing focus and the row gaining it change class; the others are untouched
+    if (_epgPrevFocusIdx !== epgFocusedRowIdx) {
+        const prev = epgRenderedRows.get(_epgPrevFocusIdx);
+        if (prev) prev.classList.remove('epg-focused');
+        _epgPrevFocusIdx = epgFocusedRowIdx;
     }
+    const cur = epgRenderedRows.get(epgFocusedRowIdx);
+    if (cur) cur.classList.add('epg-focused');
     scrollEPGRowIntoView(epgFocusedRowIdx);
 }
 
@@ -3962,36 +4216,31 @@ function scrollEPGRowIntoView(idx) {
     if (!scrollOuter) return;
     // Rows start after the in-flow sticky time strip, so a row's content
     // offset is strip + idx*rowH; the strip also covers the top of the viewport.
+    if (!_epgViewH) epgMeasureViewport();
     const timeStripH = EPG_TIME_STRIP_H;
     const rowTop = idx * EPG_ROW_H;
     const rowBottom = rowTop + EPG_ROW_H;
     const viewTop = scrollOuter.scrollTop;
-    const viewBottom = scrollOuter.scrollTop + scrollOuter.clientHeight - timeStripH;
-    if (rowTop < viewTop) {
-        scrollOuter.scrollTop = rowTop;
-        renderEPGVisibleRows();
-    } else if (rowBottom > viewBottom) {
-        scrollOuter.scrollTop = rowBottom + timeStripH - scrollOuter.clientHeight;
-        renderEPGVisibleRows();
-    }
+    const viewBottom = viewTop + _epgViewH - timeStripH;
+    // Setting scrollTop raises a scroll event; the rows are rendered from there, once per frame
+    if (rowTop < viewTop) scrollOuter.scrollTop = rowTop;
+    else if (rowBottom > viewBottom) scrollOuter.scrollTop = rowBottom + timeStripH - _epgViewH;
+    else return;
+    queueEPGRender();
 }
 
 function scrollEPGTimeBy(mins) {
-    const scrollOuter = document.getElementById('epgScrollOuter');
-    if (!scrollOuter) return;
-    const maxScroll = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, scrollOuter.clientWidth - EPG_CH_W);
-    scrollOuter.scrollLeft = Math.max(0, Math.min(maxScroll, scrollOuter.scrollLeft + mins * EPG_PX_PER_MIN));
-    updateEPGNavVisibility();
+    _epgX = Math.max(0, Math.min(epgMaxPan(), _epgX + mins * EPG_PX_PER_MIN));
+    epgApplyPan();
 }
 
 function updateEPGNavVisibility() {
-    const so = document.getElementById('epgScrollOuter');
     const prevBtn = document.getElementById('epgTimePrevBtn');
     const nextBtn = document.getElementById('epgTimeNextBtn');
-    if (!so || !prevBtn || !nextBtn) return;
-    const maxScroll = EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, so.clientWidth - EPG_CH_W);
-    prevBtn.classList.toggle('epg-nav-hidden', so.scrollLeft <= 1);
-    nextBtn.classList.toggle('epg-nav-hidden', so.scrollLeft >= maxScroll - 1);
+    if (!prevBtn || !nextBtn) return;
+    const maxScroll = epgMaxPan();
+    prevBtn.classList.toggle('epg-nav-hidden', _epgX <= 1);
+    nextBtn.classList.toggle('epg-nav-hidden', _epgX >= maxScroll - 1);
 }
 
 function toggleEPGFav(id) {
@@ -4192,7 +4441,11 @@ if (vodPlayerEl) {
 
 }
 videoPlayer.addEventListener('timeupdate', function () {
-    if (!vodPlay.active) return;
+    if (!vodPlay.active) {
+        // Live on hls.js: keep the "behind live" readout current while the banner is up
+        if (livePlayer.active && liveEngineActive() && document.getElementById('vodOsd').classList.contains('visible')) updateLiveOsd();
+        return;
+    }
     if (document.getElementById('vodOsd').classList.contains('visible')) updateVodOsd();
     saveVodProgress(false);
 });
@@ -4242,7 +4495,7 @@ subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopCont
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
 videoPlayer.addEventListener('loadedmetadata', function () {
     updateSubtitleButton(); updateAudioButton();
-    if (vodMode === 'live' && !vodPlay.active && !livePlayer.active) {
+    if (vodMode === 'live' && !vodPlay.active && !livePlayer.active && !liveEngineActive()) {
         setTimeout(() => { if (!(liveUms && liveUms.video) && videoPlayer.videoWidth) showFeedStats(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`); }, 1500);
     }
 });
@@ -4250,6 +4503,7 @@ videoPlayer.addEventListener('error', function () {
     if (vodPlay.active) { if (videoPlayer.getAttribute('src')) onVodError(); return; }
     if (vodMode !== 'live') return; // live video is parked while browsing Movies/Series
     if (currentChannelIndex < 0 || !videoPlayer.getAttribute('src')) return; // src cleared on purpose
+    if (!videoPlayer.error) return; // stale event from a source that has already been replaced (hls.js → native hand-over)
     const code = videoPlayer.error ? videoPlayer.error.code : 0;
     const msg = code === 2 ? 'Network error' : code === 3 ? 'Decode error' : code === 4 ? 'Stream unavailable or unsupported' : 'Playback error';
     stopStallWatchdog();

@@ -674,9 +674,15 @@ body {
     font-size: 1.1rem;
     font-weight: 700;
     color: #fff;
-    white-space: nowrap;
+    /* Full channel name: wraps onto up to two lines instead of being cut with an ellipsis */
+    white-space: normal;
+    line-height: 1.2;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
+    overflow-wrap: anywhere;
 }
 
 .epg-info-group {
@@ -746,7 +752,10 @@ body {
     overflow-x: hidden;
 }
 
-/* Time strip row — sticks to the top as you scroll vertically */
+/* Time strip row — sticks to the top as you scroll vertically.
+   The guide pans in time with a transform (--epg-x on #epgScrollOuter) instead of horizontal
+   scrolling, so nothing in a row needs position: sticky. Sticky labels in every row were each a
+   compositor layer on the TV, repainted and repositioned on every scroll step. */
 .epg-time-strip {
     position: sticky;
     top: 0;
@@ -754,19 +763,17 @@ body {
     display: flex;
     flex-direction: row;
     height: var(--epg-strip-h);
-    width: max-content;
-    min-width: 100%;
+    width: 100%;
     background: #13141b;
     border-bottom: 1px solid #2a2d3a;
 }
 
-/* Top-left corner cell — doubly frozen (sticks left AND is inside the sticky row) */
+/* Top-left corner cell */
 .epg-ch-corner {
     width: 300px;
     min-width: 200px;
     flex-shrink: 0;
-    position: sticky;
-    left: 0;
+    position: relative;
     z-index: 11;
     background: #0f1117;
     /* border-right: 1px solid #2a2d3a; */
@@ -817,6 +824,13 @@ body {
     padding: 0;
     line-height: 1;
     flex-shrink: 0;
+    /* Pointer target: the whole height of the search box and at least 44px wide, glyph centred */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    height: 100%;
+    margin-right: -10px; /* reach to the box edge over the container's padding */
 }
 
 .epg-corner-clear-btn:hover {
@@ -824,10 +838,19 @@ body {
 }
 
 /* Time markers area — width set inline via JS to match total guide width */
+.epg-time-marks-clip {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    position: relative;
+    height: var(--epg-strip-h);
+}
+
 .epg-time-marks {
     position: relative;
     height: var(--epg-strip-h);
     flex-shrink: 0;
+    transform: translateX(var(--epg-x, 0px));
 }
 
 .epg-time-marks .epg-time-marker:first-child {
@@ -892,7 +915,7 @@ body {
     bottom: 0;
     width: 3px;
     background: rgba(255, 85, 85, 0.45);
-    box-shadow: 0 0 8px rgba(255, 85, 85, 0.35);
+    /* no blurred shadow: this element spans the whole virtual body (thousands of rows tall) */
     z-index: 3;
     pointer-events: none;
 }
@@ -909,7 +932,9 @@ body {
     height: var(--epg-row-h);
     border-bottom: 1px solid #181a22;
     cursor: pointer;
-    transition: background 0.1s;
+    /* No background transition: on the TV every focus move would otherwise animate two rows
+       (and all their programme blocks) for 100 ms — a dozen style recalcs and paints per key. */
+    contain: layout;
 }
 
 .epg-row:hover {
@@ -1025,13 +1050,12 @@ body {
     pointer-events: none;
 }
 
-/* Channel label — sticks to the left as you scroll horizontally */
+/* Channel label — fixed column; the programme area next to it pans */
 .epg-ch-label {
     width: 300px;
     height: 100%;
     min-width: 200px;
-    position: sticky;
-    left: 0;
+    position: relative;
     z-index: 5;
     display: flex;
     align-items: center;
@@ -1068,8 +1092,9 @@ body {
     font-size: 1.1rem;
 }
 
-/* Hide placeholder when logo img is present and hasn't errored */
-.epg-ch-logo-wrap:has(.epg-ch-logo:not(.failed)) .epg-ch-no-logo {
+/* Hide placeholder while a logo is present and has not errored (class kept by JS; :has() made every
+   row mutation re-evaluate the selector on the TV) */
+.epg-ch-logo-wrap.has-logo .epg-ch-no-logo {
     opacity: 0;
 }
 
@@ -1099,12 +1124,21 @@ body {
     color: #ffc107;
 }
 
-/* Programme area — width set inline via JS; fixed so blocks align to time strip */
+/* Programme area — the clip fills the row next to the label; inside it the full-width (7 h)
+   programme strip is translated by --epg-x so blocks line up with the time strip */
+.epg-progs-clip {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    position: relative;
+    height: var(--epg-row-h);
+}
+
 .epg-progs {
     position: relative;
     flex-shrink: 0;
-    overflow: hidden;
     height: var(--epg-row-h);
+    transform: translateX(var(--epg-x, 0px));
 }
 
 .epg-ch-name {
@@ -1127,7 +1161,7 @@ body {
     flex-direction: column;
     justify-content: center;
     box-sizing: border-box;
-    transition: background 0.1s;
+    contain: layout paint;
 }
 
 .epg-prog-block:hover {
@@ -1246,8 +1280,10 @@ body {
     background: #2a2c35;
     border: none;
     color: #ff6666;
-    padding: 4px 10px;
-    border-radius: 15px;
+    padding: 4px 14px;
+    min-height: 44px;
+    min-width: 44px;
+    border-radius: 22px;
     font-size: 0.7rem;
     cursor: pointer;
 }
