@@ -55,12 +55,27 @@ const SETTINGS_KEY = 'iptv_settings';
 const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
 const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
 const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
-const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subOpacity: 85, subBg: 'translucent', subEdge: 'outline', subAuto: false, liveBuffer: 5, schema: 4 };
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subOpacity: 85, subBg: 'translucent', subEdge: 'outline', subAuto: false, liveBuffer: 5, autoNext: true, schema: 4 };
 // Subtitle text opacity (%), sent as charOpacity; the C4 honours it (verified with the old Grey = white at 85)
 const SUB_OPACITY_OPTIONS = [{ v: 100, label: '100%' }, { v: 85, label: '85%' }, { v: 70, label: '70%' }, { v: 55, label: '55%' }];
 // Live rewind buffer (minutes) for HLS channels played through hls.js; 0 = native player only
 const LIVE_BUFFER_OPTIONS = [{ v: 0, label: 'Off' }, { v: 2, label: '2 minutes' }, { v: 5, label: '5 minutes' }, { v: 10, label: '10 minutes' }];
 const SUB_SIZE_OPTIONS = [{ v: 'small', label: 'Small' }, { v: 'medium', label: 'Medium' }, { v: 'large', label: 'Large' }, { v: 'extraLarge', label: 'Extra large' }];
+// ----- Diagnostics (error ring buffer, startup marks; Settings → Diagnostics) -----
+// Registered this early so errors thrown while the rest of the script loads are caught too
+const _diagLog = [];
+const DIAG_MAX = 50;
+function diagLog(msg) {
+    _diagLog.push({ t: Date.now(), msg: String(msg).slice(0, 300) });
+    if (_diagLog.length > DIAG_MAX) _diagLog.shift();
+}
+window.addEventListener('error', e => diagLog(`Error: ${e.message}${e.filename ? ` (${String(e.filename).split('/').pop()}:${e.lineno})` : ''}`));
+window.addEventListener('unhandledrejection', e => diagLog(`Unhandled rejection: ${e.reason && e.reason.message ? e.reason.message : String(e.reason)}`));
+const _consoleError = console.error.bind(console);
+console.error = function () { try { diagLog('console.error: ' + Array.from(arguments).map(a => (a && a.message) || String(a)).join(' ')); } catch (_) { /* ignore */ } _consoleError.apply(console, arguments); };
+const _perfMarks = [];
+function perfMark(label) { _perfMarks.push({ label, t: Math.round(performance.now()) }); }
+perfMark('script-start');
 // No Grey: the TV's caption pipeline has no grey colour (a 'gray' request renders as white); dimmer text is Subtitle opacity
 const SUB_COLOR_OPTIONS = [{ v: 'white', label: 'White' }, { v: 'yellow', label: 'Yellow' }, { v: 'cyan', label: 'Cyan' }, { v: 'green', label: 'Green' }];
 const SUB_BG_OPTIONS = [{ v: 'none', label: 'None' }, { v: 'translucent', label: 'Translucent' }, { v: 'solid', label: 'Solid black' }];
@@ -117,7 +132,9 @@ let _xt = null;                       // { base, u, pw } while an Xtream playlis
 let _xtStreamIdByTvgId = new Map();   // tvgId -> stream_id for get_short_epg
 const EPG_CACHE_TTL_MS = 2 * 3600000; // re-fetch a channel's EPG after 2h
 const EPG_CACHE_MAX = 800;            // max channels kept in epgData (LRU eviction)
-const EPG_FETCH_CONCURRENCY = 6;      // parallel get_short_epg requests
+const EPG_FETCH_CONCURRENCY = 2;      // parallel get_short_epg requests (bursts make the provider answer with empty listings)
+const EPG_FETCH_SPACING_MS = 100;     // minimum gap between request starts
+const EPG_EMPTY_RETRY_MS = 10 * 60000; // an empty answer is asked again after 10 min, not after the full TTL
 const EPG_QUEUE_MAX = 400;            // max queued channel fetches
 const EPG_XT_LIMIT = 48;              // listings per channel requested from the provider
 let _epgFetchMeta = new Map();        // tvgId -> { at, status: 'pending'|'done'|'error' }
@@ -273,6 +290,7 @@ function loadLiveSource(url) {
 function onHlsError(url, data) {
     if (!data || !data.fatal || liveEngine.url !== url) return;
     console.log('hls.js fatal error', data.type, data.details);
+    diagLog(`hls.js fatal ${data.type}/${data.details}${document.hidden ? ' (app hidden)' : ''}`);
     const hls = liveEngine.hls;
     // Hidden app: webOS freezes the page's timers and network, which hls.js reports as failed requests.
     // Nothing is wrong with the channel; retry on the hls path when the app is visible again.
@@ -511,17 +529,146 @@ const LANG_NAMES = {
 
 // ----- EPG (XMLTV) -----
 let _chanByNum = new Map(); // provider channel number → index in channels[] (direct entry with the digit keys)
+let _chanByUrl = new Map(); // stream URL → index (Recent list, alternate sources)
+let _chansByFavId = new Map(); // favorite id (tvgId or idx_N) → [channels], so Favorites can follow the user's order
+function favIdOf(ch, idx) { return ch.tvgId || `idx_${idx}`; }
 function buildChannelIndexMap() {
     channelIndexMap = new Map();
     _chanByNum = new Map();
+    _chanByUrl = new Map();
+    _chansByFavId = new Map();
     for (let i = 0; i < channels.length; i++) {
-        channelIndexMap.set(channels[i], i);
-        const n = channels[i].num;
+        const ch = channels[i];
+        channelIndexMap.set(ch, i);
+        const n = ch.num;
         if (n > 0 && !_chanByNum.has(n)) _chanByNum.set(n, i);
+        if (ch.url && !_chanByUrl.has(ch.url)) _chanByUrl.set(ch.url, i);
+        const fid = favIdOf(ch, i);
+        if (_chansByFavId.has(fid)) _chansByFavId.get(fid).push(ch); else _chansByFavId.set(fid, [ch]);
     }
     _searchCache = { query: null, result: null };
+    _altSources.clear();
 }
 function chDisplayNum(ch, idx) { return ch && ch.num > 0 ? ch.num : idx + 1; }
+
+// ----- Previous channel, channel surfing, alternate sources, recent channels -----
+// Red (or a long press on OK) flips between the two most recent channels
+function swapToPreviousChannel() {
+    if (lastChannelIndex < 0 || !channels[lastChannelIndex] || lastChannelIndex === currentChannelIndex) return false;
+    const idx = lastChannelIndex;
+    selectChannel(idx);
+    moveCursorToChannel(channels[idx]);
+    return true;
+}
+// Put the guide / list cursor on a channel after a selection that did not come from the cursor
+function moveCursorToChannel(ch) {
+    const fi = currentFilteredChannels.indexOf(ch);
+    if (fi < 0) return;
+    if (epgMode) { epgFocusedRowIdx = fi; epgFocusT = 0; updateEPGRowFocus(); }
+    else { stdFocusIdx = fi; stdFocusZone = 'channels'; updateStdChannelFocus(); }
+}
+// Channel surfing in the live player: with the banner hidden, Up/Down step through the current list in the
+// banner without tuning; OK tunes the previewed channel, Back (or the banner timing out) cancels. CH± still zap.
+const surf = { active: false, idx: -1 }; // idx into currentFilteredChannels
+function surfChannel() { return surf.active ? currentFilteredChannels[surf.idx] || null : null; }
+function surfStep(dir) {
+    const list = currentFilteredChannels;
+    if (!list.length) return;
+    if (!surf.active) {
+        const cur = currentChannelIndex >= 0 ? list.indexOf(channels[currentChannelIndex]) : -1;
+        surf.idx = cur < 0 ? 0 : cur;
+        surf.active = true;
+        document.getElementById('vodOsd').classList.add('surf');
+    }
+    surf.idx = (surf.idx + dir + list.length) % list.length;
+    const ch = list[surf.idx];
+    if (ch && ch.tvgId && !getCurrentProgramme(ch.tvgId)) queueEpgFetch([ch.tvgId], true);
+    player.focus = 'bar';
+    showVodOsd();
+}
+function surfCancel() {
+    if (!surf.active) return;
+    surf.active = false; surf.idx = -1;
+    const osd = document.getElementById('vodOsd'); if (osd) osd.classList.remove('surf');
+    const techEl = document.getElementById('vodOsdTech'); if (techEl) techEl.textContent = liveUms ? umsTechString(liveUms) : (liveEngine.tech || ''); // the hint line goes back to the codec line
+}
+function surfTune() {
+    const ch = surfChannel();
+    surfCancel();
+    if (!ch) return;
+    const idx = getChannelIndex(ch);
+    if (idx < 0) return;
+    if (idx === currentChannelIndex) { showVodOsd(); return; }
+    selectChannel(idx);
+    moveCursorToChannel(ch);
+}
+// Alternate sources: other entries of the same channel in the playlist (same tvg-id, or the same name once
+// quality tags and punctuation are ignored). When a stream exhausts its reload budget the next source is tried.
+const _RE_NAME_TAGS = /\b(u?hd|fhd|4k|sd|hevc|h\.?26[45]|raw|backup|vip|\d{3,4}p)\b/g;
+const _RE_NAME_BRACKETS = /\([^)]*\)|\[[^\]]*\]/g;
+const _RE_NON_ALNUM = /[^a-z0-9]+/g;
+function normChannelName(name) {
+    return String(name || '').toLowerCase().replace(_RE_NAME_BRACKETS, ' ').replace(_RE_NAME_TAGS, ' ').replace(_RE_NON_ALNUM, '');
+}
+const _altSources = new Map(); // channel index → [indices] (built on first need, reset with the channel list)
+function alternateSources(idx) {
+    if (_altSources.has(idx)) return _altSources.get(idx);
+    const ch = channels[idx];
+    const out = [];
+    if (ch) {
+        const id = (ch.tvgId || '').toLowerCase(), nm = normChannelName(ch.name);
+        for (let i = 0; i < channels.length; i++) {
+            if (i === idx) continue;
+            const c = channels[i];
+            if (c.url === ch.url) continue;
+            if ((id && (c.tvgId || '').toLowerCase() === id) || (nm && normChannelName(c.name) === nm)) out.push(i);
+        }
+    }
+    _altSources.set(idx, out);
+    return out;
+}
+let _altOrigin = -1;          // the channel the user actually chose
+let _altTried = new Set();    // indices already tried for it this time
+let _selectingAlt = false;    // selectChannel() called by the fallback (not a user choice)
+function tryAlternateSource(msg) {
+    if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active) return false;
+    const alts = alternateSources(_altOrigin);
+    const next = alts.find(i => !_altTried.has(i) && channels[i]);
+    if (next === undefined) return false;
+    _altTried.add(next);
+    const n = _altTried.size - 1, total = alts.length;
+    showEPGToast(`${msg}. Trying alternate source ${n} of ${total}: ${channels[next].name}`, 'loading', 'Stream');
+    hideEPGToast(4000);
+    diagLog(`${channels[_altOrigin].name}: ${msg}; trying source ${n}/${total} (${channels[next].name})`);
+    _selectingAlt = true;
+    try { selectChannel(next); } finally { _selectingAlt = false; }
+    return true;
+}
+// Recent channels (per playlist, most recent first)
+const RECENT_MAX = 20;
+function noteRecentChannel(ch) {
+    if (!_activePlaylistKey || !ch || !ch.url) return;
+    const ps = getPlaylistState(_activePlaylistKey);
+    const list = (ps.recent || []).filter(r => r.url !== ch.url);
+    list.unshift({ url: ch.url, tvgId: ch.tvgId || '' });
+    ps.recent = list.slice(0, RECENT_MAX);
+}
+function recentChannels() {
+    const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
+    const out = [];
+    for (const r of (ps && ps.recent) || []) {
+        let i = _chanByUrl.get(r.url);
+        if (i === undefined && r.tvgId) i = channels.findIndex(c => c.tvgId === r.tvgId);
+        if (i !== undefined && i >= 0 && channels[i] && !out.includes(channels[i])) out.push(channels[i]);
+    }
+    return out;
+}
+// Favorites in the user's order (the Set keeps insertion order; Manage favorites rebuilds it)
+function favoriteChannels() {
+    const out = [];
+    for (const id of favoriteIds) { const l = _chansByFavId.get(id); if (l) for (const c of l) out.push(c); }
+    return out;
+}
 
 // ----- Direct channel number entry -----
 // Digits on the remote (in Live, guide or channel list, and in the live player) type a provider channel
@@ -549,7 +696,7 @@ function digitKeyValue(e) {
 function digitEntryAllowed() {
     if (!mainApp || mainApp.style.display === 'none' || !channels.length) return false;
     if (confirmDialog && !confirmDialog.classList.contains('hidden')) return false;
-    if (settingsOpen || catsOpen || vodPlay.active || vodMode !== 'live') return false;
+    if (settingsOpen || catsOpen || diagOpen || vodPlay.active || vodMode !== 'live') return false;
     if (_isTextInput(document.activeElement)) return false;
     return !_chanByNum.size ? false : true;
 }
@@ -637,6 +784,28 @@ function resolveEpgId(tvgId) {
     if (epgData.has(tvgId)) return tvgId;
     return epgIdMap.get(tvgId.toLowerCase()) || null;
 }
+// XMLTV channels whose tvg-id matches nothing get their guide data by name: "BBC One HD" ↔ <display-name>BBC One</display-name>.
+// A channel with a tvg-id is aliased in epgIdMap; one without gets the XMLTV id as its tvgId (its favorite key moves with it).
+function applyEpgNameFallback(nameMap) {
+    if (!nameMap || !nameMap.size || currentPlaylistType !== 'm3u') return 0;
+    let n = 0, favChanged = false;
+    for (let i = 0; i < channels.length; i++) {
+        const ch = channels[i];
+        if (resolveEpgId(ch.tvgId)) continue;
+        const cid = nameMap.get(normChannelName(ch.name));
+        if (!cid || !epgData.has(cid)) continue;
+        if (ch.tvgId) epgIdMap.set(ch.tvgId.toLowerCase(), cid);
+        else {
+            const oldFav = `idx_${i}`;
+            if (favoriteIds.has(oldFav)) { favoriteIds.delete(oldFav); favoriteIds.add(cid); favChanged = true; }
+            ch.tvgId = cid;
+        }
+        n++;
+    }
+    if (n) buildChannelIndexMap(); // favorite ids and search cache follow the new tvgIds
+    if (favChanged) saveFavorites();
+    return n;
+}
 
 function getCurrentProgramme(tvgId) {
     const id = resolveEpgId(tvgId);
@@ -670,6 +839,7 @@ async function loadEPG(url) {
     // refresh never blanks the existing guide while it downloads.
     const newData = new Map();
     const newIdMap = new Map();
+    const newNameMap = new Map(); // normalised <display-name> → channel id, for channels whose tvg-id matches nothing
     currentEpgUrl = url;
 
     const decoder = new TextDecoder('utf-8');
@@ -716,7 +886,11 @@ async function loadEPG(url) {
                     if (idM) {
                         const cid = idM[1];
                         newIdMap.set(cid.toLowerCase(), cid);
-                        if (nmM) newIdMap.set(nmM[1].toLowerCase().trim(), cid);
+                        if (nmM) {
+                            newIdMap.set(nmM[1].toLowerCase().trim(), cid);
+                            const nn = normChannelName(unescapeXml(nmM[1]));
+                            if (nn && !newNameMap.has(nn)) newNameMap.set(nn, cid);
+                        }
                     }
                 }
                 cursor = idx + 10;
@@ -773,13 +947,15 @@ async function loadEPG(url) {
         epgData = newData;
         epgIdMap = newIdMap;
         _epgLoadedAt = Date.now();
+        const byName = applyEpgNameFallback(newNameMap);
 
         renderChannelList();
         updateNowNext();
         startEpgTick();
+        perfMark('xmltv-ready');
 
         const mb = (bytesRead / 1048576).toFixed(1);
-        const readyMsg = `${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)`;
+        const readyMsg = `${epgData.size.toLocaleString()} channels, ${programmeCount.toLocaleString()} programmes (${mb} MB)${byName ? `, ${byName.toLocaleString()} matched by name` : ''}`;
         statusArea.innerText = `📅 EPG ready — ${readyMsg}`;
         showEPGToast(readyMsg, 'success');
         hideEPGToast(3500);
@@ -1102,7 +1278,9 @@ function applyM3UChannels(parsed, url, epgUrl, fromCache) {
     resetStdFocus();
     startPage.classList.add('hidden');
     mainApp.style.display = 'flex';
+    perfMark(`channels-applied(${channels.length}${fromCache ? ',cache' : ''})`);
     renderChannelList();
+    perfMark('list-rendered');
     statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
     if (channels.length) setTimeout(selectInitialChannel, 500);
     // Start EPG load in background after playlist is ready
@@ -1218,17 +1396,28 @@ function extractGroups() {
     const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
     _hiddenGroups = new Set((ps && ps.hiddenGroups) || []);
     _groupOrder = (ps && ps.groupOrder) || [];
-    groupsList = ['favorites', 'all'].concat(sortGroupNames(allGroupNames().filter(g => !_hiddenGroups.has(g))));
+    groupsList = ['favorites', 'all', 'recent'].concat(sortGroupNames(allGroupNames().filter(g => !_hiddenGroups.has(g))));
     renderGroupsList();
 }
+const PINNED_GROUPS = ['favorites', 'all', 'recent'];
 
-// ----- Categories manager (hide / reorder, per playlist) -----
-let catsOpen = false, catsFocus = 0, _catsNames = [];
-function openCatsManager() {
-    if (!_activePlaylistKey || _activePlaylistKey === 'm:demo') return;
+// ----- Categories manager (hide / reorder, per playlist) and Favorites manager (reorder / remove) -----
+// The same overlay serves both: `catsMode` is 'cats' (group names) or 'favs' (favorite ids in the user's order)
+let catsOpen = false, catsFocus = 0, _catsNames = [], catsMode = 'cats';
+function openCatsManager(mode) {
+    catsMode = mode === 'favs' ? 'favs' : 'cats';
+    if (!_activePlaylistKey || (catsMode === 'cats' && _activePlaylistKey === 'm:demo')) return;
     const ov = document.getElementById('catsOverlay'); if (!ov) return;
-    _catsNames = sortGroupNames(allGroupNames());
-    catsFocus = Math.max(0, _catsNames.indexOf(currentGroup));
+    if (catsMode === 'favs') {
+        _catsNames = [...favoriteIds].filter(id => _chansByFavId.has(id)); // favorites present in this playlist
+        if (!_catsNames.length) return;
+        catsFocus = 0;
+    } else {
+        _catsNames = sortGroupNames(allGroupNames());
+        catsFocus = Math.max(0, _catsNames.indexOf(currentGroup));
+    }
+    const title = ov.querySelector('.settings-title'); if (title) title.textContent = catsMode === 'favs' ? '⭐ Manage favorites' : '📁 Manage categories';
+    const hint = ov.querySelector('.settings-hint'); if (hint) hint.textContent = catsMode === 'favs' ? 'OK remove / restore · ◀ ▶ or Red / Green move · Back close' : 'OK hide / show · ◀ ▶ or Red / Green move · Back close';
     catsOpen = true;
     if (settingsOpen) closeSettings();
     ov.classList.remove('hidden');
@@ -1239,10 +1428,15 @@ function closeCatsManager() {
     catsOpen = false;
     const ov = document.getElementById('catsOverlay'); if (ov) ov.classList.add('hidden');
     const list = document.getElementById('catsList'); if (list) list.innerHTML = ''; // rows share .settings-row; leave none behind
+    if (catsMode === 'favs') { refreshCurrentView(); return; } // favorites were saved as they changed
     // Apply once on close: group list, All Channels and search all follow the new state
     extractGroups();
     validateCurrentGroup();
     refreshCurrentView();
+}
+function catsFavLabel(id) {
+    const l = _chansByFavId.get(id) || [];
+    return l.length ? (l.length > 1 ? `${l[0].name} (+${l.length - 1})` : l[0].name) : id;
 }
 function saveCatsState() {
     if (!_activePlaylistKey) return;
@@ -1254,30 +1448,55 @@ function saveCatsState() {
 function renderCats() {
     const list = document.getElementById('catsList'); if (!list) return;
     list.innerHTML = '';
+    const favs = catsMode === 'favs';
     _catsNames.forEach((g, i) => {
         const row = document.createElement('div');
-        const hidden = _hiddenGroups.has(g);
-        row.className = 'settings-row cats-row' + (hidden ? ' cats-hidden' : '') + (i === catsFocus ? ' focused' : '');
+        const off = favs ? !favoriteIds.has(g) : _hiddenGroups.has(g);
+        row.className = 'settings-row cats-row' + (off ? ' cats-hidden' : '') + (i === catsFocus ? ' focused' : '');
         row.dataset.idx = i;
-        row.innerHTML = `<div class="settings-label"><div class="settings-name">${escapeHtml(g)}</div></div><div class="settings-value"><span class="settings-val">${hidden ? '🚫 Hidden' : '👁 Shown'}</span></div>`;
+        const label = favs ? catsFavLabel(g) : g;
+        const state = favs ? (off ? '✕ Removed' : '★ Favorite') : (off ? '🚫 Hidden' : '👁 Shown');
+        row.innerHTML = `<div class="settings-label"><div class="settings-name">${escapeHtml(label)}</div></div><div class="settings-value"><span class="settings-val">${state}</span></div>`;
         row.addEventListener('click', () => { catsFocus = i; catsToggleHidden(); });
         list.appendChild(row);
     });
     const f = list.querySelector('.cats-row.focused'); if (f) f.scrollIntoView({ block: 'nearest' });
 }
+function saveFavorites() { localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds])); }
 function catsToggleHidden() {
     const g = _catsNames[catsFocus]; if (!g) return;
+    if (catsMode === 'favs') {
+        // Removed favorites stay listed (struck through) until the manager closes, so OK again restores them in place
+        if (favoriteIds.has(g)) favoriteIds.delete(g); else catsRebuildFavOrder();
+        saveFavorites();
+        renderCats();
+        return;
+    }
     if (_hiddenGroups.has(g)) _hiddenGroups.delete(g); else _hiddenGroups.add(g);
     saveCatsState();
     renderCats();
+}
+// favoriteIds in the manager's order (kept ones only), followed by favorites that belong to other playlists
+function catsRebuildFavOrder() {
+    const shown = new Set(_catsNames);
+    const removed = new Set(_catsNames.filter(id => !favoriteIds.has(id)));
+    const rest = [...favoriteIds].filter(id => !shown.has(id));
+    favoriteIds = new Set(_catsNames.filter(id => !removed.has(id) || id === _catsNames[catsFocus]).concat(rest));
 }
 function catsMove(dir) {
     const i = catsFocus, j = i + dir;
     if (j < 0 || j >= _catsNames.length) return;
     [_catsNames[i], _catsNames[j]] = [_catsNames[j], _catsNames[i]];
-    _groupOrder = _catsNames.slice(); // the full explicit order from now on
     catsFocus = j;
-    saveCatsState();
+    if (catsMode === 'favs') {
+        const removed = new Set(_catsNames.filter(id => !favoriteIds.has(id)));
+        const rest = [...favoriteIds].filter(id => !_catsNames.includes(id));
+        favoriteIds = new Set(_catsNames.filter(id => !removed.has(id)).concat(rest));
+        saveFavorites();
+    } else {
+        _groupOrder = _catsNames.slice(); // the full explicit order from now on
+        saveCatsState();
+    }
     renderCats();
 }
 function handleCatsKey(e) {
@@ -1307,11 +1526,14 @@ function renderGroupsList() {
         } else if (group === 'all') {
             folderIcon = '📺';
             displayName = 'All Channels';
+        } else if (group === 'recent') {
+            folderIcon = '🕒';
+            displayName = 'Recent';
         } else {
             folderIcon = '📁';
             displayName = escapeHtml(group);
         }
-        if (currentSearchQuery && group !== 'favorites' && group !== 'all' && group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
+        if (currentSearchQuery && !PINNED_GROUPS.includes(group) && group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
             displayName = highlightText(displayName, currentSearchQuery);
         }
         div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${displayName}</span>`;
@@ -1323,7 +1545,7 @@ function renderGroupsList() {
             renderGroupsList();
             requestAnimationFrame(refreshCurrentView);
         };
-        if ((group === 'favorites' || group === 'all') && pinnedDiv) {
+        if (PINNED_GROUPS.includes(group) && pinnedDiv) {
             pinnedDiv.appendChild(div);
         } else {
             groupsListDiv.appendChild(div);
@@ -1395,6 +1617,8 @@ function renderChannelList() {
             title = '🔍 Search Results';
         } else if (currentGroup === 'favorites') {
             title = '⭐ Favorites';
+        } else if (currentGroup === 'recent') {
+            title = '🕒 Recent';
         } else if (currentGroup === 'all') {
             title = '📺 All Channels';
         } else {
@@ -1408,7 +1632,9 @@ function renderChannelList() {
     if (currentSearchQuery && currentSearchQuery.trim()) {
         filtered = searchChannels(currentSearchQuery);
     } else if (currentGroup === 'favorites') {
-        filtered = channels.filter((ch, idx) => favoriteIds.has(ch.tvgId || `idx_${idx}`));
+        filtered = favoriteChannels();
+    } else if (currentGroup === 'recent') {
+        filtered = recentChannels();
     } else if (currentGroup === 'all') {
         filtered = _hiddenGroups.size ? channels.filter(ch => !_hiddenGroups.has(ch.group)) : [...channels];
     } else {
@@ -1535,9 +1761,9 @@ function startStallWatchdog() {
                 stallCount = 0;
                 stallLastTime = -1;
                 if (_reloadAttempts >= MAX_AUTO_RELOADS) {
-                    // Budget exhausted: stop hammering the stream and tell the user
+                    // Budget exhausted: try another source of the same channel, else stop hammering it and tell the user
                     stopStallWatchdog();
-                    showStreamError('Stream not responding');
+                    if (!tryAlternateSource('Stream not responding')) showStreamError('Stream not responding');
                     return;
                 }
                 _reloadAttempts++;
@@ -1558,10 +1784,12 @@ function stopStallWatchdog() {
 
 function showStreamError(msg) {
     const name = (currentChannelIndex >= 0 && channels[currentChannelIndex]) ? channels[currentChannelIndex].name : '';
+    const tried = _altTried.size > 1 ? ` (${_altTried.size} sources tried)` : '';
     statusArea.innerText = `⚠️ ${msg}`;
     channelInfoTag.innerText = `⚠️ ${name ? name + ' — ' : ''}${msg}`;
-    showEPGToast(`${name ? name + ': ' : ''}${msg}. Press Reload to retry.`, 'error', 'Stream Error');
+    showEPGToast(`${name ? name + ': ' : ''}${msg}${tried}. Press Reload to retry.`, 'error', 'Stream Error');
     hideEPGToast(7000);
+    diagLog(`Stream error: ${name}: ${msg}${tried}`);
 }
 
 // Enter on the already-playing row (or a click on the live picture): open the app-owned player
@@ -1618,7 +1846,14 @@ function selectChannel(index) {
     if (vodPlay.active) stopVodPlayback(false);
     stopStallWatchdog();
     catchup = null; // any channel selection returns to live
-    if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = currentChannelIndex;
+    surfCancel();
+    if (_selectingAlt) {
+        // fallback to another source of the same channel: not a channel change for history purposes
+    } else {
+        if (currentChannelIndex >= 0 && currentChannelIndex !== index) lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ? _altOrigin : currentChannelIndex;
+        _altOrigin = index; _altTried = new Set([index]);
+        noteRecentChannel(channels[index]);
+    }
     currentChannelIndex = index;
     _reloadAttempts = 0;
     if (_errRetryTimer) { clearTimeout(_errRetryTimer); _errRetryTimer = null; }
@@ -2669,8 +2904,14 @@ function queueEpgFetch(tvgIds, front) {
     pumpEpgQueue();
 }
 
+// Request starts are spaced out: the provider answers bursts of get_short_epg with empty listings
+// (measured on the C4 2026-10-07: 60 parallel requests → 15 with data; the same ids one at a time → all with data)
+let _epgLastStart = 0, _epgPumpTimer = null;
 function pumpEpgQueue() {
     while (_epgInFlight < EPG_FETCH_CONCURRENCY && _epgQueue.length) {
+        const wait = _epgLastStart + EPG_FETCH_SPACING_MS - Date.now();
+        if (wait > 0) { if (!_epgPumpTimer) _epgPumpTimer = setTimeout(() => { _epgPumpTimer = null; pumpEpgQueue(); }, wait); return; }
+        _epgLastStart = Date.now();
         const id = _epgQueue.shift();
         _epgQueued.delete(id);
         _epgInFlight++;
@@ -2712,9 +2953,12 @@ async function fetchXtreamEpgFor(tvgId) {
         }
     } catch (_) { /* network error — becomes eligible for retry below */ }
     if (_xt !== xt) return; // playlist changed while this request was in flight
-    // A failed fetch is retried after 60 s instead of waiting out the full TTL
-    _epgFetchMeta.set(tvgId, { at: ok ? Date.now() : Date.now() - EPG_CACHE_TTL_MS + 60000, status: ok ? 'done' : 'error' });
-    if (ok) epgPersist(tvgId, Date.now(), progs);
+    // A failed fetch is retried after 60 s instead of waiting out the full TTL. An empty answer is retried after
+    // EPG_EMPTY_RETRY_MS (providers return empty lists under load) and never replaces data already held.
+    const empty = ok && !progs.length;
+    _epgFetchMeta.set(tvgId, { at: ok ? (empty ? Date.now() - EPG_CACHE_TTL_MS + EPG_EMPTY_RETRY_MS : Date.now()) : Date.now() - EPG_CACHE_TTL_MS + 60000, status: ok ? 'done' : 'error' });
+    if (ok && progs.length) epgPersist(tvgId, Date.now(), progs);
+    if (empty && epgData.has(tvgId)) { onEpgChannelUpdated(tvgId); return; } // keep what we have (stale beats blank)
     if (progs.length) {
         epgData.delete(tvgId); // re-insert so Map insertion order doubles as LRU order
         epgData.set(tvgId, progs);
@@ -2747,6 +2991,7 @@ function flushEpgRowUpdates() {
     const ids = new Set(_epgDirtyIds);
     _epgDirtyIds.clear();
     if (!ids.size) return;
+    const sc = surfChannel(); if (sc && sc.tvgId && ids.has(sc.tvgId) && livePlayer.active) updateLiveOsd(); // previewed channel's programme arrived
     if (epgMode) {
         for (const [idx, el] of epgRenderedRows) {
             const ch = currentFilteredChannels[idx];
@@ -2967,13 +3212,15 @@ function applyXtreamChannels(parsed, base, username, password, fromCache, tz, ep
     validateCurrentGroup();
     startPage.classList.add('hidden');
     mainApp.style.display = 'flex';
+    perfMark(`channels-applied(${channels.length}${fromCache ? ',cache' : ''})`);
     enterEPGMode(); // switch to guide layout immediately; programme blocks fill in as EPG loads
+    perfMark('guide-rendered');
     statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
     if (channels.length) setTimeout(selectInitialChannel, 500);
     // EPG is fetched lazily per visible row (see "Xtream lazy EPG"): cached entries first, then favorites in the background
     startEpgTick();
     const key = _activePlaylistKey;
-    epgRestoreFromCache(key).then(() => { if (_activePlaylistKey === key) setTimeout(prefetchFavoritesEpg, 800); });
+    epgRestoreFromCache(key).then(n => { perfMark(`epg-cache-restored(${n})`); if (_activePlaylistKey === key) setTimeout(prefetchFavoritesEpg, 800); });
 }
 
 // ----- Saved Playlists Management -----
@@ -3242,6 +3489,37 @@ function removeVodProgress(item) {
     saveJson('iptv_vod_progress', vodProgress);
 }
 function episodeProgress(seriesId, epId) { return vodProgress[progressKeyFor('episode', epId, seriesId)] || null; }
+// Manual watched state (details page button for movies, Red on an episode row for series)
+function isMovieWatched(item) { const e = vodProgress[progressKeyFor('movie', item.id)]; return !!(e && e.watched); }
+function setMovieWatched(item, info, on) {
+    const key = progressKeyFor('movie', item.id);
+    if (!on) delete vodProgress[key];
+    else {
+        const dur = (info && info.duration) || (vodProgress[key] && vodProgress[key].dur) || 1;
+        vodProgress[key] = { kind: 'movie', id: item.id, name: item.name, icon: item.icon, ext: item.ext, catId: item.catId, rating: item.rating || 0, pos: dur, dur, at: Date.now(), watched: true };
+    }
+    pruneVodProgress();
+    saveJson('iptv_vod_progress', vodProgress);
+}
+function episodeIsLast(seasons, ep) {
+    for (let i = seasons.length - 1; i >= 0; i--) {
+        const eps = seasons[i].episodes;
+        if (!eps.length) continue;
+        return eps[eps.length - 1].id === ep.id;
+    }
+    return true;
+}
+function setEpisodeWatched(item, ep, seasons, on) {
+    const key = progressKeyFor('episode', ep.id, item.id);
+    if (!on) delete vodProgress[key];
+    else {
+        const dur = ep.duration || (vodProgress[key] && vodProgress[key].dur) || 1;
+        vodProgress[key] = { kind: 'episode', id: ep.id, name: item.name, icon: item.icon, catId: item.catId, rating: item.rating || 0, pos: dur, dur, at: Date.now(), watched: true,
+                             seriesId: item.id, season: ep.season, epNum: ep.num, epTitle: ep.title, epId: ep.id, lastOfSeries: episodeIsLast(seasons, ep) };
+    }
+    pruneVodProgress();
+    saveJson('iptv_vod_progress', vodProgress);
+}
 function lastEpisodeEntry(seriesId) {
     const prefix = `${_activePlaylistKey || '_'}|e:${seriesId}:`;
     let best = null;
@@ -3485,6 +3763,7 @@ function buildVodCard(item, focused, pos) {
         `<div class="vod-poster"><span class="vod-poster-name">${escapeHtml(item.name)}</span>` +
         (item.icon ? `<img loading="lazy" src="${escapeHtml(item.icon)}" alt="" onerror="this.remove()">` : '') +
         (fav ? '<span class="vod-star">★</span>' : '') +
+        (item.kind === 'movie' && isMovieWatched(item) ? '<span class="vod-card-chk">✓</span>' : '') +
         (pct ? `<div class="vod-prog"><i style="width:${pct}%"></i></div>` : '') +
         `</div><div class="vod-card-t">${escapeHtml(item.name)}</div><div class="vod-card-m">${escapeHtml(meta)}</div>`;
     // A pointer click opens the title like OK does, and also moves the cursor to this card, so Back from
@@ -3678,6 +3957,15 @@ function vodDetailButtons() {
         renderVodDetails();
         showEPGToast(`${item.name} removed from Continue Watching`, 'success', 'Continue Watching'); hideEPGToast(2500);
     } });
+    if (item.kind === 'movie') {
+        const w = isMovieWatched(item);
+        btns.push({ id: 'watched', label: w ? '✓ Watched · mark unwatched' : '✓ Mark as watched', act: () => {
+            setMovieWatched(item, info, !w);
+            if (vodNav.detailBtn >= vodDetailButtons().length) vodNav.detailBtn = 0;
+            renderVodDetails();
+            showEPGToast(`${item.name} marked as ${w ? 'unwatched' : 'watched'}`, 'success', 'Watched'); hideEPGToast(2000);
+        } });
+    }
     return btns;
 }
 function renderVodDetails() {
@@ -3732,7 +4020,7 @@ function renderVodDetails() {
     } else if (item.kind === 'series' && info && !info.seasons.length) {
         html += `<div class="vod-dcast">No episodes listed for this series.</div>`;
     }
-    html += `<div class="vod-dhint">◀ ▶ move · OK select · Back to ${vodNav.list === 'home' ? 'Home' : 'list'}</div></div></div>`;
+    html += `<div class="vod-dhint">◀ ▶ move · OK select${item.kind === 'series' && info && info.seasons.length ? ' · Red mark episode watched' : ''} · Back to ${vodNav.list === 'home' ? 'Home' : 'list'}</div></div></div>`;
     box.innerHTML = html;
     box.querySelectorAll('.vod-btn').forEach(b => b.addEventListener('click', () => { vodNav.detailZone = 'buttons'; vodNav.detailBtn = +b.dataset.i; const btn = vodDetailButtons()[vodNav.detailBtn]; if (btn && !btn.disabled) btn.act(); }));
     box.querySelectorAll('.vod-season').forEach(b => b.addEventListener('click', () => { vodNav.detailZone = 'seasons'; vodNav.season = +b.dataset.i; vodNav.epIdx = 0; renderVodDetails(); }));
@@ -3751,6 +4039,20 @@ function handleVodDetailsKey(e, up, down, left, right, enter) {
     const hasSeasons = d.item.kind === 'series' && d.info && d.info.seasons.length > 1;
     const hasEps = d.item.kind === 'series' && d.info && d.info.seasons.length > 0;
     const z = vodNav.detailZone;
+    const red = e.keyCode === 403 || e.key === 'ColorF0Red';
+    if (red && z === 'episodes' && hasEps) {
+        // Red on an episode row toggles its watched state
+        e.preventDefault();
+        const ep = d.info.seasons[vodNav.season].episodes[vodNav.epIdx];
+        if (ep) {
+            const p = episodeProgress(d.item.id, ep.id);
+            const on = !(p && p.watched);
+            setEpisodeWatched(d.item, ep, d.info.seasons, on);
+            renderVodDetails();
+            showEPGToast(`S${ep.season} E${ep.num} marked as ${on ? 'watched' : 'unwatched'}`, 'success', 'Watched'); hideEPGToast(2000);
+        }
+        return;
+    }
     if (!(up || down || left || right || enter)) return;
     e.preventDefault();
     if (z === 'buttons') {
@@ -3818,7 +4120,7 @@ function handleVodBrowseKey(e, up, down, left, right, enter) {
 }
 
 // ── playback ─────────────────────────────────────────────────
-function _inPlayerMode() { return (!!document.fullscreenElement || playerActive()) && !settingsOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
+function _inPlayerMode() { return (!!document.fullscreenElement || playerActive()) && !settingsOpen && !diagOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
 function showPlayerControls() { if (playerActive()) showVodOsd(); else showTopControls(); }
 function vodNextVisible() { return !document.getElementById('vodNext').classList.contains('hidden'); }
 function restoreLiveVideoSlot() {
@@ -3954,6 +4256,21 @@ function updateLiveOsd() {
         return;
     }
     if (document.getElementById('vodOsd').dataset.catchup) { document.getElementById('vodOsd').dataset.catchup = ''; renderPlayerButtons(); }
+    const sc = surfChannel();
+    if (sc) {
+        // Channel surfing: the banner describes the previewed channel, not the one playing
+        const now = getCurrentProgramme(sc.tvgId), next = getNextProgramme(sc.tvgId);
+        document.getElementById('vodOsdTitle').textContent = `${chDisplayNum(sc, getChannelIndex(sc))}  ${sc.name}`;
+        document.getElementById('vodOsdSub').textContent = [sc.group || '', now ? now.title : (sc.tvgId ? 'Loading programme …' : '')].filter(Boolean).join(' · ');
+        let pct = 0;
+        if (now && now.stop > now.start) pct = Math.min(100, Math.max(0, (Date.now() - now.start) / (now.stop - now.start) * 100));
+        document.getElementById('vodBarFill').style.width = pct + '%';
+        document.getElementById('vodBarKnob').style.left = pct + '%';
+        document.getElementById('vodTimePos').textContent = now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : '';
+        document.getElementById('vodTimeRem').textContent = next ? `Next: ${next.title} · ${formatClock(next.start)}` : '';
+        document.getElementById('vodOsdTech').textContent = `▲ ▼ browse · OK watch · Back cancel · ${surf.idx + 1} / ${currentFilteredChannels.length}`;
+        return;
+    }
     const now = getCurrentProgramme(ch.tvgId), next = getNextProgramme(ch.tvgId);
     document.getElementById('vodOsdTitle').textContent = `${chDisplayNum(ch, currentChannelIndex)}  ${ch.name}`;
     const subBits = [ch.group || '', now ? now.title : ''].filter(Boolean);
@@ -3975,15 +4292,17 @@ function showVodOsd() {
     osd.classList.add('visible');
     if (vodPlay.osdTimer) clearTimeout(vodPlay.osdTimer);
     vodPlay.osdTimer = setTimeout(() => {
-        if (videoPlayer.paused) return; // keep it up while paused
+        if (videoPlayer.paused && !surf.active) return; // keep it up while paused
         osd.classList.remove('visible');
+        surfCancel(); // a preview that was not tuned is dropped with the banner
         player.focus = 'bar'; // next Up always starts from the bar
         updatePlayerFocus();
-    }, 3000);
+    }, surf.active ? 5000 : 3000);
 }
 function hideVodOsd() {
     const osd = document.getElementById('vodOsd');
     osd.classList.remove('visible');
+    surfCancel();
     if (vodPlay.osdTimer) { clearTimeout(vodPlay.osdTimer); vodPlay.osdTimer = null; }
     player.focus = 'bar';
     updatePlayerFocus();
@@ -4065,6 +4384,12 @@ function handleVodPlayerKey(e, up, down, left, right, enter) {
         else if (up || down) e.preventDefault();
         return; // Enter is handled by the shared keyup listener
     }
+    if (livePlayer.active && !vodPlay.active) {
+        // Red: previous channel. Up/Down with the banner hidden (or while already surfing): channel surfing
+        if (e.keyCode === 403 || e.key === 'ColorF0Red') { e.preventDefault(); surfCancel(); if (swapToPreviousChannel()) showVodOsd(); return; }
+        const osdVisible = document.getElementById('vodOsd').classList.contains('visible');
+        if ((up || down) && (surf.active || !osdVisible)) { e.preventDefault(); surfStep(down ? 1 : -1); return; }
+    }
     if (up) { e.preventDefault(); if (player.focus === 'bar') player.focus = 'buttons'; showVodOsd(); }
     else if (down) { e.preventDefault(); player.focus = 'bar'; showVodOsd(); }
     else if ((left || right) && player.focus === 'buttons') {
@@ -4097,6 +4422,7 @@ function showVodNext(nxt) {
     document.getElementById('vodNextName').textContent = `${vodPlay.item.name} · S${nxt.season} E${nxt.ep.num}${nxt.ep.title ? ' · ' + nxt.ep.title : ''}`;
     document.getElementById('vodNext').classList.remove('hidden');
     updateVodNextFocus();
+    if (settings.autoNext === false) { document.getElementById('vodNextLabel').textContent = 'Up next'; return; } // card only; OK plays, Back leaves
     const tick = () => {
         document.getElementById('vodNextLabel').textContent = `Up next · plays in ${vodPlay.nextCountdown} s`;
         if (vodPlay.nextCountdown <= 0) { playNextEpisode(); return; }
@@ -4586,6 +4912,7 @@ function loadSettings() {
     out.subAuto = !!out.subAuto;
     if (out.subLang === 'off') out.subLang = 'en';
     if (!LIVE_BUFFER_OPTIONS.some(o => o.v === out.liveBuffer)) out.liveBuffer = DEFAULT_SETTINGS.liveBuffer;
+    out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
     return out;
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
@@ -4599,7 +4926,7 @@ function refreshViewIfLoaded() { if (currentPlaylistType) refreshCurrentView(); 
 // Starting group for a playlist: Favorites (default), All Channels, or the last group used
 function initialGroupFor(key) {
     const ps = getPlaylistState(key);
-    if (ps.startGroup === 'all') return 'all';
+    if (ps.startGroup === 'all' || ps.startGroup === 'recent') return ps.startGroup;
     if (ps.startGroup === 'last' && ps.lastGroup) return ps.lastGroup;
     return 'favorites';
 }
@@ -4656,12 +4983,14 @@ function settingsRows() {
         { id: 'autoLoad', type: 'toggle', label: 'Auto-load last playlist', sub: 'Skip the start page on launch',
           get: () => settings.autoLoad, set: v => { settings.autoLoad = v; saveSettings(); } },
         { id: 'startGroup', type: 'choice', label: 'Starting group', sub: forName, disabled: !t,
-          options: [{ v: 'favorites', label: 'Favorites' }, { v: 'all', label: 'All Channels' }, { v: 'last', label: 'Last used' }],
+          options: [{ v: 'favorites', label: 'Favorites' }, { v: 'all', label: 'All Channels' }, { v: 'recent', label: 'Recent' }, { v: 'last', label: 'Last used' }],
           get: () => (ps && ps.startGroup) || 'favorites', set: v => { ps.startGroup = v; savePlaylistState(); } },
         { id: 'resume', type: 'toggle', label: 'Resume last channel', sub: forName, disabled: !t,
           get: () => !ps || ps.resume !== false, set: v => { ps.resume = v; savePlaylistState(); } },
         { id: 'manageCats', type: 'action', label: 'Manage categories', sub: t ? `Hide or reorder categories for ${t.name}${_hiddenGroups.size ? ` · ${_hiddenGroups.size} hidden` : ''}` : 'Load a playlist first', button: 'Open',
-          disabled: !t || !_activePlaylistKey || _activePlaylistKey === 'm:demo' || _activePlaylistKey !== t.key, run: openCatsManager },
+          disabled: !t || !_activePlaylistKey || _activePlaylistKey === 'm:demo' || _activePlaylistKey !== t.key, run: () => openCatsManager('cats') },
+        { id: 'manageFavs', type: 'action', label: 'Manage favorites', sub: favoriteIds.size ? `Reorder or remove · ${favoriteIds.size.toLocaleString()} saved` : 'No favorites yet', button: 'Open',
+          disabled: !favoriteIds.size || !_activePlaylistKey || vodMode !== 'live', run: () => openCatsManager('favs') },
         { id: 'refreshPlaylist', type: 'action', label: 'Refresh playlist now', button: 'Refresh',
           sub: _activePlaylistKey && _activePlaylistKey !== 'm:demo' ? (_playlistRefreshing ? 'Refreshing …' : `Channel list fetched ${_playlistCacheAt ? fmtAge(_playlistCacheAt) : 'this session'}; refreshes itself after 6 h`) : 'Load a playlist first',
           disabled: !_activePlaylistKey || _activePlaylistKey === 'm:demo' || _playlistRefreshing,
@@ -4680,11 +5009,14 @@ function settingsRows() {
         { id: 'subOpacity', type: 'choice', label: 'Subtitle opacity', sub: 'Text transparency; lower is dimmer', options: SUB_OPACITY_OPTIONS, get: () => settings.subOpacity, set: v => { settings.subOpacity = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'subBg', type: 'choice', label: 'Subtitle background', sub: 'Movies and Series', options: SUB_BG_OPTIONS, get: () => settings.subBg, set: v => { settings.subBg = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'subEdge', type: 'choice', label: 'Subtitle edge', sub: 'Movies and Series', options: SUB_EDGE_OPTIONS, get: () => settings.subEdge, set: v => { settings.subEdge = v; saveSettings(); umsApplySubtitleStyle(); } },
+        { id: 'autoNext', type: 'toggle', label: 'Auto-play next episode', sub: 'Series: when an episode ends, the next one starts after a short countdown',
+          get: () => settings.autoNext !== false, set: v => { settings.autoNext = v; saveSettings(); } },
         { id: 'showAdult', type: 'toggle', label: 'Show adult categories', sub: 'Movies and Series',
           get: () => !!settings.showAdult,
           set: v => { settings.showAdult = v; saveSettings(); if (vodMode !== 'live') { renderGroupsList(); if (vodNav.screen === 'home') renderVodHome(); else if (vodNav.screen === 'grid' && vodNav.list === 'all') openVodList('all'); } } },
         { id: 'clearFavs', type: 'action', label: 'Clear favorites', sub: `${favoriteIds.size.toLocaleString()} saved`, button: 'Clear', disabled: !favoriteIds.size,
           run: () => showConfirmDialog('⭐ Clear Favorites', `Remove all ${favoriteIds.size.toLocaleString()} favorites?`, clearFavorites) },
+        { id: 'diag', type: 'action', label: 'Diagnostics', sub: `Startup timings, memory, stream engine and the last ${_diagLog.length ? _diagLog.length + ' ' : ''}errors`, button: 'Open', run: openDiag },
     ];
 }
 function settingsFocusables(rows) { return rows.filter(r => !r.disabled).map(r => r.id).concat(['close']); }
@@ -4768,6 +5100,60 @@ function closeSettings() {
     settingsOpen = false;
     if (!startPage.classList.contains('hidden')) { updateFocusableElements(); focusElement(currentFocusIndex); }
 }
+// ── Diagnostics overlay ──────────────────────────────────────
+let diagOpen = false;
+let _appVersion = '';
+function diagLines() {
+    const L = [];
+    const mem = performance.memory ? `${Math.round(performance.memory.usedJSHeapSize / 1048576)} MB used of ${Math.round(performance.memory.jsHeapSizeLimit / 1048576)} MB JS heap` : 'n/a';
+    L.push(`IPTV Ultra ${_appVersion || ''}`.trim());
+    L.push(`Up ${fmtClock(Math.round(performance.now() / 1000))} · ${new Date().toLocaleString()}`);
+    L.push(`Memory: ${mem}`);
+    L.push(`Agent: ${navigator.userAgent.slice(0, 120)}`);
+    L.push('');
+    L.push(`Playlist: ${_activePlaylistKey || 'none'} (${currentPlaylistType || '-'}) · ${channels.length.toLocaleString()} channels · ${groupsList.length} groups · ${favoriteIds.size} favorites`);
+    L.push(`EPG: ${epgData.size.toLocaleString()} channels cached · queue ${typeof _epgQueue !== 'undefined' ? _epgQueue.length : 0} · window ${EPG_WIN_HOURS} h · past ${epgPastHours()} h`);
+    const ch = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+    const verr = videoPlayer.error ? ` · error ${videoPlayer.error.code}` : '';
+    L.push(`Stream: ${ch ? ch.name : 'none'} · ${liveEngineActive() ? 'hls.js' : 'native'} · ${liveEngine.tech || '-'} · t=${(videoPlayer.currentTime || 0).toFixed(1)} s · readyState ${videoPlayer.readyState}${verr} · reloads ${_reloadAttempts}/${MAX_AUTO_RELOADS}${_altTried.size > 1 ? ` · ${_altTried.size} sources tried` : ''}`);
+    L.push(`hls.js incompatible this session: ${_hlsBroken.size ? [..._hlsBroken].length + ' channel(s)' : 'none'} · live buffer ${settings.liveBuffer ? settings.liveBuffer + ' min' : 'Off'}`);
+    if (catchup) L.push(`Catch-up: ${catchup.prog && catchup.prog.title}`);
+    L.push('');
+    const pt = performance.timing;
+    if (pt && pt.navigationStart) L.push(`Page: DOM ready ${pt.domContentLoadedEventEnd - pt.navigationStart} ms · load ${pt.loadEventEnd > 0 ? pt.loadEventEnd - pt.navigationStart : '?'} ms`);
+    L.push('Startup marks (ms since script start): ' + _perfMarks.map(m => `${m.label} ${m.t}`).join(' · '));
+    L.push('');
+    L.push(`Errors (last ${_diagLog.length}):`);
+    if (!_diagLog.length) L.push('  none');
+    for (let i = _diagLog.length - 1; i >= 0; i--) { const e = _diagLog[i]; L.push(`  ${new Date(e.t).toLocaleTimeString()}  ${e.msg}`); }
+    return L;
+}
+function renderDiag() {
+    const pre = document.getElementById('diagText'); if (!pre) return;
+    pre.textContent = diagLines().join('\n');
+}
+function openDiag() {
+    const ov = document.getElementById('diagOverlay'); if (!ov) return;
+    if (settingsOpen) closeSettings();
+    diagOpen = true;
+    ov.classList.remove('hidden');
+    renderDiag();
+    if (!_appVersion) fetch('appinfo.json').then(r => r.json()).then(j => { _appVersion = j.version || ''; if (diagOpen) renderDiag(); }).catch(() => {});
+    const pre = document.getElementById('diagText'); if (pre) pre.scrollTop = 0;
+}
+function closeDiag() {
+    if (!diagOpen) return;
+    diagOpen = false;
+    const ov = document.getElementById('diagOverlay'); if (ov) ov.classList.add('hidden');
+}
+function handleDiagKey(e) {
+    const k = e.key, kc = e.keyCode;
+    const pre = document.getElementById('diagText');
+    if (k === 'ArrowUp' || kc === 38) { e.preventDefault(); if (pre) pre.scrollTop -= 160; }
+    else if (k === 'ArrowDown' || kc === 40) { e.preventDefault(); if (pre) pre.scrollTop += 160; }
+    else if (k === 'Enter' || kc === 13) { e.preventDefault(); renderDiag(); }
+}
+
 function clearFavorites() {
     favoriteIds.clear();
     localStorage.setItem('iptv_favorites', '[]');
@@ -4964,7 +5350,8 @@ function handleRemoteNav(e) {
         return;
     }
 
-    // Categories manager / Settings overlay own the remote while open
+    // Diagnostics / Categories manager / Settings overlay own the remote while open
+    if (diagOpen) { handleDiagKey(e); return; }
     if (catsOpen) { handleCatsKey(e); return; }
     if (settingsOpen) { handleSettingsKey(e); return; }
 
@@ -4979,6 +5366,8 @@ function handleRemoteNav(e) {
 
     // Blue colour key cycles Live / Movies / Series (Xtream playlists only)
     if (kc === 406 || k === 'ColorF3Blue') { if (inMain && currentPlaylistType === 'xtream') { e.preventDefault(); cycleVodMode(); } return; }
+    // Red in Live: back to the previous channel (Movies/Series use Red for their own actions below)
+    if ((kc === 403 || k === 'ColorF0Red') && inMain && vodMode === 'live' && !_isTextInput(document.activeElement)) { e.preventDefault(); swapToPreviousChannel(); return; }
 
     // Typing in a search box: Down/Enter hand focus back to the list; other keys pass through
     if (inMain && _isTextInput(document.activeElement)) {
@@ -5134,7 +5523,8 @@ videoPlayer.addEventListener('timeupdate', function () {
 });
 videoPlayer.addEventListener('ended', onVodEnded);
 videoPlayer.addEventListener('waiting', function () { if (vodPlay.active) document.getElementById('vodLoading').classList.remove('hidden'); });
-videoPlayer.addEventListener('playing', function () { if (vodPlay.active) { document.getElementById('vodLoading').classList.add('hidden'); document.getElementById('vodPaused').classList.add('hidden'); } });
+let _perfFirstPlay = false;
+videoPlayer.addEventListener('playing', function () { if (!_perfFirstPlay) { _perfFirstPlay = true; perfMark('first-playing'); } if (vodPlay.active) { document.getElementById('vodLoading').classList.add('hidden'); document.getElementById('vodPaused').classList.add('hidden'); } });
 videoPlayer.addEventListener('pause', function () { if (playerActive() && !vodPlay.ended && !videoPlayer.ended) { document.getElementById('vodPaused').classList.remove('hidden'); renderPlayerButtons(); } });
 videoPlayer.addEventListener('play', function () { if (playerActive()) { document.getElementById('vodPaused').classList.add('hidden'); renderPlayerButtons(); } });
 ['settingsBtn', 'settingsFooterBtn', 'epgSettingsBtn', 'vodSettingsBtn'].forEach(id => {
@@ -5190,7 +5580,7 @@ videoPlayer.addEventListener('error', function () {
     const code = videoPlayer.error ? videoPlayer.error.code : 0;
     const msg = code === 2 ? 'Network error' : code === 3 ? 'Decode error' : code === 4 ? 'Stream unavailable or unsupported' : 'Playback error';
     stopStallWatchdog();
-    if (_reloadAttempts >= MAX_AUTO_RELOADS) { showStreamError(msg); return; }
+    if (_reloadAttempts >= MAX_AUTO_RELOADS) { if (!tryAlternateSource(msg)) showStreamError(msg); return; }
     _reloadAttempts++;
     statusArea.innerText = `⚠️ ${msg} — retrying (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …`;
     const idx = currentChannelIndex;
@@ -5243,6 +5633,7 @@ document.addEventListener('keyup', (e) => {
     if (playerActive()) {
         if (vodTracksOpen()) activateVodTrack();
         else if (vodNextVisible()) activateVodNext();
+        else if (livePlayer.active && surf.active) surfTune();
         else if (player.focus === 'buttons' && document.getElementById('vodOsd').classList.contains('visible')) activatePlayerButton();
         else if (livePlayer.active && held >= LONG_PRESS_MS) { if (lastChannelIndex >= 0 && channels[lastChannelIndex]) selectChannel(lastChannelIndex); }
         else if (livePlayer.active) toggleLivePause();
@@ -5332,7 +5723,7 @@ document.addEventListener('keydown', (e) => {
     if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
     if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0) return;
     if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
-    if (settingsOpen) return;
+    if (settingsOpen || catsOpen || diagOpen) return;
     if (vodMode !== 'live' && !vodPlay.active) return;
     if (vodPlay.active && (kc === 427 || kc === 428)) return;
     e.preventDefault();
@@ -5351,6 +5742,7 @@ document.addEventListener('keydown', (e) => {
         confirmNo.click();
         return;
     }
+    if (diagOpen) { e.preventDefault(); closeDiag(); return; }
     if (catsOpen) { e.preventDefault(); closeCatsManager(); return; }
     if (settingsOpen) { e.preventDefault(); closeSettings(); return; }
 
@@ -5410,4 +5802,5 @@ if (settings.autoLoad) {
         }, 100);
     }
 }
+perfMark('init-done');
 setTimeout(() => { updateFocusableElements(); focusElement(0); }, 500);
