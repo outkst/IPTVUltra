@@ -160,7 +160,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await sleep(200);
     check('double-clicking the live picture opens the player', await page.evaluate(() => livePlayer.active));
     await page.evaluate(() => { hideVodOsd(); document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); });
-    check('moving the pointer in the player brings up the OSD', await page.evaluate(() => document.getElementById('vodOsd').classList.contains('visible')));
+    await sleep(100);
+    check('moving the pointer in the player does not bring up the OSD', await page.evaluate(() => !document.getElementById('vodOsd').classList.contains('visible')));
+    await page.evaluate(() => { showVodOsd(); const t = vodPlay.osdTimer; for (let i = 0; i < 3; i++) document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); window._osdTimerSame = vodPlay.osdTimer === t; });
+    check('pointer movement does not extend the OSD hide timer either', await page.evaluate(() => window._osdTimerSame === true));
     check('pointer movement does not replace the OSD buttons (clicks keep their target)', await page.evaluate(() => { const before = document.getElementById('vodCcBtn'); for (let i = 0; i < 5; i++) document.getElementById('vodPlayer').dispatchEvent(new MouseEvent('mousemove', { bubbles: true })); showVodOsd(); return before === document.getElementById('vodCcBtn'); }));
     await page.evaluate(() => document.getElementById('vodCcBtn').click());
     check('pointer click on the CC button opens the tracks menu in the live player', await page.evaluate(() => vodTracksOpen()));
@@ -331,10 +334,25 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(s => { vodProgress = JSON.parse(s); saveJson('iptv_vod_progress', vodProgress); renderVodDetails(); }, savedEntry); // restore for the Home checks
         await back(); // → grid
         check('Back from details returns to the grid', await page.evaluate(() => vodNav.screen === 'grid' && document.getElementById('vodDetails').style.display === 'none'));
+        // Pointer: scroll down the grid, click a card that is not the focused one → details → Back lands on that card
+        await page.evaluate(() => { vodNav.focus = 31; updateVodGridFocus(); });
+        await sleep(200);
+        await page.evaluate(() => document.querySelector('.vod-card[data-idx="37"]').click());
+        await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.item.id === vodNav.items[37].id, { timeout: 10000 });
+        await back(); await sleep(200);
+        const gridBack = await page.evaluate(() => ({ screen: vodNav.screen, focus: vodNav.focus, zone: vodNav.zone, el: document.querySelector('.vod-card.focused') && document.querySelector('.vod-card.focused').dataset.idx, scroll: document.getElementById('vodGrid').scrollTop }));
+        check('Back after a pointer-opened title returns to that card and scroll position, not the top', gridBack.screen === 'grid' && gridBack.focus === 37 && gridBack.zone === 'content' && gridBack.el === '37' && gridBack.scroll > 0, JSON.stringify(gridBack));
+        await page.evaluate(() => { vodNav.focus = 7; updateVodGridFocus(); });
         await back(); // → home
         await sleep(300);
         const home = await page.evaluate(() => ({ screen: vodNav.screen, list: vodNav.list, cw: document.querySelectorAll('.vod-card[data-pos^="cw:"]').length, fav: document.querySelectorAll('.vod-card[data-pos^="favs:"]').length, cwMeta: document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m') && document.querySelector('.vod-card[data-pos="cw:0"] .vod-card-m').textContent }));
         check('Home shows Continue Watching and Favorites rows', home.screen === 'home' && home.cw === 1 && home.fav === 1 && /left/.test(home.cwMeta), JSON.stringify(home));
+        // Pointer on Home: click the Favorites card → details → Back returns to the Favorites row, not the first row
+        await page.evaluate(() => { vodNav.zone = 'content'; vodNav.homeRow = 0; updateVodHomeFocus(); document.querySelector('.vod-card[data-pos="favs:0"]').click(); });
+        await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 10000 });
+        await back(); await sleep(300);
+        const homeBack = await page.evaluate(() => ({ screen: vodNav.screen, row: vodNav.homeRow, favRow: vodHomeFocusRows().findIndex(r => r.key === 'favs'), col: vodNav.homeCol.favs, el: document.querySelector('.vod-card.focused') && document.querySelector('.vod-card.focused').dataset.pos }));
+        check('Back after a pointer-opened Home card returns to that row and card', homeBack.screen === 'home' && homeBack.favRow > 0 && homeBack.row === homeBack.favRow && homeBack.col === 0 && homeBack.el === 'favs:0', JSON.stringify(homeBack));
         const cwBackup = await page.evaluate(() => JSON.stringify(vodProgress));
         await page.evaluate(() => { vodNav.zone = 'content'; vodNav.homeRow = 0; updateVodHomeFocus(); });
         await key('ColorF0Red', 403); await sleep(200);

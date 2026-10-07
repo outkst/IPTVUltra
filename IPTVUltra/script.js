@@ -3487,7 +3487,17 @@ function buildVodCard(item, focused, pos) {
         (fav ? '<span class="vod-star">★</span>' : '') +
         (pct ? `<div class="vod-prog"><i style="width:${pct}%"></i></div>` : '') +
         `</div><div class="vod-card-t">${escapeHtml(item.name)}</div><div class="vod-card-m">${escapeHtml(meta)}</div>`;
-    card.addEventListener('click', () => openVodItem(item));
+    // A pointer click opens the title like OK does, and also moves the cursor to this card, so Back from
+    // the details page returns to this card (and this scroll position) instead of the top of the list
+    card.addEventListener('click', () => {
+        if (card.dataset.idx !== undefined) { vodNav.focus = +card.dataset.idx; vodNav.zone = 'content'; }
+        else if (card.dataset.pos) {
+            const [key, ci] = card.dataset.pos.split(':');
+            const ri = vodHomeFocusRows().findIndex(r => r.key === key);
+            if (ri >= 0) { vodNav.homeRow = ri; vodNav.homeCol[key] = +ci || 0; vodNav.zone = 'content'; }
+        }
+        openVodItem(item);
+    });
     return card;
 }
 function renderVodGrid() {
@@ -5086,14 +5096,8 @@ if (vodNextPlayEl) vodNextPlayEl.addEventListener('click', () => { vodPlay.nextF
 if (vodNextCancelEl) vodNextCancelEl.addEventListener('click', () => { vodPlay.nextFocus = 'cancel'; activateVodNext(); });
 const vodPlayerEl = document.getElementById('vodPlayer');
 if (vodPlayerEl) {
-    vodPlayerEl.addEventListener('mousemove', () => {
-        if (!playerActive()) return;
-        const osd = document.getElementById('vodOsd');
-        if (!osd.classList.contains('visible')) { showVodOsd(); return; }
-        // already visible: just extend the hide timer
-        if (vodPlay.osdTimer) clearTimeout(vodPlay.osdTimer);
-        vodPlay.osdTimer = setTimeout(() => { if (videoPlayer.paused) return; osd.classList.remove('visible'); player.focus = 'bar'; updatePlayerFocus(); }, 3000);
-    });
+    // The Magic Remote pointer does not show, hide or extend the OSD: moving the cursor (or the TV
+    // re-showing it) kept popping the banner up over full-screen video. Keys and clicks do.
     vodPlayerEl.addEventListener('click', e => {
         if (!playerActive()) return;
         // Tracks menu open: a row click re-renders the list before this bubbles, so e.target is already
