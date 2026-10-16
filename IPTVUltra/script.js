@@ -55,19 +55,43 @@ const SETTINGS_KEY = 'iptv_settings';
 const PLAYLIST_STATE_KEY = 'iptv_playlist_state';
 const LAST_PLAYLIST_KEY = 'iptv_last_playlist';
 const TEXT_SCALE_OPTIONS = [1, 1.125, 1.25, 1.375, 1.5];
-const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subOpacity: 85, subBg: 'translucent', subEdge: 'outline', subAuto: false, liveBuffer: 5, autoNext: true, schema: 4 };
+const AV_SYNC_MIN = 0, AV_SYNC_MAX = 60; // LG "AV Sync Adjustment" range (settingsservice avSync* keys, verified on the C4); -1 = leave the TV setting alone
+const DEFAULT_SETTINGS = { textScale: 1.375, clock: '12', autoLoad: false, showAdult: false, subLang: 'en', audioLang: 'default', subSize: 'medium', subColor: 'white', subOpacity: 85, subBg: 'translucent', subEdge: 'outline', subAuto: false, liveBuffer: 5, autoNext: true, ppvEvents: 'hide', schema: 4 };
 // Subtitle text opacity (%), sent as charOpacity; the C4 honours it (verified with the old Grey = white at 85)
 const SUB_OPACITY_OPTIONS = [{ v: 100, label: '100%' }, { v: 85, label: '85%' }, { v: 70, label: '70%' }, { v: 55, label: '55%' }];
 // Live rewind buffer (minutes) for HLS channels played through hls.js; 0 = native player only
 const LIVE_BUFFER_OPTIONS = [{ v: 0, label: 'Off' }, { v: 2, label: '2 minutes' }, { v: 5, label: '5 minutes' }, { v: 10, label: '10 minutes' }];
+// Groups of event channels (PPV) whose names carry the event time: sort by start time, optionally hide finished ones
+const PPV_EVENT_OPTIONS = [{ v: 'hide', label: 'Sort, hide finished' }, { v: 'sort', label: 'Sort by start time' }, { v: 'off', label: 'As listed' }];
 const SUB_SIZE_OPTIONS = [{ v: 'small', label: 'Small' }, { v: 'medium', label: 'Medium' }, { v: 'large', label: 'Large' }, { v: 'extraLarge', label: 'Extra large' }];
 // ----- Diagnostics (error ring buffer, startup marks; Settings → Diagnostics) -----
 // Registered this early so errors thrown while the rest of the script loads are caught too
-const _diagLog = [];
+// The log survives a restart (localStorage, saved 2 s after the last entry and on pagehide), so an error that
+// ended in an app restart can still be read; entries from earlier runs are flagged `prev`.
 const DIAG_MAX = 50;
+const DIAG_STORE_KEY = 'iptv_diag_log';
+const _diagLog = (() => {
+    try {
+        const a = JSON.parse(localStorage.getItem(DIAG_STORE_KEY) || '[]');
+        return Array.isArray(a) ? a.slice(-DIAG_MAX).map(e => ({ t: +e.t || 0, msg: String(e.msg || ''), prev: true })) : [];
+    } catch (_) { return []; }
+})();
+let _diagSaveTimer = 0;
+function diagSave() {
+    if (_diagSaveTimer) { clearTimeout(_diagSaveTimer); _diagSaveTimer = 0; }
+    try { localStorage.setItem(DIAG_STORE_KEY, JSON.stringify(_diagLog.map(e => ({ t: e.t, msg: e.msg })))); } catch (_) { /* storage full or unavailable */ }
+}
 function diagLog(msg) {
     _diagLog.push({ t: Date.now(), msg: String(msg).slice(0, 300) });
     if (_diagLog.length > DIAG_MAX) _diagLog.shift();
+    if (!_diagSaveTimer) _diagSaveTimer = setTimeout(diagSave, 2000);
+}
+window.addEventListener('pagehide', () => { if (_diagSaveTimer) diagSave(); });
+// The most recent stream failure, with whatever the server answered, for Diagnostics
+let _lastStreamFail = null; // { t, name, engine, what, reply }
+function noteStreamFail(engine, what, reply) {
+    const ch = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+    _lastStreamFail = { t: Date.now(), name: ch ? ch.name : '', engine, what, reply: reply || '' };
 }
 window.addEventListener('error', e => diagLog(`Error: ${e.message}${e.filename ? ` (${String(e.filename).split('/').pop()}:${e.lineno})` : ''}`));
 window.addEventListener('unhandledrejection', e => diagLog(`Unhandled rejection: ${e.reason && e.reason.message ? e.reason.message : String(e.reason)}`));
@@ -90,6 +114,105 @@ let _activePlaylistKey = null;          // key of the playlist currently loaded 
 let settingsOpen = false;
 let settingsFocusIdx = 0;
 let _settingsRowsCache = null;
+
+// ----- EPG timezone (per playlist) -----
+// Some providers write their guide in a local wall-clock but label it UTC (Xtream start_timestamp, XMLTV "+0000").
+// The user names that zone in Settings; every programme time is corrected as it enters epgData (XMLTV parser,
+// Xtream short/full EPG, cache restore): true UTC = listed time − the zone's UTC offset at that instant (so DST is
+// right per programme date; the Daylight saving row can pin standard or daylight time instead), plus an extra
+// ±3 h nudge. The IndexedDB EPG cache keeps provider time (so the setting can change later) and catch-up URLs
+// convert back (the archive is indexed by the provider's own clock).
+let _epgTz = '', _epgDst = 'auto', _epgExtraMs = 0, _epgShiftOn = false;
+const EPG_TZ_ZONES = [
+    ['Pacific/Honolulu', 'Hawaii (Honolulu)'], ['America/Anchorage', 'Alaska (Anchorage)'], ['America/Los_Angeles', 'Pacific (Los Angeles)'],
+    ['America/Denver', 'Mountain (Denver)'], ['America/Phoenix', 'Arizona (Phoenix)'], ['America/Chicago', 'Central (Chicago)'],
+    ['America/Mexico_City', 'Mexico City'], ['America/New_York', 'Eastern (New York)'], ['America/Bogota', 'Bogotá / Lima'],
+    ['America/Halifax', 'Atlantic (Halifax)'], ['America/Caracas', 'Caracas'], ['America/St_Johns', 'Newfoundland (St. John\'s)'],
+    ['America/Sao_Paulo', 'São Paulo'], ['America/Argentina/Buenos_Aires', 'Buenos Aires'], ['Atlantic/Azores', 'Azores'],
+    ['Europe/London', 'London / Dublin / Lisbon'], ['Africa/Lagos', 'West Africa (Lagos)'], ['Europe/Paris', 'Central Europe (Paris, Berlin, Amsterdam)'],
+    ['Europe/Athens', 'Eastern Europe (Athens, Helsinki, Kyiv)'], ['Africa/Cairo', 'Cairo'], ['Africa/Johannesburg', 'South Africa (Johannesburg)'],
+    ['Europe/Istanbul', 'Istanbul'], ['Europe/Moscow', 'Moscow'], ['Asia/Riyadh', 'Riyadh / Baghdad'], ['Asia/Tehran', 'Tehran'],
+    ['Asia/Dubai', 'Dubai'], ['Asia/Kabul', 'Kabul'], ['Asia/Karachi', 'Karachi'], ['Asia/Kolkata', 'India (Kolkata, Mumbai)'],
+    ['Asia/Kathmandu', 'Kathmandu'], ['Asia/Dhaka', 'Dhaka'], ['Asia/Bangkok', 'Bangkok / Jakarta'], ['Asia/Shanghai', 'China (Shanghai, Beijing)'],
+    ['Asia/Singapore', 'Singapore / Manila / Perth'], ['Asia/Tokyo', 'Japan / Korea (Tokyo, Seoul)'], ['Australia/Adelaide', 'Adelaide'],
+    ['Australia/Brisbane', 'Brisbane'], ['Australia/Sydney', 'Sydney / Melbourne'], ['Pacific/Auckland', 'New Zealand (Auckland)'],
+];
+const EPG_DST_OPTIONS = [{ v: 'auto', label: 'Automatic' }, { v: 'std', label: 'Always standard time' }, { v: 'dst', label: 'Always daylight time' }];
+const EPG_EXTRA_OPTIONS = (() => { // ±3 h in half hours
+    const out = [];
+    for (let m = -180; m <= 180; m += 30) out.push({ v: m, label: m === 0 ? 'None' : `${m < 0 ? '\u2212' : '+'}${Math.floor(Math.abs(m) / 60)} h${Math.abs(m) % 60 ? ' 30 min' : ''}` });
+    return out;
+})();
+const _tzFmtCache = new Map();  // zone -> Intl.DateTimeFormat
+let _tzOffCache = new Map();    // "zone|hourBucket" -> minutes (DST changes on hour boundaries; a few buckets cover a whole guide)
+const _tzStdCache = new Map();  // "zone|year" -> { std, dst } minutes
+function tzOffsetMin(zone, t) {
+    const k = zone + '|' + Math.floor(t / 3600000);
+    let v = _tzOffCache.get(k);
+    if (v !== undefined) return v;
+    try {
+        let f = _tzFmtCache.get(zone);
+        if (!f) { f = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }); _tzFmtCache.set(zone, f); }
+        const p = {}; for (const x of f.formatToParts(new Date(t))) p[x.type] = x.value;
+        const wall = Date.UTC(+p.year, +p.month - 1, +p.day, (+p.hour) % 24, +p.minute, +p.second);
+        v = Math.round((wall - Math.floor(t / 1000) * 1000) / 60000);
+    } catch (_) { v = 0; } // zone unknown to this TV's ICU: no correction rather than a wrong one
+    if (_tzOffCache.size > 4096) _tzOffCache = new Map();
+    _tzOffCache.set(k, v);
+    return v;
+}
+// Offset in the chosen mode: 'auto' follows the zone's rules at t; 'std'/'dst' pin the year's smaller/larger offset
+function tzZoneOffsetMin(zone, mode, t) {
+    if (mode !== 'std' && mode !== 'dst') return tzOffsetMin(zone, t);
+    const y = new Date(t).getUTCFullYear(), k = zone + '|' + y;
+    let r = _tzStdCache.get(k);
+    if (!r) { const a = tzOffsetMin(zone, Date.UTC(y, 0, 1)), b = tzOffsetMin(zone, Date.UTC(y, 6, 1)); r = { std: Math.min(a, b), dst: Math.max(a, b) }; _tzStdCache.set(k, r); }
+    return mode === 'std' ? r.std : r.dst;
+}
+function fmtUtcOffset(min) { if (!min) return 'UTC'; const a = Math.abs(min); return `UTC${min < 0 ? '\u2212' : '+'}${Math.floor(a / 60)}${a % 60 ? ':' + String(a % 60).padStart(2, '0') : ''}`; }
+function epgTzOptions() { return [{ v: '', label: 'UTC (as published)' }].concat(EPG_TZ_ZONES.map(([z, name]) => ({ v: z, label: `${name} \u00b7 ${fmtUtcOffset(tzOffsetMin(z, Date.now()))}` }))); }
+function epgTzSettingsFor(key) {
+    const ps = key ? getPlaylistState(key) : null;
+    const tz = ps && typeof ps.epgTz === 'string' && EPG_TZ_ZONES.some(z => z[0] === ps.epgTz) ? ps.epgTz : '';
+    const dst = ps && EPG_DST_OPTIONS.some(o => o.v === ps.epgDst) ? ps.epgDst : 'auto';
+    const extra = ps && Number.isInteger(ps.epgOffset) && EPG_EXTRA_OPTIONS.some(o => o.v === ps.epgOffset) ? ps.epgOffset : 0;
+    return { tz, dst, extra };
+}
+// Called when a playlist is applied: the correction belongs to the playlist, not the app
+function epgOffsetLoad() {
+    const c = epgTzSettingsFor(_activePlaylistKey);
+    _epgTz = c.tz; _epgDst = c.dst; _epgExtraMs = c.extra * 60000;
+    _epgShiftOn = !!(_epgTz || _epgExtraMs);
+}
+// Milliseconds to add to a provider time t
+function epgShiftAt(t) {
+    if (!_epgShiftOn || isNaN(t)) return 0;
+    return _epgExtraMs - (_epgTz ? tzZoneOffsetMin(_epgTz, _epgDst, t) * 60000 : 0);
+}
+function epgShiftTime(t) { return t + epgShiftAt(t); }
+// Provider time from a corrected time (exact except inside a DST transition hour, where the provider's clock is ambiguous anyway)
+function epgUnshiftTime(t) { if (!_epgShiftOn || isNaN(t)) return t; return t - epgShiftAt(t - epgShiftAt(t)); }
+// Shift a programme list: dir +1 provider → corrected, −1 corrected → provider (new objects; a cached list must stay as it is)
+function epgShiftProgs(progs, dir) {
+    if (!_epgShiftOn || !progs) return progs;
+    const f = dir < 0 ? epgUnshiftTime : epgShiftTime;
+    const out = new Array(progs.length);
+    for (let i = 0; i < progs.length; i++) { const p = progs[i]; out[i] = Object.assign({}, p, { start: f(p.start), stop: p.stop ? f(p.stop) : p.stop }); }
+    return out;
+}
+// Settings change: re-map everything already in epgData through provider time and redraw
+function epgOffsetChange() {
+    const lists = [...epgData.values()];
+    const raw = lists.map(progs => progs.map(p => [epgUnshiftTime(p.start), p.stop ? epgUnshiftTime(p.stop) : p.stop]));
+    epgOffsetLoad();
+    for (let i = 0; i < lists.length; i++) { const progs = lists[i], r = raw[i]; for (let j = 0; j < progs.length; j++) { progs[j].start = epgShiftTime(r[j][0]); if (progs[j].stop) progs[j].stop = epgShiftTime(r[j][1]); } }
+    _epgSkeletonWinStart = 0;
+    if (!currentPlaylistType) return;
+    refreshCurrentView(); updateNowNext();
+    if (epgMode && currentChannelIndex >= 0) updateEPGInfoPanel(channels[currentChannelIndex]);
+    if (livePlayer.active) updateLiveOsd();
+}
+
 applyTextScale(settings.textScale);
 
 // VOD (Movies & Series) state — see "// ----- VOD (Movies & Series) -----"
@@ -235,7 +358,7 @@ let _errRetryTimer = null;
 // segments, a bad manifest) raises a fatal hls.js error and the channel goes back to the native
 // player for the rest of the session (`_hlsBroken`). The webOS media service (liveUms) is not used
 // on the hls.js path; the codec line comes from the HLS level instead.
-const liveEngine = { hls: null, url: '', tech: '', recovered: false, resumeUrl: '' };
+const liveEngine = { hls: null, url: '', tech: '', recovered: false, resumeUrl: '', fps: 0, fpsSamples: [] };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full, cannot free space") at ~86 MB,
 // i.e. 120 s of 1080p at 6.2 Mbps. Fetching ahead is capped below that so the limit is never hit; the
@@ -275,6 +398,7 @@ function loadLiveSource(url) {
         fragLoadingMaxRetry: 4,
     });
     liveEngine.hls = hls; liveEngine.url = url; liveEngine.tech = ''; liveEngine.recovered = false; liveEngine.resumeUrl = '';
+    liveEngine.fps = 0; liveEngine.fpsSamples = [];
     liveEngine.subManual = false; liveEngine.audioManual = false;
     videoPlayer.removeAttribute('src'); // hls.js attaches its own MediaSource URL
     hls.on(Hls.Events.ERROR, (_, data) => onHlsError(url, data));
@@ -283,14 +407,27 @@ function loadLiveSource(url) {
     hls.on(Hls.Events.MANIFEST_PARSED, liveTechFromHls);
     hls.on(Hls.Events.LEVEL_SWITCHED, liveTechFromHls);
     hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, liveTechFromHls);
+    hls.on(Hls.Events.BUFFER_APPENDING, (_, d) => hlsFpsFromAppend(hls, d));
     hls.loadSource(url);
     hls.attachMedia(videoPlayer);
     return true;
 }
+// Body of the manifest response hls.js could not parse ('' when there was none)
+function hlsReplyBody(data) { return data && data.response && typeof data.response.data === 'string' ? data.response.data : ''; }
 function onHlsError(url, data) {
     if (!data || !data.fatal || liveEngine.url !== url) return;
     console.log('hls.js fatal error', data.type, data.details);
-    diagLog(`hls.js fatal ${data.type}/${data.details}${document.hidden ? ' (app hidden)' : ''}`);
+    // A provider that refuses the stream (one-connection account in use, expired, rate limited) answers the
+    // playlist request with an HTML or text page, which hls.js reports as a manifest parsing error. Only a real
+    // playlist (#EXTM3U) that still fails to parse says the channel is unplayable through hls.js.
+    const isParse = data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR;
+    const body = isParse ? hlsReplyBody(data) : '';
+    const notPlaylist = isParse && !/^\s*#EXTM3U/.test(body);
+    const nd = data.networkDetails, status = nd && nd.status ? nd.status : (data.response && data.response.code) || 0;
+    const reply = isParse ? (body.replace(/\s+/g, ' ').trim().slice(0, 160) || '(empty)') : '';
+    diagLog(`hls.js fatal ${data.type}/${data.details}${status ? ` HTTP ${status}` : ''}${reply ? ` reply: ${reply}` : ''}` +
+        `${notPlaylist ? ' → not a playlist, treated as a network failure' : ''}${document.hidden ? ' (app hidden)' : ''}`);
+    noteStreamFail('hls.js', `${data.type}/${data.details}${status ? ` · HTTP ${status}` : ''}`, reply);
     const hls = liveEngine.hls;
     // Hidden app: webOS freezes the page's timers and network, which hls.js reports as failed requests.
     // Nothing is wrong with the channel; retry on the hls path when the app is visible again.
@@ -303,7 +440,7 @@ function onHlsError(url, data) {
     // Content hls.js cannot handle (codecs it cannot demux, unparsable manifest) is remembered so the native
     // pipeline takes the channel for the rest of the session; plain network failures are not held against it
     const incompatible = data.type === Hls.ErrorTypes.MEDIA_ERROR || data.type === Hls.ErrorTypes.MUX_ERROR ||
-        data.details === Hls.ErrorDetails.MANIFEST_PARSING_ERROR || data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
+        (isParse && !notPlaylist) || data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
     if (incompatible) _hlsBroken.add(url);
     liveEngineDestroy();
     // Hand the channel to the native pipeline; its own error handler and reload budget take over from here
@@ -324,7 +461,8 @@ function liveTechFromHls() {
     if (vc) bits.push(/^(avc|h264)/.test(vc) ? 'H.264' : /^(hvc|hev|h265)/.test(vc) ? 'HEVC' : vc.split('.')[0].toUpperCase());
     if (lvl.width && lvl.height) bits.push(`${lvl.width}×${lvl.height}`);
     else if (videoPlayer.videoWidth) bits.push(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`);
-    if (lvl.frameRate) bits.push(`${(+lvl.frameRate).toFixed(2).replace(/\.?0+$/, '')} fps`);
+    const fps = lvl.frameRate || liveEngine.fps;
+    if (fps) bits.push(fmtFps(fps));
     if (lvl.bitrate) bits.push(`${Math.round(lvl.bitrate / 1000)} kbps`);
     const ac = String(lvl.audioCodec || '').toLowerCase();
     if (ac) bits.push(/^mp4a\.40/.test(ac) ? 'AAC' : /^ac-3/.test(ac) ? 'AC-3' : /^ec-3/.test(ac) ? 'E-AC-3' : ac.toUpperCase());
@@ -333,6 +471,39 @@ function liveTechFromHls() {
     liveEngine.tech = bits.join(' · ');
     if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = liveEngine.tech; }
     else showFeedStats(liveEngine.tech);
+}
+// Frame rate as shown on the codec line; measured rates snap to the broadcast ones (23.976 … 120) within 2 %
+const FPS_STD = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 100, 119.88, 120];
+function fpsSnap(f) {
+    let best = 0;
+    for (const c of FPS_STD) if (Math.abs(f - c) / c < 0.02 && (!best || Math.abs(f - c) < Math.abs(f - best))) best = c;
+    return best || Math.round(f);
+}
+function fmtFps(f) { return `${(+f).toFixed(3).replace(/\.?0+$/, '')} fps`; }
+// HLS playlists rarely state FRAME-RATE (the provider's never do), so the hls.js path counts it: hls.js remuxes each
+// segment to fMP4 before appending, and the moof's trun carries the number of video samples in it. Samples over
+// the segment's PTS span is the frame rate. One segment of 6 s or more is enough (a frame more or less moves the
+// rate by under 0.2 fps; some channels are a single 600 s segment); shorter ones take the median of three.
+function hlsFpsFromAppend(hls, d) {
+    if (liveEngine.hls !== hls || liveEngine.fps || !d || d.type !== 'video' || !(d.data instanceof Uint8Array)) return;
+    const b = d.data, f = d.frag;
+    const es = f && f.elementaryStreams && f.elementaryStreams.video;
+    const span = es && es.endPTS > es.startPTS ? es.endPTS - es.startPTS : (f && f.duration) || 0;
+    if (!(span > 1)) return;
+    let n = 0;
+    for (let i = 4, end = Math.min(b.length - 12, 8192); i < end; i++) {
+        if (b[i] === 0x74 && b[i + 1] === 0x72 && b[i + 2] === 0x75 && b[i + 3] === 0x6e) { // 'trun': version/flags, then sample_count
+            n = ((b[i + 8] << 24) | (b[i + 9] << 16) | (b[i + 10] << 8) | b[i + 11]) >>> 0;
+            break;
+        }
+    }
+    if (!(n > 0)) return;
+    const fs = liveEngine.fpsSamples;
+    fs.push(n / span);
+    if (span >= 6) liveEngine.fps = fpsSnap(n / span);
+    else if (fs.length >= 3) liveEngine.fps = fpsSnap(fs.slice().sort((a, b2) => a - b2)[1]);
+    else return;
+    liveTechFromHls();
 }
 // Where the live playhead may go on the hls.js path: the buffered range around it, up to the live edge
 function liveBufferRange() {
@@ -356,9 +527,107 @@ function liveGoLive() {
     videoPlayer.play().catch(() => {});
     if (livePlayer.active) showVodOsd();
 }
+// ----- Provider connection limit (Xtream) -----
+// A second device on a one-connection account makes every channel fail with a plain network error. On a
+// stream failure the auth call is repeated (cheap, never a stream) and active_cons / max_connections tell.
+let _consInfo = null;   // { active, max, status, exp, at }
+let _consCheckAt = 0;
+async function xtreamCheckConnections() {
+    if (!_xt || Date.now() - _consCheckAt < 15000) return _consInfo;
+    _consCheckAt = Date.now();
+    try {
+        const r = await fetch(`${_xt.base}/player_api.php?username=${_xt.u}&password=${_xt.pw}`);
+        if (!r.ok) return _consInfo;
+        const j = await r.json();
+        const ui = j && j.user_info;
+        if (!ui) return _consInfo;
+        const active = parseInt(ui.active_cons), max = parseInt(ui.max_connections);
+        _consInfo = { active: isNaN(active) ? -1 : active, max: isNaN(max) ? -1 : max, status: String(ui.status || ''), exp: parseInt(ui.exp_date) > 0 ? parseInt(ui.exp_date) * 1000 : 0, at: Date.now() };
+    } catch (_) { /* provider unreachable: nothing to say */ }
+    return _consInfo;
+}
+// Human explanation of a failing stream when the account, not the channel, is the cause; '' otherwise
+function accountProblemText(ci) {
+    if (!ci || Date.now() - ci.at > 60000) return '';
+    if (/expired|disabled|banned/i.test(ci.status)) return `Account ${ci.status.toLowerCase()}`;
+    if (ci.max > 0 && ci.active >= ci.max) return ci.max === 1 ? 'Another device is streaming with this account (1 connection allowed)' : `All ${ci.max} connections of this account are in use`;
+    return '';
+}
+function noteStreamFailureForAccount(idx) {
+    if (!_xt || currentPlaylistType !== 'xtream') return;
+    xtreamCheckConnections().then(ci => {
+        const t = accountProblemText(ci);
+        if (!t || currentChannelIndex !== idx) return;
+        statusArea.innerText = `⚠️ ${t}`;
+        showEPGToast(`${t}. Stop playback on the other device, then press Reload.`, 'error', 'Connection limit');
+        hideEPGToast(8000);
+        diagLog(`Account: ${t} (active ${ci.active} / max ${ci.max})`);
+    });
+}
+
+// ----- AV sync through Homebrew root exec (rooted TVs only) -----
+// The app cannot reach LG's AV Sync Adjustment itself (settingsservice is denied by the ACG); on a rooted TV the
+// Homebrew Channel service runs commands as root, so the TV's own setting is driven through luna-send and put
+// back when the app goes to the background or exits.
+let _hbAvailable = null; // null = not probed yet
+function hbExec(command, timeoutMs = 4000) {
+    return new Promise((resolve, reject) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; reject(new Error('timeout')); } }, timeoutMs);
+        try {
+            if (typeof webOS === 'undefined' || !webOS.service || !webOS.service.request) throw new Error('no webOS service bridge');
+            webOS.service.request('luna://org.webosbrew.hbchannel.service', { method: 'exec', parameters: { command },
+                onSuccess: r => { if (done) return; done = true; clearTimeout(t); resolve((r && (r.stdoutString !== undefined ? r.stdoutString : r.stdout)) || ''); },
+                onFailure: e => { if (done) return; done = true; clearTimeout(t); reject(new Error((e && e.errorText) || 'exec failed')); } });
+        } catch (e) { if (!done) { done = true; clearTimeout(t); reject(e); } }
+    });
+}
+function hbProbe() {
+    if (_hbAvailable !== null) return Promise.resolve(_hbAvailable);
+    return hbExec('echo hb-ok', 3000).then(out => { _hbAvailable = /hb-ok/.test(out); return _hbAvailable; }).catch(() => { _hbAvailable = false; return false; });
+}
+const AV_SYNC_OPTIONS = (() => { const o = [{ v: -1, label: 'TV setting' }]; for (let v = AV_SYNC_MIN; v <= AV_SYNC_MAX; v++) o.push({ v, label: String(v) }); return o; })();
+const AV_SYNC_KEYS = ['avSyncSpeaker', 'avSyncSpdif', 'avSyncBtSurround', 'avSyncWisa']; // one per sound output family, all 0-60
+// Which settingsservice key the TV's AV Sync Adjustment uses for the current sound output
+function avSyncKeyFor(soundOutput) {
+    const o = String(soundOutput || '');
+    if (/optical/.test(o) && !/arc/.test(o)) return 'avSyncSpdif';
+    if (/^bt_|bluetooth|bt_surround|bt_tv_atmos/.test(o)) return 'avSyncBtSurround';
+    if (/wisa/.test(o)) return 'avSyncWisa';
+    return 'avSyncSpeaker'; // TV speaker, HDMI ARC/eARC and the rest
+}
+let _avSyncOrig = null; // { avSync, <key>: value } as found before the app changed anything
+let _avSyncKey = 'avSyncSpeaker';
+function lunaSettingsCmd(method, payload) { return `luna-send -n 1 luna://com.webos.settingsservice/${method} '${JSON.stringify(payload)}'`; }
+async function avSyncRead() {
+    const out = await hbExec(lunaSettingsCmd('getSystemSettings', { category: 'sound', keys: ['avSync', 'soundOutput'].concat(AV_SYNC_KEYS) }));
+    const j = JSON.parse(out);
+    if (!j || !j.settings) throw new Error('no settings');
+    return j.settings;
+}
+async function avSyncApply(v) {
+    if (!_hbAvailable || !(v >= 0)) return false;
+    if (_avSyncOrig === null) {
+        try { const s = await avSyncRead(); _avSyncKey = avSyncKeyFor(s.soundOutput); _avSyncOrig = { avSync: s.avSync, [_avSyncKey]: s[_avSyncKey] }; } catch (e) { diagLog('AV sync: cannot read TV setting: ' + e.message); return false; }
+    }
+    try { await hbExec(lunaSettingsCmd('setSystemSettings', { category: 'sound', settings: { avSync: 'on', [_avSyncKey]: String(v) } })); return true; }
+    catch (e) { diagLog('AV sync: cannot set TV setting: ' + e.message); return false; }
+}
+async function avSyncRestore() {
+    if (!_avSyncOrig) return;
+    const o = _avSyncOrig; _avSyncOrig = null;
+    try { await hbExec(lunaSettingsCmd('setSystemSettings', { category: 'sound', settings: o })); } catch (e) { diagLog('AV sync: restore failed: ' + e.message); }
+}
+function avSyncOnVisibility() {
+    if (!_hbAvailable || !(settings.avSync >= 0)) return;
+    if (document.hidden) avSyncRestore(); else avSyncApply(settings.avSync);
+}
+window.addEventListener('pagehide', () => { if (_avSyncOrig && _hbAvailable) avSyncRestore(); });
+
 // Hidden (another app in front, Home, screensaver): stop fetching segments so nothing times out while the
 // page is frozen; visible again: resume, or re-open the channel if the engine was torn down meanwhile.
 document.addEventListener('visibilitychange', () => {
+    avSyncOnVisibility();
     if (liveEngine.hls) {
         try { if (document.hidden) liveEngine.hls.stopLoad(); else liveEngine.hls.startLoad(-1); } catch (_) { /* engine gone */ }
         return;
@@ -548,8 +817,148 @@ function buildChannelIndexMap() {
     }
     _searchCache = { query: null, result: null };
     _altSources.clear();
+    buildEventProgs();
 }
 function chDisplayNum(ch, idx) { return ch && ch.num > 0 ? ch.num : idx + 1; }
+
+// ----- Event (PPV) channels -----
+// Event channels carry their schedule in the name instead of the EPG, in many provider formats. Only formats
+// whose time zone is known are read; the zones were checked on the real provider 2026-10-15 against the same
+// event listed in two formats (ESPN+ "Oct 15 7:00AM ET (2026-10-15 07:00:00)"; MAX "@ Oct 15 02:30 AM" =
+// "Thu 15 Oct 02:30 EDT"; Sportsnet+ "@ Oct 15 9:00 AM" = "Thu 15 Oct 10:30 NDT"; PDC "start:… 11:00" = a Basel
+// 13:00 session, i.e. UTC). Read formats:
+//   "LIVE | SEATTLE @ TAMPA BAY | Thu 15 Oct 20:30 NDT (CA) | 8K EXCLUSIVE | …"   (also "// UK Sat 10 Oct 12:30pm")
+//   "End | Leo Victor vs. Notch | … | 2026-10-15 | 00:15 (GMT) | …"               (also 15-10-2026)
+//   "UFC 02 : UFC FIGHT NIGHT … start:2026-10-11 01:55:00 stop:2026-10-11 06:00:00"  (UTC)
+//   "US (ESPN+ 001) | Football: … (2026-10-15 08:00:00)"                          (US Eastern; "AU (" names Sydney)
+//   "Toronto FC vs Orlando City @ Oct 14 7:30 PM :MLS 04"                         (US Eastern; US| and CA| groups only)
+// Times without a zone ("7pm Sabres at Maple Leafs", "Fri 18 Apr 22:05") and the 2098 placeholder slots are skipped.
+// A parsed event fills the guide for a channel that has no EPG of its own (epgProgsOf) and orders its group.
+const EV_MON = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+const EV_ABBR = { UTC: 0, GMT: 0, BST: 60, CET: 60, CEST: 120, EST: -300, EDT: -240, CST: -360, CDT: -300, MST: -420, MDT: -360,
+    PST: -480, PDT: -420, AST: -240, ADT: -180, NST: -210, NDT: -150, AEST: 600, AEDT: 660 };
+const EV_ZONE = { ET: 'America/New_York', CT: 'America/Chicago', PT: 'America/Los_Angeles', UK: 'Europe/London' };
+const EVENT_DEFAULT_MS = 3 * 3600000;   // assumed length when the name gives only a start
+const EVENT_HIDE_AFTER_MS = 3600000;    // finished events stay listed this long
+const _RE_EV_PRE = /\d:\d\d|\d{4}-\d\d-\d\d|\d\d-\d\d-\d{4}/;
+const _RE_EV_TAG = /^\s*(LIVE|NEXT|ENDED|End)\s*\|\s*/i;
+const _RE_EV_STARTSTOP = /\bstart:(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)(?::\d\d)?\s+stop:(\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d)/;
+const _RE_EV_PIPEDATE = /(?:(\d{4})-(\d\d)-(\d\d)|(\d\d)-(\d\d)-(\d{4}))\s*\|\s*(\d{1,2}):(\d\d)\s*\((?:GMT|UTC)\)/;
+const _RE_EV_PAREN = /\((\d{4})-(\d\d)-(\d\d) (\d\d):(\d\d):\d\d\)\s*$/;
+const _RE_EV_DAY = /(?:\b(UK|ET)\s+)?\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}):(\d\d)(?::\d\d)?\s*([ap]m)?\s*([A-Z]{2,4})?\b/i;
+const _RE_EV_AT = /@\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\s+(\d{1,2}):(\d\d)\s*([ap]m)?/i;
+const _RE_EV_JUNKSEG = /^(?:\d+K EXCLUSIVE|all|[A-Z]{2}: .+ \d+|(?:[A-Z]{2}\s*)?(?:\([^)]*\)\s*)+\d*)$/i;
+const _RE_EV_LABEL = /^(?:(?:\S+\s+){0,2}\d{1,3}\S?\s*:|[a-z]+:\s*\d+\s+name:)\s*/i; // "UFC 02 :", "PDC Board 01 :", "wnba: 1 name:"
+const EV_WDAY = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+// Wall-clock time in a zone (IANA id or fixed offset in minutes) → UTC ms
+function evWallToUtc(y, mo, d, h, mi, zone) {
+    const wall = Date.UTC(y, mo, d, h, mi);
+    if (typeof zone === 'number') return wall - zone * 60000;
+    const t = wall - tzOffsetMin(zone, wall) * 60000;
+    return wall - tzOffsetMin(zone, t) * 60000; // second pass lands on the right side of a DST change
+}
+// Names without a year: the year that puts the event nearest to now. With a weekday ("Sat 3 Feb") only years where
+// the date falls on that day count, so a stale name from an older season ("2024 round 5 … Sat 3 Feb") reads as nothing.
+function evNearestYear(mo, d, h, mi, zone, wday) {
+    const now = Date.now(), y = new Date(now).getUTCFullYear();
+    let best = NaN;
+    for (const yy of [y - 1, y, y + 1]) {
+        if (wday !== undefined && new Date(Date.UTC(yy, mo, d)).getUTCDay() !== wday) continue;
+        const t = evWallToUtc(yy, mo, d, h, mi, zone);
+        if (isNaN(best) || Math.abs(t - now) < Math.abs(best - now)) best = t;
+    }
+    return best;
+}
+function ev12h(h, ampm) {
+    if (!ampm || h > 12) return h;
+    return /p/i.test(ampm) ? (h % 12) + 12 : h % 12;
+}
+// { start, stop, title, desc, tag: 'live' | 'next' | 'ended' | '' } or null
+function parseEventName(ch) {
+    const name = ch.name || '';
+    if (!_RE_EV_PRE.test(name)) return null;
+    const tm = _RE_EV_TAG.exec(name);
+    const tag = tm ? (/^l/i.test(tm[1]) ? 'live' : /^n/i.test(tm[1]) ? 'next' : 'ended') : '';
+    let start = NaN, stop = NaN, m;
+    if ((m = _RE_EV_STARTSTOP.exec(name))) {
+        start = Date.UTC(+m[1], m[2] - 1, +m[3], +m[4], +m[5]);
+        stop = Date.UTC(+m[6], m[7] - 1, +m[8], +m[9], +m[10]);
+    } else if ((m = _RE_EV_PIPEDATE.exec(name))) {
+        start = m[1] ? Date.UTC(+m[1], m[2] - 1, +m[3], +m[7], +m[8]) : Date.UTC(+m[6], m[5] - 1, +m[4], +m[7], +m[8]);
+    } else if ((m = _RE_EV_PAREN.exec(name))) {
+        start = evWallToUtc(+m[1], m[2] - 1, +m[3], +m[4], +m[5], /^\s*AU\b/.test(name) ? 'Australia/Sydney' : 'America/New_York');
+    } else if ((m = _RE_EV_DAY.exec(name))) {
+        const after = (m[8] || '').toUpperCase(), before = (m[1] || '').toUpperCase();
+        const zone = after in EV_ABBR ? EV_ABBR[after] : EV_ZONE[after] || EV_ZONE[before];
+        if (zone === undefined) return null;
+        start = evNearestYear(EV_MON[m[4].toLowerCase()], +m[3], ev12h(+m[5], m[7]), +m[6], zone, EV_WDAY[m[2].toLowerCase()]);
+    } else if ((m = _RE_EV_AT.exec(name)) && /^(US|CA)\s*\|/i.test(ch.group || '')) {
+        start = evNearestYear(EV_MON[m[1].toLowerCase()], +m[2], ev12h(+m[3], m[5]), +m[4], 'America/New_York');
+    }
+    if (!(start > 0) || Math.abs(start - Date.now()) > 400 * 86400000) return null;
+    if (!(stop > start)) stop = start + EVENT_DEFAULT_MS;
+    // Title: the name without the status word, the date part (and what follows it in that segment) and filler segments
+    let rest = tm ? name.slice(tm[0].length) : name;
+    const at = rest.indexOf(m[0]);
+    const segs = [];
+    let pos = 0;
+    for (const seg of rest.split('|')) {
+        const segStart = pos; pos += seg.length + 1;
+        let t = seg;
+        if (at >= segStart && at < pos) t = seg.slice(0, at - segStart).replace(/[\s/:@-]+$/, '');
+        else if (at >= 0 && segStart > at) continue; // everything after the date is channel labelling
+        t = t.trim();
+        if (t && !_RE_EV_JUNKSEG.test(t)) segs.push(t);
+    }
+    if (segs.length > 1 && /^(?:[A-Z]{2}|[^:]{1,30}\s\d{1,3})$/.test(segs[0])) segs.shift(); // slot label: "CA", "National League 1"
+    if (segs.length) segs[0] = segs[0].replace(_RE_EV_LABEL, '') || segs[0];
+    const title = segs.length ? segs[0] : name;
+    return { start, stop, title, desc: segs.slice(1).join(' · '), tag };
+}
+// Parsed once per channel object (names do not change; a playlist refresh brings new objects)
+const _evCache = new WeakMap();
+let _eventProgs = new Map(); // tvgId -> [programme] built from event names, the guide's fallback
+function eventOf(ch) {
+    let ev = _evCache.get(ch);
+    if (ev === undefined) { ev = parseEventName(ch); _evCache.set(ch, ev); }
+    return ev;
+}
+function buildEventProgs() {
+    _eventProgs = new Map();
+    for (const ch of channels) {
+        const ev = eventOf(ch);
+        if (ev && ch.tvgId && !_eventProgs.has(ch.tvgId)) _eventProgs.set(ch.tvgId, [{ start: ev.start, stop: ev.stop, title: ev.title, desc: ev.desc, fromName: true }]);
+    }
+}
+// Programmes for a channel: its EPG when there is any, else the event read from its name
+function epgProgsOf(tvgId) {
+    const id = resolveEpgId(tvgId);
+    const p = id ? epgData.get(id) : null;
+    if (p && p.length) return p;
+    return (tvgId && _eventProgs.get(tvgId)) || null;
+}
+function evFinished(ev, now) { return ev.tag === 'ended' || now >= ev.stop; }
+// Order a group of event channels by start time (finished ones last, unparsed ones after them), optionally
+// leaving out events finished over an hour ago. The playing channel always stays. Groups where fewer than half
+// the names carry a time are left as listed.
+function arrangeEventGroup(list) {
+    const mode = settings.ppvEvents;
+    if (mode === 'off' || list.length < 2) return list;
+    let n = 0;
+    for (const ch of list) if (eventOf(ch)) n++;
+    if (n < list.length / 2) return list;
+    const now = Date.now();
+    const playing = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+    const items = [];
+    for (let i = 0; i < list.length; i++) {
+        const ch = list[i], ev = eventOf(ch);
+        const done = ev ? evFinished(ev, now) : false;
+        if (mode === 'hide' && done && ch !== playing && now > (ev.tag === 'ended' ? Math.min(ev.start, ev.stop) : ev.stop) + EVENT_HIDE_AFTER_MS) continue;
+        items.push({ ch, ev, i, rank: !ev ? 2 : done ? 1 : 0 });
+    }
+    items.sort((a, b) => a.rank - b.rank || (a.ev && b.ev ? a.ev.start - b.ev.start : 0) || a.i - b.i);
+    return items.map(x => x.ch);
+}
 
 // ----- Previous channel, channel surfing, alternate sources, recent channels -----
 // Red (or a long press on OK) flips between the two most recent channels
@@ -808,9 +1217,7 @@ function applyEpgNameFallback(nameMap) {
 }
 
 function getCurrentProgramme(tvgId) {
-    const id = resolveEpgId(tvgId);
-    if (!id) return null;
-    const progs = epgData.get(id);
+    const progs = epgProgsOf(tvgId);
     if (!progs || !progs.length) return null;
     const now = Date.now();
     const idx = _epgBinarySearch(progs, now);
@@ -820,9 +1227,7 @@ function getCurrentProgramme(tvgId) {
 }
 
 function getNextProgramme(tvgId) {
-    const id = resolveEpgId(tvgId);
-    if (!id) return null;
-    const progs = epgData.get(id);
+    const progs = epgProgsOf(tvgId);
     if (!progs || !progs.length) return null;
     const now = Date.now();
     const idx = _epgBinarySearch(progs, now);
@@ -906,8 +1311,9 @@ async function loadEPG(url) {
                     const spM = _RE_STOP_ATTR.exec(xml);
                     const tiM = _RE_TITLE_TAG.exec(xml);
                     if (chM && stM) {
-                        const pStart = parseXMLTVDate(stM[1]);
-                        const pStop = spM ? parseXMLTVDate(spM[1]) : null;
+                        let pStart = parseXMLTVDate(stM[1]);
+                        let pStop = spM ? parseXMLTVDate(spM[1]) : null;
+                        if (pStart !== null && _epgShiftOn) { pStart = epgShiftTime(pStart); if (pStop !== null) pStop = epgShiftTime(pStop); }
                         if (pStart !== null && pStart <= windowEnd && (pStop === null || pStop >= windowStart)) {
                             const cid = chM[1];
                             if (!newData.has(cid)) {
@@ -1190,7 +1596,7 @@ async function epgRestoreFromCache(key) {
         const tvgId = String(k).slice(key.length + 1);
         if (!tvgId || !v || !Array.isArray(v.progs) || !v.progs.length || now - v.at > EPG_PERSIST_MAX_AGE_MS) continue;
         if (_epgFetchMeta.has(tvgId) && _epgFetchMeta.get(tvgId).status === 'pending') continue; // a live fetch is already ahead of us
-        epgData.set(tvgId, v.progs);
+        epgData.set(tvgId, epgShiftProgs(v.progs, 1)); // cache holds provider time
         epgIdMap.set(tvgId.toLowerCase(), tvgId);
         _epgFetchMeta.set(tvgId, { at: v.at, status: 'done' }); // past its TTL it is simply re-fetched when visible
         _epgDirtyIds.add(tvgId);
@@ -1269,6 +1675,7 @@ function applyM3UChannels(parsed, url, epgUrl, fromCache) {
     currentSearchQuery = '';
     searchInput.value = '';
     _activePlaylistKey = 'm:' + url;
+    epgOffsetLoad();
     _m3uSource = { url, epgUrl };
     rememberLastPlaylist(_activePlaylistKey);
     currentGroup = initialGroupFor(_activePlaylistKey);
@@ -1359,6 +1766,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         currentSearchQuery = '';
         searchInput.value = '';
         _activePlaylistKey = 'm:demo'; // not remembered for auto-load
+        epgOffsetLoad();
         currentGroup = initialGroupFor(_activePlaylistKey);
         currentPlaylistType = 'm3u';
         extractGroups();
@@ -1638,7 +2046,7 @@ function renderChannelList() {
     } else if (currentGroup === 'all') {
         filtered = _hiddenGroups.size ? channels.filter(ch => !_hiddenGroups.has(ch.group)) : [...channels];
     } else {
-        filtered = channels.filter(ch => ch.group === currentGroup);
+        filtered = arrangeEventGroup(channels.filter(ch => ch.group === currentGroup));
     }
     currentFilteredChannels = filtered;
     if (stdFocusIdx >= filtered.length) stdFocusIdx = Math.max(0, filtered.length - 1);
@@ -1760,6 +2168,7 @@ function startStallWatchdog() {
             if (stallCount >= STALL_THRESHOLD_CHECKS) {
                 stallCount = 0;
                 stallLastTime = -1;
+                noteStreamFail(liveEngineActive() ? 'hls.js' : 'native', `No progress for ${STALL_THRESHOLD_CHECKS * 2} s (readyState ${videoPlayer.readyState}, t=${t.toFixed(1)} s)`, '');
                 if (_reloadAttempts >= MAX_AUTO_RELOADS) {
                     // Budget exhausted: try another source of the same channel, else stop hammering it and tell the user
                     stopStallWatchdog();
@@ -1785,11 +2194,13 @@ function stopStallWatchdog() {
 function showStreamError(msg) {
     const name = (currentChannelIndex >= 0 && channels[currentChannelIndex]) ? channels[currentChannelIndex].name : '';
     const tried = _altTried.size > 1 ? ` (${_altTried.size} sources tried)` : '';
-    statusArea.innerText = `⚠️ ${msg}`;
-    channelInfoTag.innerText = `⚠️ ${name ? name + ' — ' : ''}${msg}`;
-    showEPGToast(`${name ? name + ': ' : ''}${msg}${tried}. Press Reload to retry.`, 'error', 'Stream Error');
+    const acct = accountProblemText(_consInfo);
+    statusArea.innerText = `⚠️ ${acct || msg}`;
+    channelInfoTag.innerText = `⚠️ ${name ? name + ' — ' : ''}${acct || msg}`;
+    if (acct) showEPGToast(`${acct}. Stop playback on the other device, then press Reload.`, 'error', 'Connection limit');
+    else showEPGToast(`${name ? name + ': ' : ''}${msg}${tried}. Press Reload to retry.`, 'error', 'Stream Error');
     hideEPGToast(7000);
-    diagLog(`Stream error: ${name}: ${msg}${tried}`);
+    diagLog(`Stream error: ${name}: ${msg}${tried}${acct ? ' · ' + acct : ''}`);
 }
 
 // Enter on the already-playing row (or a click on the live picture): open the app-owned player
@@ -2142,7 +2553,7 @@ function goToHomeScreen() {
     umsRelease(liveUms); liveUms = null;
     resetVodState(false);
     exitEPGMode();
-    _activePlaylistKey = null;
+    _activePlaylistKey = null; _epgShiftOn = false; _epgTz = ''; _epgExtraMs = 0;
     if (settingsOpen) closeSettings();
     currentPlaylistType = null;
     isLoading = false;
@@ -2329,7 +2740,7 @@ function xtreamNoteEpgOffset(ep) {
 }
 function catchupUrl(ch, prog) {
     const mins = Math.max(1, Math.ceil((prog.stop - prog.start) / 60000));
-    return `${_xt.base}/timeshift/${_xt.user}/${_xt.pass}/${mins}/${fmtTimeshiftStart(prog.start, _xt.tz)}/${ch.streamId}.ts`;
+    return `${_xt.base}/timeshift/${_xt.user}/${_xt.pass}/${mins}/${fmtTimeshiftStart(epgUnshiftTime(prog.start), _xt.tz)}/${ch.streamId}.ts`; // archive is indexed by provider time
 }
 // Server timezone is needed for timeshift start times; cached loads skip the auth call, so fetch it lazily
 function xtreamEnsureServerInfo() {
@@ -2358,7 +2769,7 @@ async function fetchXtreamEpgFull(tvgId) {
         for (const p of epgData.get(tvgId) || []) byStart.set(p.start, p);
         if (listings.length) xtreamNoteEpgOffset(listings[0]);
         for (const ep of listings) {
-            const pStart = parseInt(ep.start_timestamp) * 1000, pStop = parseInt(ep.stop_timestamp) * 1000;
+            const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000), pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
             if (isNaN(pStart) || isNaN(pStop) || pStop <= pStart) continue;
             const title = unescapeXml(decodeBase64Field(ep.title || '').trim());
             const rawDesc = unescapeXml(decodeBase64Field(ep.description || '').trim());
@@ -2371,7 +2782,7 @@ async function fetchXtreamEpgFull(tvgId) {
         epgData.delete(tvgId); epgData.set(tvgId, progs);
         epgIdMap.set(tvgId.toLowerCase(), tvgId);
         const m = _epgFetchMeta.get(tvgId); if (!m || m.status !== 'pending') _epgFetchMeta.set(tvgId, { at: Date.now(), status: 'done' });
-        epgPersist(tvgId, Date.now(), progs);
+        epgPersist(tvgId, Date.now(), epgShiftProgs(progs, -1)); // cache keeps provider time
         onEpgChannelUpdated(tvgId);
     } catch (_) { _epgFullFetched.delete(tvgId); /* retried next time the cursor moves there */ }
     finally { _epgFullPending.delete(tvgId); if (epgMode) { for (const [idx, el] of epgRenderedRows) { const ch = currentFilteredChannels[idx]; if (ch && ch.tvgId === tvgId) el.classList.remove('epg-row-loading-past'); } } }
@@ -2484,8 +2895,7 @@ const EPG_DESC_MAX = 160;
 // Programme blocks (or the placeholder) for one channel over the current window
 function epgProgsHtml(ch) {
     const now = Date.now();
-    const resolvedId = resolveEpgId(ch.tvgId);
-    const progs = resolvedId ? (epgData.get(resolvedId) || []) : [];
+    const progs = epgProgsOf(ch.tvgId) || [];
     const parts = [`<div class="epg-progs-clip"><div class="epg-progs" style="width:${_epgTotalGuideW}px">`];
     let hadBlock = false;
     for (const p of progs) {
@@ -2506,7 +2916,10 @@ function epgProgsHtml(ch) {
         hadBlock = true;
     }
     if (!hadBlock) {
-        const label = epgPlaceholderText(ch.tvgId);
+        // An event outside the window (next week's race) names its date instead of "No data"
+        const ev = progs.length === 1 && progs[0].fromName ? progs[0] : null;
+        const label = ev ? escapeHtml(`${ev.title} · ${new Date(ev.start).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })} ${formatClock(ev.start)}`)
+            : epgPlaceholderText(ch.tvgId);
         const cls = label === 'Loading ...' ? 'epg-prog-placeholder loading' : 'epg-prog-placeholder';
         parts.push(`<div class="${cls}" style="left:2px;width:${(_epgTotalGuideW - 4).toFixed(1)}px">` +
             `<span class="epg-prog-title">${label}</span></div>`);
@@ -2941,8 +3354,8 @@ async function fetchXtreamEpgFor(tvgId) {
                 const cutoff = Date.now() - 2 * 3600000; // keep a little history for the 1h-back guide window
                 if (listings.length) xtreamNoteEpgOffset(listings[0]);
                 for (const ep of listings) {
-                    const pStart = parseInt(ep.start_timestamp) * 1000;
-                    const pStop = parseInt(ep.stop_timestamp) * 1000;
+                    const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000);
+                    const pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
                     if (isNaN(pStart) || isNaN(pStop) || pStop < cutoff) continue;
                     const title = unescapeXml(decodeBase64Field(ep.title || '').trim());
                     const rawDesc = unescapeXml(decodeBase64Field(ep.description || '').trim());
@@ -2957,7 +3370,7 @@ async function fetchXtreamEpgFor(tvgId) {
     // EPG_EMPTY_RETRY_MS (providers return empty lists under load) and never replaces data already held.
     const empty = ok && !progs.length;
     _epgFetchMeta.set(tvgId, { at: ok ? (empty ? Date.now() - EPG_CACHE_TTL_MS + EPG_EMPTY_RETRY_MS : Date.now()) : Date.now() - EPG_CACHE_TTL_MS + 60000, status: ok ? 'done' : 'error' });
-    if (ok && progs.length) epgPersist(tvgId, Date.now(), progs);
+    if (ok && progs.length) epgPersist(tvgId, Date.now(), epgShiftProgs(progs, -1)); // cache keeps provider time
     if (empty && epgData.has(tvgId)) { onEpgChannelUpdated(tvgId); return; } // keep what we have (stale beats blank)
     if (progs.length) {
         epgData.delete(tvgId); // re-insert so Map insertion order doubles as LRU order
@@ -3064,7 +3477,9 @@ function epgMinuteTick() {
     const now = Date.now();
     if (currentPlaylistType === 'xtream' && epgMode && vodMode === 'live') {
         const HOUR_MS = 3600000;
-        const winStart = Math.floor((now - HOUR_MS) / HOUR_MS) * HOUR_MS;
+        // Same window origin as renderEPGGuide (catch-up playlists start days back, not 1 h): with a 1 h
+        // lookback here every tick looked like a rollover and panned the guide an hour into the past per minute
+        const winStart = Math.floor((now - epgPastHours() * HOUR_MS) / HOUR_MS) * HOUR_MS;
         if (_epgSkeletonWinStart && winStart !== _epgSkeletonWinStart) {
             // Hour rolled over: shift the horizontal scroll so the same wall-clock
             // time stays in view, then rebuild the time strip and rows once.
@@ -3204,6 +3619,7 @@ function applyXtreamChannels(parsed, base, username, password, fromCache, tz, ep
     currentSearchQuery = '';
     searchInput.value = '';
     _activePlaylistKey = 'x:' + base + '|' + username;
+    epgOffsetLoad();
     _m3uSource = null;
     rememberLastPlaylist(_activePlaylistKey);
     currentGroup = initialGroupFor(_activePlaylistKey);
@@ -3382,7 +3798,83 @@ function xtApi(action, params) {
 }
 function normMovie(s) {
     return { kind: 'movie', id: String(s.stream_id), name: s.name || 'Untitled', icon: s.stream_icon || '', rating: parseFloat(s.rating) || 0,
-             added: (parseInt(s.added) || 0) * 1000, ext: s.container_extension || 'mp4', catId: String(s.category_id) };
+             added: (parseInt(s.added) || 0) * 1000, ext: s.container_extension || 'mp4', catId: String(s.category_id),
+             genre: s.genre || '', releaseDate: s.releasedate || s.release_date || s.releaseDate || (s.year ? String(s.year) : '') };
+}
+// ── sort & genre filter (Green in the grid) ──────────────────
+const VOD_SORTS = [{ v: 'default', label: 'Provider order' }, { v: 'added', label: 'Newest added' }, { v: 'az', label: 'A – Z' }, { v: 'year', label: 'Year (newest)' }, { v: 'rating', label: 'Rating' }];
+function vodSortItems(items, sort) {
+    if (!sort || sort === 'default') return items;
+    const out = items.slice();
+    if (sort === 'added') out.sort((a, b) => (b.added || 0) - (a.added || 0));
+    else if (sort === 'az') out.sort((a, b) => a.name.localeCompare(b.name));
+    else if (sort === 'year') out.sort((a, b) => (yearOf(b.releaseDate) || 0) - (yearOf(a.releaseDate) || 0));
+    else if (sort === 'rating') out.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+    return out;
+}
+function itemGenres(it) { return String(it.genre || '').split(/[,/|]/).map(g => g.trim()).filter(Boolean); }
+// Genres present in the current base list, most frequent first (capped so the menu stays usable)
+function vodGenreOptions(items) {
+    const count = new Map();
+    for (const it of items) for (const g of itemGenres(it)) count.set(g, (count.get(g) || 0) + 1);
+    return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 40).map(([g, n]) => ({ g, n }));
+}
+function vodFilterGenre(items, genre) { return genre ? items.filter(it => itemGenres(it).includes(genre)) : items; }
+// Items shown in the grid: base list → genre → search → sort (search keeps its own relevance order)
+function vodDerivedItems() {
+    const q = (vodNav.query || '').trim();
+    const base = vodFilterGenre(vodNav.baseItems, vodNav.genre);
+    return q ? vodSearchItems(base, q) : vodSortItems(base, vodNav.sort);
+}
+function vodSortLabel() { const s = VOD_SORTS.find(x => x.v === vodNav.sort); return s && s.v !== 'default' ? s.label : ''; }
+let vodSortOpen = false, vodSortFocus = 0, _vodSortRows = [];
+function openVodSort() {
+    if (vodMode === 'live' || vodNav.screen !== 'grid') return;
+    const ov = document.getElementById('vodSortOverlay'); if (!ov) return;
+    vodSortOpen = true;
+    const genres = vodGenreOptions(vodNav.baseItems);
+    _vodSortRows = VOD_SORTS.map(s => ({ kind: 'sort', v: s.v, label: s.label }))
+        .concat([{ kind: 'genre', v: null, label: 'All genres' }], genres.map(x => ({ kind: 'genre', v: x.g, label: x.g, n: x.n })));
+    vodSortFocus = Math.max(0, _vodSortRows.findIndex(r => r.kind === 'sort' && r.v === (vodNav.sort || 'default')));
+    ov.classList.remove('hidden');
+    renderVodSort();
+}
+function closeVodSort() {
+    if (!vodSortOpen) return;
+    vodSortOpen = false;
+    const ov = document.getElementById('vodSortOverlay'); if (ov) ov.classList.add('hidden');
+    const list = document.getElementById('vodSortList'); if (list) list.innerHTML = '';
+}
+function renderVodSort() {
+    const list = document.getElementById('vodSortList'); if (!list) return;
+    list.innerHTML = '';
+    let lastKind = null;
+    _vodSortRows.forEach((r, i) => {
+        if (r.kind !== lastKind) { const h = document.createElement('div'); h.className = 'settings-section'; h.textContent = r.kind === 'sort' ? 'Sort by' : 'Genre'; list.appendChild(h); lastKind = r.kind; }
+        const on = r.kind === 'sort' ? (vodNav.sort || 'default') === r.v : (vodNav.genre || null) === r.v;
+        const row = document.createElement('div');
+        row.className = 'settings-row cats-row' + (i === vodSortFocus ? ' focused' : '') + (on ? ' on' : '');
+        row.innerHTML = `<div class="settings-label"><div class="settings-name">${escapeHtml(r.label)}${r.n ? ` <span class="settings-sub">${r.n}</span>` : ''}</div></div><div class="settings-value"><span class="settings-val">${on ? '●' : ''}</span></div>`;
+        row.addEventListener('click', () => { vodSortFocus = i; vodSortActivate(); });
+        list.appendChild(row);
+    });
+    const f = list.querySelector('.cats-row.focused'); if (f) f.scrollIntoView({ block: 'nearest' });
+}
+function vodSortActivate() {
+    const r = _vodSortRows[vodSortFocus]; if (!r) return;
+    if (r.kind === 'sort') { vodNav.sort = r.v; if (_activePlaylistKey) { getPlaylistState(_activePlaylistKey).vodSort = r.v; savePlaylistState(); } }
+    else vodNav.genre = r.v;
+    vodNav.items = vodDerivedItems();
+    vodNav.focus = 0; vodNav.gridScroll = 0;
+    renderVodGrid();
+    renderVodSort();
+}
+function handleVodSortKey(e) {
+    const k = e.key, kc = e.keyCode;
+    if (k === 'ArrowUp' || kc === 38) { e.preventDefault(); vodSortFocus = Math.max(0, vodSortFocus - 1); renderVodSort(); }
+    else if (k === 'ArrowDown' || kc === 40) { e.preventDefault(); vodSortFocus = Math.min(_vodSortRows.length - 1, vodSortFocus + 1); renderVodSort(); }
+    else if (k === 'Enter' || kc === 13) { e.preventDefault(); vodSortActivate(); }
+    else if (kc === 404 || k === 'ColorF1Green') { e.preventDefault(); closeVodSort(); }
 }
 function normSeries(s) {
     return { kind: 'series', id: String(s.series_id), name: s.name || 'Untitled', icon: s.cover || '', rating: parseFloat(s.rating) || 0,
@@ -3509,7 +4001,7 @@ function episodeIsLast(seasons, ep) {
     }
     return true;
 }
-function setEpisodeWatched(item, ep, seasons, on) {
+function setEpisodeWatched(item, ep, seasons, on, noSave) {
     const key = progressKeyFor('episode', ep.id, item.id);
     if (!on) delete vodProgress[key];
     else {
@@ -3517,6 +4009,17 @@ function setEpisodeWatched(item, ep, seasons, on) {
         vodProgress[key] = { kind: 'episode', id: ep.id, name: item.name, icon: item.icon, catId: item.catId, rating: item.rating || 0, pos: dur, dur, at: Date.now(), watched: true,
                              seriesId: item.id, season: ep.season, epNum: ep.num, epTitle: ep.title, epId: ep.id, lastOfSeries: episodeIsLast(seasons, ep) };
     }
+    if (noSave) return;
+    pruneVodProgress();
+    saveJson('iptv_vod_progress', vodProgress);
+}
+function setSeasonWatched(item, season, seasons, on) {
+    if (!season) return;
+    // Entries get ascending 'at' in series order, so the newest entry is the last episode marked and
+    // Continue Watching / "Play" resume after it (or drop the series when that was the final episode)
+    const flat = []; for (const s of seasons) for (const ep of s.episodes) flat.push(ep.id);
+    const base = Date.now() - flat.length;
+    for (const ep of season.episodes) { setEpisodeWatched(item, ep, seasons, on, true); if (on) vodProgress[progressKeyFor('episode', ep.id, item.id)].at = base + flat.indexOf(ep.id); }
     pruneVodProgress();
     saveJson('iptv_vod_progress', vodProgress);
 }
@@ -3667,14 +4170,16 @@ async function openVodList(list, catId) {
         if (vodMode !== mode || vodNav.list !== list || vodNav.catId !== (catId || null)) return; // user moved on
     }
     vodNav.baseItems = items;
-    vodNav.items = items;
+    vodNav.genre = null; // a genre filter belongs to the list it was chosen in
+    vodNav.sort = (_activePlaylistKey && getPlaylistState(_activePlaylistKey).vodSort) || 'default';
+    vodNav.items = vodDerivedItems();
     renderVodGrid();
     if (list === 'all') focusVodSearch();
 }
 function applyVodSearch() {
     const q = vodNav.query || '';
     if (vodNav.screen === 'home') { if (q.trim()) { openVodList('all').then(() => { vodNav.query = q; document.getElementById('vodSearchInput').value = q; applyVodSearch(); }); } return; }
-    vodNav.items = q.trim() ? vodSearchItems(vodNav.baseItems, q) : vodNav.baseItems;
+    vodNav.items = vodDerivedItems();
     vodNav.focus = 0; vodNav.gridScroll = 0;
     renderVodGrid();
 }
@@ -3786,7 +4291,8 @@ function renderVodGrid() {
     const cats = (vodMode === 'movies' ? vodCats : seriesCats) || [];
     const cat = cats.find(c => c.id === vodNav.catId);
     const title = vodNav.list === 'favs' ? '⭐ Favorites' : vodNav.list === 'all' ? (vodMode === 'movies' ? '🔍 All movies' : '🔍 All series') : '📁 ' + (cat ? cat.name : '');
-    setVodHeader(title, `${items.length.toLocaleString()} titles${vodNav.query ? ` · "${vodNav.query}"` : ''}`);
+    const viewBits = [vodNav.genre ? `🎭 ${vodNav.genre}` : '', vodSortLabel() ? `⇅ ${vodSortLabel()}` : ''].filter(Boolean);
+    setVodHeader(title, `${items.length.toLocaleString()} titles${vodNav.query ? ` · "${vodNav.query}"` : ''}${viewBits.length ? ' · ' + viewBits.join(' · ') : ''} · Green: sort & genre`);
     const inner = document.getElementById('vodGridInner');
     inner.innerHTML = '';
     vodGridRows.clear();
@@ -3852,12 +4358,31 @@ async function getVodInfo(item) {
     if (vodInfoCache.has(item.id)) return vodInfoCache.get(item.id);
     const raw = await xtApi('get_vod_info', { vod_id: item.id });
     const i = (raw && raw.info) || {}, md = (raw && raw.movie_data) || {};
-    const info = { plot: i.plot || i.description || '', cast: i.cast || i.actors || '', director: i.director || '', genre: i.genre || '',
-                   releaseDate: i.releasedate || i.release_date || '', duration: parseDurationSecs(i), rating: parseFloat(i.rating) || item.rating || 0,
+    const info = { plot: i.plot || i.description || '', cast: i.cast || i.actors || '', director: i.director || '', genre: i.genre || item.genre || '',
+                   releaseDate: i.releasedate || i.release_date || item.releaseDate || '', duration: parseDurationSecs(i), rating: parseFloat(i.rating) || item.rating || 0,
                    backdrop: Array.isArray(i.backdrop_path) ? i.backdrop_path[0] : (i.backdrop_path || ''), image: i.movie_image || i.cover_big || item.icon,
-                   ext: md.container_extension || item.ext };
+                   ext: md.container_extension || item.ext, added: (parseInt(md.added) || 0) * 1000 || item.added || 0 };
+    Object.assign(info, providerExtras(i));
     vodInfoCache.set(item.id, info);
     return info;
+}
+// Extra fields many Xtream panels return with get_vod_info / get_series_info (all optional)
+function providerExtras(i) {
+    const out = {};
+    const age = i.age || i.mpaa || i.mpaa_rating || i.certification || ''; if (age && age !== 'N/A') out.age = String(age);
+    if (i.country) out.country = String(i.country);
+    const tmdb = i.tmdb_id || i.tmdb || ''; if (tmdb && tmdb !== '0') out.tmdb = String(tmdb);
+    if (i.youtube_trailer) out.trailer = String(i.youtube_trailer);
+    const ert = parseInt(i.episode_run_time); if (ert > 0) out.episodeRunTime = ert;
+    const v = i.video && typeof i.video === 'object' ? i.video : null, a = i.audio && typeof i.audio === 'object' ? i.audio : null;
+    const bits = [];
+    if (v && v.width && v.height) bits.push(`${v.width}×${v.height}`);
+    if (v && v.codec_name) bits.push(String(v.codec_name).toUpperCase());
+    if (v && v.r_frame_rate) { const m = String(v.r_frame_rate).match(/^(\d+)\/(\d+)$/); const fps = m ? +m[1] / +m[2] : parseFloat(v.r_frame_rate); if (fps > 0) bits.push(`${Math.round(fps * 100) / 100} fps`); }
+    if (a && a.codec_name) bits.push(String(a.codec_name).toUpperCase() + (a.channels ? ` ${a.channels === 6 ? '5.1' : a.channels === 8 ? '7.1' : a.channels + 'ch'}` : ''));
+    const br = parseInt(i.bitrate) || (v && parseInt(v.bit_rate)) || 0; if (br > 0) bits.push(`${br >= 1e6 ? (br / 1e6).toFixed(1) + ' Mbps' : Math.round(br / 1000) + ' kbps'}`);
+    if (bits.length) out.fileTech = bits.join(' · ');
+    return out;
 }
 async function getSeriesInfo(item) {
     if (seriesInfoCache.has(item.id)) return seriesInfoCache.get(item.id);
@@ -3880,6 +4405,7 @@ async function getSeriesInfo(item) {
                    releaseDate: i.releaseDate || i.release_date || item.releaseDate || '', rating: parseFloat(i.rating) || item.rating || 0,
                    backdrop: Array.isArray(i.backdrop_path) ? i.backdrop_path[0] : (i.backdrop_path || item.backdrop || ''), image: i.cover || item.icon,
                    seasons, episodeCount: seasons.reduce((n, s) => n + s.episodes.length, 0) };
+    Object.assign(info, providerExtras(i));
     seriesInfoCache.set(item.id, info);
     return info;
 }
@@ -3965,6 +4491,24 @@ function vodDetailButtons() {
             renderVodDetails();
             showEPGToast(`${item.name} marked as ${w ? 'unwatched' : 'watched'}`, 'success', 'Watched'); hideEPGToast(2000);
         } });
+    } else if (info && info.seasons.length) {
+        // Season / series watched state: the button flips to "unwatched" once everything is already watched
+        const season = info.seasons[Math.min(vodNav.season, info.seasons.length - 1)];
+        const seasonDone = season && season.episodes.length && season.episodes.every(ep => { const p = episodeProgress(item.id, ep.id); return p && p.watched; });
+        btns.push({ id: 'season', label: seasonDone ? `↺ Season ${season.num}: mark unwatched` : `✓ Mark season ${season ? season.num : ''} watched`, act: () => {
+            setSeasonWatched(item, season, info.seasons, !seasonDone);
+            renderVodDetails();
+            showEPGToast(`Season ${season.num} marked as ${seasonDone ? 'unwatched' : 'watched'}`, 'success', 'Watched'); hideEPGToast(2000);
+        } });
+        const allDone = info.seasons.every(s => s.episodes.every(ep => { const p = episodeProgress(item.id, ep.id); return p && p.watched; }));
+        btns.push({ id: 'all', label: allDone ? '↺ Mark all unwatched' : '✓ Mark all watched', act: () => {
+            showConfirmDialog(allDone ? '↺ Mark all unwatched' : '✓ Mark all watched', `${allDone ? 'Clear the watched state of' : 'Mark'} all ${info.episodeCount} episodes of ${item.name}${allDone ? '' : ' as watched'}?`, () => {
+                for (const s of info.seasons) setSeasonWatched(item, s, info.seasons, !allDone);
+                if (vodNav.detailBtn >= vodDetailButtons().length) vodNav.detailBtn = 0;
+                renderVodDetails();
+                showEPGToast(`${item.name}: all episodes marked ${allDone ? 'unwatched' : 'watched'}`, 'success', 'Watched'); hideEPGToast(2000);
+            });
+        } });
     }
     return btns;
 }
@@ -3985,9 +4529,18 @@ function renderVodDetails() {
         const rt = (info && info.rating) || item.rating; if (rt) metaBits.push(`★ ${rt.toFixed(1)}`);
         const g = (info && info.genre) || item.genre; if (g) metaBits.push(g);
     }
+    if (info) {
+        if (info.age) metaBits.push(info.age);
+        if (info.country) metaBits.push(info.country);
+        if (item.kind === 'series' && info.episodeRunTime) metaBits.push(`${info.episodeRunTime} min/ep`);
+    }
     const techKey = item.kind === 'movie' ? progressKeyFor('movie', item.id) : (lastEpisodeEntry(item.id) ? progressKeyFor('episode', lastEpisodeEntry(item.id).epId, item.id) : null);
-    const tech = techKey && vodTech[techKey] ? vodTech[techKey] : '';
+    const tech = (techKey && vodTech[techKey]) || (info && info.fileTech) || ''; // what the TV decoded beats what the provider claims
     if (tech) metaBits.push(tech);
+    const extraBits = [];
+    if (info && info.releaseDate && /^\d{4}-\d{2}-\d{2}/.test(info.releaseDate)) extraBits.push(`Released ${info.releaseDate.slice(0, 10)}`);
+    if (item.kind === 'movie' && info && info.added) extraBits.push(`Added ${new Date(info.added).toLocaleDateString()}`);
+    if (info && info.tmdb) extraBits.push(`TMDB ${info.tmdb}`);
     const plot = (info && info.plot) || item.plot || (d.loading ? 'Loading …' : '');
     const people = info ? [info.director ? `Director: ${info.director}` : '', info.cast ? `Cast: ${info.cast}` : ''].filter(Boolean).join(' · ') : '';
     const btns = vodDetailButtons();
@@ -3999,6 +4552,7 @@ function renderVodDetails() {
         `<div class="vod-dmeta">${metaBits.map(escapeHtml).join(' <i>·</i> ')}</div>` +
         `<div class="vod-dplot">${escapeHtml(plot)}</div>` +
         (people ? `<div class="vod-dcast">${escapeHtml(people)}</div>` : '') +
+        (extraBits.length ? `<div class="vod-dcast vod-dextra">${extraBits.map(escapeHtml).join(' <i>·</i> ')}</div>` : '') +
         (d.error ? `<div class="vod-derror">⚠️ ${escapeHtml(d.error)}</div>` : '') +
         `<div class="vod-dbtns">${btns.map((b, i) => `<button class="vod-btn${b.primary ? ' pri' : ''}${b.disabled ? ' disabled' : ''}${vodNav.detailZone === 'buttons' && i === vodNav.detailBtn ? ' focused' : ''}" data-i="${i}">${escapeHtml(b.label)}</button>`).join('')}</div>`;
     if (item.kind === 'series' && info && info.seasons.length) {
@@ -4741,8 +5295,8 @@ function umsTechString(u) {
     if (/10/.test(String(v.profile || '')) || vi.bitDepth === 10) bits.push('10-bit');
     const w = vi.width || v.width, h = vi.height || v.height;
     if (w && h) bits.push(`${w}×${h}`);
-    const fps = vi.frameRate || v.frameRate;
-    if (fps) bits.push(`${(+fps).toFixed(2).replace(/\.?0+$/, '')} fps`);
+    const fps = vi.frameRate || v.frameRate || (u.measuredFps || 0);
+    if (fps) bits.push(fmtFps(fps));
     const hdr = vi.hdrType || vi.hdr || vi.transferCharacteristics || '';
     if (hdr && !/^(none|sdr|0)$/i.test(String(hdr))) bits.push(String(hdr).replace(/dolby\s*vision|dolbyvision|dv/i, 'Dolby Vision').replace(/hdr10plus|hdr10\+/i, 'HDR10+').replace(/^hlg$/i, 'HLG').replace(/^hdr10$/i, 'HDR10'));
     const a = u.audioTracks[u.selectedAudio] || u.audioTracks[0];
@@ -4754,8 +5308,22 @@ function umsTechString(u) {
     }
     return bits.join(' · ');
 }
+// When the media service names no frame rate, count decoded frames over 3 s (getVideoPlaybackQuality); a counter
+// that does not move (frames rendered on the TV's video plane bypass the browser) leaves the line without fps
+function umsMeasureFps(u) {
+    if (u.fpsTried || !u.video || u.video.frameRate || (u.videoInfo && u.videoInfo.frameRate) || !videoPlayer.getVideoPlaybackQuality) return;
+    u.fpsTried = true;
+    const q0 = videoPlayer.getVideoPlaybackQuality().totalVideoFrames, t0 = performance.now();
+    setTimeout(() => {
+        const live = u.kind === 'live' ? liveUms === u : vodPlay.ums === u;
+        if (!live || videoPlayer.paused) return;
+        const n = videoPlayer.getVideoPlaybackQuality().totalVideoFrames - q0, dt = (performance.now() - t0) / 1000;
+        if (n > 0 && dt > 1) { u.measuredFps = fpsSnap(n / dt); umsTechUpdated(u); }
+    }, 3000);
+}
 function umsTechUpdated(u) {
     const s = umsTechString(u);
+    umsMeasureFps(u);
     if (u.kind === 'vod' && vodPlay.ums === u) {
         const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s;
         if (s && vodPlay.key) { vodTech[vodPlay.key] = s; const ks = Object.keys(vodTech); if (ks.length > 300) delete vodTech[ks[0]]; saveJson('iptv_vod_tech', vodTech); }
@@ -4909,10 +5477,12 @@ function loadSettings() {
     if (!(st.schema >= 4)) { if (st.subColor === 'gray' || st.subColor === undefined) { out.subColor = 'white'; out.subOpacity = 85; } else out.subOpacity = 100; out.schema = 4; }
     if (out.subColor === 'gray') out.subColor = 'white';
     if (!SUB_OPACITY_OPTIONS.some(o => o.v === out.subOpacity)) out.subOpacity = DEFAULT_SETTINGS.subOpacity;
+    if (!PPV_EVENT_OPTIONS.some(o => o.v === out.ppvEvents)) out.ppvEvents = DEFAULT_SETTINGS.ppvEvents;
     out.subAuto = !!out.subAuto;
     if (out.subLang === 'off') out.subLang = 'en';
     if (!LIVE_BUFFER_OPTIONS.some(o => o.v === out.liveBuffer)) out.liveBuffer = DEFAULT_SETTINGS.liveBuffer;
     out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
+    out.avSync = Number.isInteger(st.avSync) && st.avSync >= AV_SYNC_MIN && st.avSync <= AV_SYNC_MAX ? st.avSync : -1;
     return out;
 }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (_) { /* storage unavailable */ } }
@@ -4980,6 +5550,18 @@ function settingsRows() {
           options: [{ v: '12', label: '12-hour' }, { v: '24', label: '24-hour' }],
           get: () => settings.clock,
           set: v => { settings.clock = v; saveSettings(); _epgSkeletonWinStart = 0; refreshViewIfLoaded(); updateNowNext(); if (epgMode && cur()) updateEPGInfoPanel(cur()); } },
+        { id: 'epgTz', type: 'choice', label: 'EPG timezone', disabled: !t,
+          sub: t ? `${forName} · pick the zone whose clock the provider used if guide times are hours off; times are converted to your TV clock` : forName,
+          options: epgTzOptions(), get: () => epgTzSettingsFor(t && t.key).tz,
+          set: v => { ps.epgTz = v; savePlaylistState(); if (t.key === _activePlaylistKey) epgOffsetChange(); } },
+        { id: 'epgDst', type: 'choice', label: 'Daylight saving', disabled: !t || !epgTzSettingsFor(t.key).tz,
+          sub: t && epgTzSettingsFor(t.key).tz ? 'Automatic follows that zone\'s rules on each programme\'s date; pin standard or daylight time if the provider never switches' : 'Choose an EPG timezone first',
+          options: EPG_DST_OPTIONS, get: () => epgTzSettingsFor(t && t.key).dst,
+          set: v => { ps.epgDst = v; savePlaylistState(); if (t.key === _activePlaylistKey) epgOffsetChange(); } },
+        { id: 'epgExtra', type: 'choice', label: 'EPG extra adjustment', disabled: !t,
+          sub: t ? 'Added on top of the timezone for providers that are off by an odd amount' : forName,
+          options: EPG_EXTRA_OPTIONS, get: () => epgTzSettingsFor(t && t.key).extra,
+          set: v => { ps.epgOffset = v; savePlaylistState(); if (t.key === _activePlaylistKey) epgOffsetChange(); } },
         { id: 'autoLoad', type: 'toggle', label: 'Auto-load last playlist', sub: 'Skip the start page on launch',
           get: () => settings.autoLoad, set: v => { settings.autoLoad = v; saveSettings(); } },
         { id: 'startGroup', type: 'choice', label: 'Starting group', sub: forName, disabled: !t,
@@ -4998,6 +5580,8 @@ function settingsRows() {
         { id: 'liveBuffer', type: 'choice', label: 'Live rewind buffer', sub: 'HLS channels: pause and rewind live TV up to this far back. Limited by TV memory (about 70 MB): HD channels reach 1–3 min, SD channels more',
           options: LIVE_BUFFER_OPTIONS, get: () => settings.liveBuffer,
           set: v => { settings.liveBuffer = v; saveSettings(); if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 && (liveEngineActive() || v > 0)) reloadStream(false); } },
+        { id: 'ppvEvents', type: 'choice', label: 'Event channels (PPV)', sub: 'Groups of event channels whose names give the start time: list them by start time, optionally without events that ended over an hour ago',
+          options: PPV_EVENT_OPTIONS, get: () => settings.ppvEvents, set: v => { settings.ppvEvents = v; saveSettings(); refreshViewIfLoaded(); } },
         { id: 'subAuto', type: 'toggle', label: 'Subtitles on automatically', sub: 'Turn on the subtitle language below whenever a file or channel has it',
           get: () => !!settings.subAuto, set: v => { settings.subAuto = v; saveSettings(); reapplySubtitlePrefs(); } },
         { id: 'subLang', type: 'choice', label: 'Subtitle language', sub: 'Used when subtitles turn on automatically',
@@ -5011,6 +5595,9 @@ function settingsRows() {
         { id: 'subEdge', type: 'choice', label: 'Subtitle edge', sub: 'Movies and Series', options: SUB_EDGE_OPTIONS, get: () => settings.subEdge, set: v => { settings.subEdge = v; saveSettings(); umsApplySubtitleStyle(); } },
         { id: 'autoNext', type: 'toggle', label: 'Auto-play next episode', sub: 'Series: when an episode ends, the next one starts after a short countdown',
           get: () => settings.autoNext !== false, set: v => { settings.autoNext = v; saveSettings(); } },
+        ...(_hbAvailable ? [{ id: 'avSync', type: 'choice', label: 'AV sync (rooted TV)', sub: `LG AV Sync Adjustment (0-60), applied while this app is in front and restored when you leave it${_avSyncOrig ? ` · TV was ${_avSyncOrig[_avSyncKey]} (${_avSyncKey})` : ''}`,
+          options: AV_SYNC_OPTIONS, get: () => (settings.avSync >= 0 ? settings.avSync : -1),
+          set: v => { settings.avSync = v; saveSettings(); if (v >= 0) avSyncApply(v).then(() => { if (settingsOpen) renderSettings(); }); else avSyncRestore(); } }] : []),
         { id: 'showAdult', type: 'toggle', label: 'Show adult categories', sub: 'Movies and Series',
           get: () => !!settings.showAdult,
           set: v => { settings.showAdult = v; saveSettings(); if (vodMode !== 'live') { renderGroupsList(); if (vodNav.screen === 'home') renderVodHome(); else if (vodNav.screen === 'grid' && vodNav.list === 'all') openVodList('all'); } } },
@@ -5118,6 +5705,18 @@ function diagLines() {
     L.push(`Stream: ${ch ? ch.name : 'none'} · ${liveEngineActive() ? 'hls.js' : 'native'} · ${liveEngine.tech || '-'} · t=${(videoPlayer.currentTime || 0).toFixed(1)} s · readyState ${videoPlayer.readyState}${verr} · reloads ${_reloadAttempts}/${MAX_AUTO_RELOADS}${_altTried.size > 1 ? ` · ${_altTried.size} sources tried` : ''}`);
     L.push(`hls.js incompatible this session: ${_hlsBroken.size ? [..._hlsBroken].length + ' channel(s)' : 'none'} · live buffer ${settings.liveBuffer ? settings.liveBuffer + ' min' : 'Off'}`);
     if (catchup) L.push(`Catch-up: ${catchup.prog && catchup.prog.title}`);
+    const ago = t => { const s = Math.max(0, Math.round((Date.now() - t) / 1000)); return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${(s / 3600).toFixed(1)} h ago`; };
+    const f = _lastStreamFail;
+    if (f) {
+        L.push(`Last stream failure: ${new Date(f.t).toLocaleTimeString()} (${ago(f.t)}) · ${f.engine} · ${f.what}`);
+        if (f.name) L.push(`  Channel: ${f.name}`);
+        if (f.reply) L.push(`  Server reply: ${f.reply}`);
+    } else L.push('Last stream failure: none this session');
+    if (currentPlaylistType === 'xtream') {
+        const ci = _consInfo;
+        L.push(ci ? `Account check: ${ci.active} of ${ci.max} connection${ci.max === 1 ? '' : 's'} in use · status ${ci.status || '?'}${ci.exp ? ` · expires ${new Date(ci.exp).toLocaleDateString()}` : ''} · checked ${ago(ci.at)}${accountProblemText(ci) ? ' · ⚠️ ' + accountProblemText(ci) : ''}`
+            : 'Account check: not run yet (runs on the first failure of a stream)');
+    }
     L.push('');
     const pt = performance.timing;
     if (pt && pt.navigationStart) L.push(`Page: DOM ready ${pt.domContentLoadedEventEnd - pt.navigationStart} ms · load ${pt.loadEventEnd > 0 ? pt.loadEventEnd - pt.navigationStart : '?'} ms`);
@@ -5125,7 +5724,12 @@ function diagLines() {
     L.push('');
     L.push(`Errors (last ${_diagLog.length}):`);
     if (!_diagLog.length) L.push('  none');
-    for (let i = _diagLog.length - 1; i >= 0; i--) { const e = _diagLog[i]; L.push(`  ${new Date(e.t).toLocaleTimeString()}  ${e.msg}`); }
+    let prevHeader = false;
+    for (let i = _diagLog.length - 1; i >= 0; i--) {
+        const e = _diagLog[i];
+        if (e.prev && !prevHeader) { prevHeader = true; L.push('  ── earlier runs ──'); }
+        L.push(`  ${e.prev ? new Date(e.t).toLocaleString() : new Date(e.t).toLocaleTimeString()}  ${e.msg}`);
+    }
     return L;
 }
 function renderDiag() {
@@ -5152,6 +5756,7 @@ function handleDiagKey(e) {
     if (k === 'ArrowUp' || kc === 38) { e.preventDefault(); if (pre) pre.scrollTop -= 160; }
     else if (k === 'ArrowDown' || kc === 40) { e.preventDefault(); if (pre) pre.scrollTop += 160; }
     else if (k === 'Enter' || kc === 13) { e.preventDefault(); renderDiag(); }
+    else if (kc === 403 || k === 'ColorF0Red') { e.preventDefault(); _diagLog.length = 0; diagSave(); renderDiag(); }
 }
 
 function clearFavorites() {
@@ -5217,8 +5822,7 @@ function epgCursorTime() { return epgFocusT || Date.now(); }
 function epgFocusedProgs() {
     const ch = currentFilteredChannels[epgFocusedRowIdx];
     if (!ch) return { ch: null, progs: [] };
-    const id = resolveEpgId(ch.tvgId);
-    return { ch, progs: id ? (epgData.get(id) || []) : [] };
+    return { ch, progs: epgProgsOf(ch.tvgId) || [] };
 }
 function epgFocusedProg() {
     const { progs } = epgFocusedProgs();
@@ -5350,8 +5954,9 @@ function handleRemoteNav(e) {
         return;
     }
 
-    // Diagnostics / Categories manager / Settings overlay own the remote while open
+    // Diagnostics / Sort menu / Categories manager / Settings overlay own the remote while open
     if (diagOpen) { handleDiagKey(e); return; }
+    if (vodSortOpen) { handleVodSortKey(e); return; }
     if (catsOpen) { handleCatsKey(e); return; }
     if (settingsOpen) { handleSettingsKey(e); return; }
 
@@ -5368,6 +5973,8 @@ function handleRemoteNav(e) {
     if (kc === 406 || k === 'ColorF3Blue') { if (inMain && currentPlaylistType === 'xtream') { e.preventDefault(); cycleVodMode(); } return; }
     // Red in Live: back to the previous channel (Movies/Series use Red for their own actions below)
     if ((kc === 403 || k === 'ColorF0Red') && inMain && vodMode === 'live' && !_isTextInput(document.activeElement)) { e.preventDefault(); swapToPreviousChannel(); return; }
+    // Green in a Movies/Series grid: sort & genre menu
+    if ((kc === 404 || k === 'ColorF1Green') && inMain && vodMode !== 'live' && vodNav.screen === 'grid') { e.preventDefault(); if (_isTextInput(document.activeElement)) document.activeElement.blur(); openVodSort(); return; }
 
     // Typing in a search box: Down/Enter hand focus back to the list; other keys pass through
     if (inMain && _isTextInput(document.activeElement)) {
@@ -5579,7 +6186,9 @@ videoPlayer.addEventListener('error', function () {
     if (!videoPlayer.error) return; // stale event from a source that has already been replaced (hls.js → native hand-over)
     const code = videoPlayer.error ? videoPlayer.error.code : 0;
     const msg = code === 2 ? 'Network error' : code === 3 ? 'Decode error' : code === 4 ? 'Stream unavailable or unsupported' : 'Playback error';
+    noteStreamFail('native', `${msg} (MediaError ${code}${videoPlayer.error && videoPlayer.error.message ? `: ${videoPlayer.error.message}` : ''})`, '');
     stopStallWatchdog();
+    if (_reloadAttempts === 0) noteStreamFailureForAccount(currentChannelIndex); // first failure: is it the account rather than the channel?
     if (_reloadAttempts >= MAX_AUTO_RELOADS) { if (!tryAlternateSource(msg)) showStreamError(msg); return; }
     _reloadAttempts++;
     statusArea.innerText = `⚠️ ${msg} — retrying (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …`;
@@ -5743,6 +6352,7 @@ document.addEventListener('keydown', (e) => {
         return;
     }
     if (diagOpen) { e.preventDefault(); closeDiag(); return; }
+    if (vodSortOpen) { e.preventDefault(); closeVodSort(); return; }
     if (catsOpen) { e.preventDefault(); closeCatsManager(); return; }
     if (settingsOpen) { e.preventDefault(); closeSettings(); return; }
 
@@ -5804,3 +6414,5 @@ if (settings.autoLoad) {
 }
 perfMark('init-done');
 setTimeout(() => { updateFocusableElements(); focusElement(0); }, 500);
+// Rooted TV? Then the AV sync row appears in Settings and a saved offset is applied
+setTimeout(() => { hbProbe().then(ok => { if (ok && settings.avSync >= 0 && !document.hidden) avSyncApply(settings.avSync); if (settingsOpen) renderSettings(); }); }, 1500);

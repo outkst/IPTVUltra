@@ -3210,6 +3210,18 @@ body.live-player #videoPlayer {
 /* Categories manager rows */
 .cats-row.cats-hidden .settings-name { color: #6c7a93; text-decoration: line-through; }
 
+/* Sort & genre menu */
+.settings-section {
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #8b93a7;
+    padding: 10px 14px 2px;
+}
+.cats-row.on .settings-name { color: #9fb4ff; }
+.cats-row .settings-name .settings-sub { display: inline; margin-left: 8px; }
+.vod-dextra { color: #8b93a7; }
+
 /* Diagnostics overlay */
 .diag-card { width: 64rem; }
 .diag-text {

@@ -102,6 +102,34 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await back(); await back(); await sleep(200); // banner, then leave the player
     check('left the player after catch-up; guide visible', await page.evaluate(() => !livePlayer.active && epgMode));
 
+    // ---------- EPG timezone (per playlist): corrects loaded data per programme (DST-aware); cache and catch-up stay in provider time ----------
+    const off = await page.evaluate(async () => {
+        const ch = currentFilteredChannels[49], past = epgData.get('ch50.test').find(p => p.hasArchive === true);
+        const before = { start: past.start, url: catchupUrl(ch, past) };
+        const rows = () => settingsRows(), row = id => rows().find(r => r.id === id);
+        const dstBefore = row('epgDst').disabled;
+        row('epgTz').set('America/New_York'); // provider wrote New York wall-clock into UTC fields: true time = listed − (−4 or −5 h)
+        const nyNow = tzOffsetMin('America/New_York', before.start); // −240 or −300 depending on the date
+        const auto = { delta: past.start - before.start, want: -nyNow * 60000, url: catchupUrl(ch, past), dstEnabled: !row('epgDst').disabled, label: row('epgTz').options.find(o => o.v === 'America/New_York').label, n: row('epgTz').options.length };
+        row('epgDst').set('std'); const std = past.start - before.start;
+        row('epgDst').set('dst'); const dst = past.start - before.start;
+        row('epgExtra').set(30); const extra = past.start - before.start;
+        const saved = JSON.parse(localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey];
+        // A fetch made while the correction is on must land corrected in epgData but be cached in provider time
+        _epgFullFetched.delete('ch50.test'); await fetchXtreamEpgFull('ch50.test');
+        flushEpgPersist(); await new Promise(r => setTimeout(r, 300));
+        const cached = ((await cacheGetPrefix('epg', _activePlaylistKey + '|ch50.test'))[0] || { v: { progs: [] } }).v.progs;
+        const live = epgData.get('ch50.test');
+        const cacheProviderTime = cached.length === live.length && cached.every((p, i) => p.start === live[i].start - (4 * 60 + 30) * 60000 && p.stop === live[i].stop - (4 * 60 + 30) * 60000);
+        const refetchedUrl = catchupUrl(ch, live.find(p => p.start === past.start));
+        row('epgExtra').set(0); row('epgDst').set('auto'); row('epgTz').set('');
+        return { before, dstBefore, auto, std, dst, extra, saved: { tz: saved.epgTz, dst: saved.epgDst, extra: saved.epgOffset }, cacheProviderTime, refetchedUrl, cachedN: cached.length, liveN: live.length, restored: epgData.get('ch50.test').some(p => p.start === before.start) && !_epgShiftOn && row('epgDst').disabled }; // `past` itself was replaced by the re-fetch
+    });
+    check('EPG timezone: New York moves programmes by the zone\'s current offset (auto DST), standard/daylight pin 5 h/4 h, extra adds 30 min, saved per playlist, catch-up URL and EPG cache stay in provider time, reset restores',
+        off.dstBefore && off.auto.delta === off.auto.want && (off.auto.want === 4 * 3600000 || off.auto.want === 5 * 3600000) && off.auto.url === off.before.url && off.auto.dstEnabled && /^Eastern \(New York\) · UTC−[45]$/.test(off.auto.label) && off.auto.n === 40
+        && off.std === 5 * 3600000 && off.dst === 4 * 3600000 && off.extra === 4.5 * 3600000 && off.saved.tz === 'America/New_York' && off.saved.dst === 'dst' && off.saved.extra === 30
+        && off.cacheProviderTime && off.refetchedUrl === off.before.url && off.restored, JSON.stringify(off));
+
     // ---------- Direct channel number entry: digits select the provider channel number ----------
     await key('5', 53); await key('1', 49);
     check('digits show in the number overlay', await page.evaluate(() => { const o = document.getElementById('chNumOverlay'); return !!o && o.textContent === '51' && o.classList.contains('typing'); }));
@@ -226,6 +254,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     s = await stats();
     check('TTL-expired visible channel is re-fetched (and only it)', s.epg_requests === 1, `requests=${s.epg_requests}`);
 
+    // Minute tick must not treat every minute as an hour rollover on a catch-up (72 h) window (regression: guide drifted into the past)
+    const tick = await page.evaluate(() => { const x0 = _epgX, s0 = _epgSkeletonWinStart; epgMinuteTick(); epgMinuteTick(); return { x0, x1: _epgX, s0, s1: _epgSkeletonWinStart, past: epgPastHours() }; });
+    check('minute tick keeps the pan and the skeleton when the hour has not rolled over (72 h catch-up window)', tick.past === 72 && tick.x1 === tick.x0 && tick.s1 === tick.s0, JSON.stringify(tick));
+    const hourRoll = await page.evaluate(() => { const x0 = _epgX; _epgSkeletonWinStart -= 3600000; epgMinuteTick(); return { x0, x1: _epgX, px: EPG_PX_PER_MIN * 60, rebuilt: _epgSkeletonWinStart === Math.floor((Date.now() - epgPastHours() * 3600000) / 3600000) * 3600000 }; });
+    check('a real hour rollover shifts the pan by one hour and rebuilds the skeleton once', hourRoll.x1 === Math.max(0, hourRoll.x0 - hourRoll.px) && hourRoll.rebuilt, JSON.stringify(hourRoll));
+
     // Empty answers under load: an empty epg_listings never replaces data already held and is retried soon
     const emp = await page.evaluate(async () => {
         const id = [...epgData.keys()].find(k => _xtStreamIdByTvgId.has(k) && epgData.get(k).length);
@@ -299,6 +333,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => vodNav.screen === 'grid' && vodNav.items.length === 60 && vodGridRows.size > 0, { timeout: 10000 });
         s = await stats();
         check('category grid loads only that category (one request, 60 titles, 6 columns)', (s.vod_actions || []).join() === 'get_vod_streams@100' && await page.evaluate(() => vodGrid.cols === 6 && document.querySelectorAll('#vodGridInner .vod-card').length >= 12 && document.querySelectorAll('#vodGridInner .vod-card').length < 60), JSON.stringify(s.vod_actions));
+        // Sort & genre menu (Green)
+        await key('ColorF1Green', 404); await sleep(100);
+        const so = await page.evaluate(() => ({ open: vodSortOpen, shown: !document.getElementById('vodSortOverlay').classList.contains('hidden'), rows: _vodSortRows.length, genres: _vodSortRows.filter(r => r.kind === 'genre').map(r => r.label).join('|'), focus: _vodSortRows[vodSortFocus].v }));
+        check('Green opens the sort & genre menu with the sort orders and the genres of the list', so.open && so.shown && so.rows === 5 + 1 + 3 && /All genres\|Family\|Crime\|Thriller/.test(so.genres) && so.focus === 'default', JSON.stringify(so));
+        await page.evaluate(() => { vodSortFocus = _vodSortRows.findIndex(r => r.kind === 'sort' && r.v === 'rating'); vodSortActivate(); });
+        const sr = await page.evaluate(() => ({ sort: vodNav.sort, first: vodNav.items[0].rating, last: vodNav.items[vodNav.items.length - 1].rating, n: vodNav.items.length, hdr: document.getElementById('vodCount').textContent, saved: getPlaylistState(_activePlaylistKey).vodSort, focus: vodNav.focus }));
+        check('Rating sorts the grid highest first, shows in the header and is remembered per playlist', sr.sort === 'rating' && sr.first >= sr.last && sr.first === 9.9 && sr.n === 60 && /Rating/.test(sr.hdr) && sr.saved === 'rating' && sr.focus === 0, JSON.stringify(sr));
+        await page.evaluate(() => { vodSortFocus = _vodSortRows.findIndex(r => r.kind === 'genre' && r.v === 'Family'); vodSortActivate(); });
+        check('a genre filters the list (Family: 40 of 60) and shows in the header', await page.evaluate(() => vodNav.genre === 'Family' && vodNav.items.length === 40 && vodNav.items.every(it => /Family/.test(it.genre)) && /Family/.test(document.getElementById('vodCount').textContent)));
+        await page.evaluate(() => { vodSortFocus = _vodSortRows.findIndex(r => r.kind === 'sort' && r.v === 'year'); vodSortActivate(); });
+        check('Year sorts newest first', await page.evaluate(() => vodNav.sort === 'year' && yearOf(vodNav.items[0].releaseDate) >= yearOf(vodNav.items[1].releaseDate) && +yearOf(vodNav.items[0].releaseDate) === 2019));
+        await page.evaluate(() => { vodSortFocus = _vodSortRows.findIndex(r => r.kind === 'genre' && r.v === null); vodSortActivate(); vodSortFocus = _vodSortRows.findIndex(r => r.kind === 'sort' && r.v === 'default'); vodSortActivate(); });
+        await back(); await sleep(50);
+        check('All genres + Provider order restore the list; Back closes the menu', await page.evaluate(() => !vodSortOpen && vodNav.genre === null && vodNav.sort === 'default' && vodNav.items.length === 60 && vodNav.items[0].id === vodNav.baseItems[0].id && vodNav.focus === 0));
         await key('ArrowRight', 39); await key('ArrowDown', 40); await key('ArrowRight', 39);
         check('grid D-pad: Right, Down, Right → index 7 focused', await page.evaluate(() => vodNav.zone === 'content' && vodNav.focus === 7 && document.querySelector('.vod-card.focused').dataset.idx === '7'));
         await page.evaluate(() => { for (let i = 0; i < 8; i++) { vodNav.focus = Math.min(vodNav.items.length - 1, vodNav.focus + 6); } updateVodGridFocus(); });
@@ -308,6 +356,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 10000 });
         const det = await page.evaluate(() => ({ title: document.querySelector('.vod-dtitle').textContent, plot: document.querySelector('.vod-dplot').textContent, btn: document.querySelector('.vod-btn.focused') && document.querySelector('.vod-btn.focused').textContent, meta: document.querySelector('.vod-dmeta').textContent }));
         check('movie details show plot, metadata and a focused Play button', /Plot of/.test(det.plot) && det.btn === '▶ Play' && /2023/.test(det.meta), JSON.stringify(det));
+        const px = await page.evaluate(() => ({ meta: document.querySelector('.vod-dmeta').textContent, extra: document.querySelector('.vod-dextra') && document.querySelector('.vod-dextra').textContent, info: vodNav.detail.info }));
+        check('provider extras on the details page: age, country, file tech line, release date, added, TMDB id', /PG-13/.test(px.meta) && /USA/.test(px.meta) && /1920×1080 · H264 · 23\.98 fps · AAC 5\.1 · 5\.0 Mbps/.test(px.meta) && /Released 2023-05-01/.test(px.extra) && /Added /.test(px.extra) && /TMDB 123/.test(px.extra) && px.info.trailer === 'abc123', JSON.stringify({ meta: px.meta, extra: px.extra }));
         // Play → player screen with the movie file, playback progresses
         await key('Enter', 13);
         await page.waitForFunction(() => vodPlay.active && !document.getElementById('vodPlayer').classList.contains('hidden'), { timeout: 5000 });
@@ -439,6 +489,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.waitForFunction(() => vodNav.screen === 'details' && vodNav.detail && vodNav.detail.info, { timeout: 10000 });
         const sd = await page.evaluate(() => ({ seasons: document.querySelectorAll('.vod-season').length, eps: document.querySelectorAll('.vod-ep').length, btn: document.querySelector('.vod-btn.focused').textContent, meta: document.querySelector('.vod-dmeta').textContent }));
         check('series details: 2 seasons, 3 episodes in season 1, Play S1 E1', sd.seasons === 2 && sd.eps === 3 && sd.btn === '▶ Play S1 E1' && /2 seasons · 5 episodes/.test(sd.meta), JSON.stringify(sd));
+        // Season / series watched buttons
+        const sb = await page.evaluate(() => ({ labels: vodDetailButtons().map(b => b.label).join('|'), runtime: document.querySelector('.vod-dmeta').textContent }));
+        check('series details offer Mark season 1 watched and Mark all watched', /Mark season 1 watched/.test(sb.labels) && /Mark all watched/.test(sb.labels), sb.labels);
+        await page.evaluate(() => vodDetailButtons().find(b => b.id === 'season').act());
+        const sw = await page.evaluate(() => { const d = vodNav.detail; const s1 = d.info.seasons[0].episodes.map(ep => { const p = episodeProgress(d.item.id, ep.id); return p && p.watched ? 1 : 0; }); return { s1: s1.join(''), s2: d.info.seasons[1].episodes.some(ep => episodeProgress(d.item.id, ep.id)), play: document.querySelector('.vod-btn.pri').textContent, season: (vodDetailButtons().find(b => b.id === 'season') || {}).label, ticks: document.querySelectorAll('.vod-ep.watched').length }; });
+        check('Mark season watched marks all of season 1, Play moves to S2 E1, button flips to unwatched', sw.s1 === '111' && !sw.s2 && /Play S2 E1/.test(sw.play) && /Season 1: mark unwatched/.test(sw.season) && sw.ticks === 3, JSON.stringify(sw));
+        await page.evaluate(() => vodDetailButtons().find(b => b.id === 'season').act());
+        check('Season unwatched clears it again', await page.evaluate(() => { const d = vodNav.detail; return !d.info.seasons[0].episodes.some(ep => episodeProgress(d.item.id, ep.id)) && document.querySelector('.vod-btn.pri').textContent === '▶ Play S1 E1'; }));
+        await page.evaluate(() => vodDetailButtons().find(b => b.id === 'all').act());
+        check('Mark all watched asks for confirmation first', await page.evaluate(() => !confirmDialog.classList.contains('hidden') && /all 5 episodes/.test(confirmMessage.textContent)));
+        await page.evaluate(() => confirmYes.click()); await sleep(100);
+        const aw = await page.evaluate(() => { const d = vodNav.detail; const all = d.info.seasons.every(s => s.episodes.every(ep => { const p = episodeProgress(d.item.id, ep.id); return p && p.watched; })); return { all, label: (vodDetailButtons().find(b => b.id === 'all') || {}).label, cw: continueWatchingItems('series').some(it => it.id === d.item.id) }; });
+        check('Yes marks all 5 episodes watched; the series leaves Continue Watching; button flips', aw.all && /Mark all unwatched/.test(aw.label) && !aw.cw, JSON.stringify(aw));
+        await page.evaluate(() => vodDetailButtons().find(b => b.id === 'all').act());
+        await page.evaluate(() => confirmYes.click()); await sleep(100);
+        check('Mark all unwatched (confirmed) clears every episode', await page.evaluate(() => { const d = vodNav.detail; return !d.info.seasons.some(s => s.episodes.some(ep => episodeProgress(d.item.id, ep.id))) && vodNav.detailZone === 'buttons'; }));
+        await page.evaluate(() => { vodNav.detailBtn = 0; vodNav.detailZone = 'buttons'; renderVodDetails(); });
         await key('ArrowDown', 40); await key('ArrowRight', 39);
         check('Down to seasons, Right selects season 2 (2 episodes)', await page.evaluate(() => vodNav.detailZone === 'seasons' && vodNav.season === 1 && document.querySelectorAll('.vod-ep').length === 2));
         await key('ArrowLeft', 37); await key('ArrowDown', 40); await key('ArrowDown', 40);
@@ -540,7 +607,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         check('OK on the sync row resets it to 0 and forgets it', await page.evaluate(() => vodPlay.syncMs === 0 && !(vodPlay.key in JSON.parse(localStorage.getItem('iptv_vod_subsync')))));
         await back(); // close menu
         // Codec/HDR line in the OSD and stored for the details page
-        check('OSD shows codec, bit depth, resolution, frame rate and audio from the pipeline', await page.evaluate(() => document.getElementById('vodOsdTech').textContent === 'HEVC · 10-bit · 3840×1600 · 23.98 fps · E-AC-3 5.1' && JSON.parse(localStorage.getItem('iptv_vod_tech'))[vodPlay.key] === 'HEVC · 10-bit · 3840×1600 · 23.98 fps · E-AC-3 5.1'), await page.evaluate(() => document.getElementById('vodOsdTech').textContent));
+        check('OSD shows codec, bit depth, resolution, frame rate and audio from the pipeline', await page.evaluate(() => document.getElementById('vodOsdTech').textContent === 'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1' && JSON.parse(localStorage.getItem('iptv_vod_tech'))[vodPlay.key] === 'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1'), await page.evaluate(() => document.getElementById('vodOsdTech').textContent));
         // Native speed playback: hold Right → setPlayRate 2 with picture; release → rate 1
         await page.evaluate(() => { window.__ums.calls.length = 0; videoPlayer.currentTime = 2; });
         await page.evaluate(() => { const d = new KeyboardEvent('keydown', { key: 'ArrowRight', keyCode: 39, bubbles: true, cancelable: true }); Object.defineProperty(d, 'keyCode', { get: () => 39 }); document.dispatchEvent(d); });
@@ -623,6 +690,19 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await back();
     check('Back opens Return-to-Home dialog', await page.evaluate(() => !confirmDialog.classList.contains('hidden')));
     await key('ArrowDown', 40); // must NOT move guide focus while dialog is open
+    // Connection limit: a dead stream on a one-connection account that is busy elsewhere is explained as such
+    await fetch(BASE + '/__cons?active=1&max=1');
+    await page.evaluate(() => { window.__savedUrl6 = channels[6].url; channels[6].url = 'http://localhost:8765/busy-account/live.m3u8'; _consInfo = null; _consCheckAt = 0; document.getElementById('epgToastTitle').textContent = ''; selectChannel(6); });
+    await page.waitForFunction(() => document.getElementById('epgToastTitle').textContent === 'Connection limit', { timeout: 15000 }).catch(() => {});
+    const cl = await page.evaluate(() => ({ title: document.getElementById('epgToastTitle').textContent, msg: document.getElementById('epgToastMsg').textContent, status: statusArea.innerText, cons: _consInfo && [_consInfo.active, _consInfo.max].join('/') }));
+    check('first stream failure checks the account: "Another device is streaming" toast, status line and diagnostics entry', cl.title === 'Connection limit' && /Another device is streaming with this account/.test(cl.msg) && /Another device/.test(cl.status) && cl.cons === '1/1' && await page.evaluate(() => _diagLog.some(e => /Account: Another device/.test(e.msg))), JSON.stringify(cl));
+    await page.evaluate(() => { _reloadAttempts = MAX_AUTO_RELOADS; });
+    await page.waitForFunction(() => /Stop playback on the other device/.test(document.getElementById('epgToastMsg').textContent) && stallWatchdogTimer === null, { timeout: 15000 }).catch(() => {});
+    check('the final error keeps the account explanation instead of a generic stream error', await page.evaluate(() => document.getElementById('epgToastTitle').textContent === 'Connection limit'));
+    await fetch(BASE + '/__cons?active=0&max=1');
+    await page.evaluate(() => { channels[6].url = window.__savedUrl6; _consInfo = null; _consCheckAt = 0; document.getElementById('epgToastTitle').textContent = ''; selectChannel(0); });
+    await sleep(300);
+    check('with the connection free again a failing stream is reported as a stream error', await page.evaluate(() => accountProblemText(_consInfo) === ''));
     const guideFocusBefore = await page.evaluate(() => epgFocusedRowIdx);
     await back();
     check('Back again cancels the dialog', await page.evaluate(() => confirmDialog.classList.contains('hidden')));
@@ -687,7 +767,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('clock Left → 12-hour', await page.evaluate(() => settings.clock === '12' && /[AP]M$/.test(formatClock(Date.now()))));
     await key('ArrowDown', 40); await key('Enter', 13); await sleep(100);
     check('auto-load toggle Enter → On, persisted', await page.evaluate(() => settings.autoLoad === true && JSON.parse(localStorage.getItem('iptv_settings')).autoLoad === true));
-    check('per-playlist rows disabled for the demo', await page.evaluate(() => [...document.querySelectorAll('.settings-row')].filter(r => r.classList.contains('disabled')).map(r => r.dataset.id).join(',') === 'startGroup,resume,manageCats,refreshPlaylist')); // the demo has no per-playlist state, cache or categories
+    check('per-playlist rows disabled for the demo', await page.evaluate(() => [...document.querySelectorAll('.settings-row')].filter(r => r.classList.contains('disabled')).map(r => r.dataset.id).join(',') === 'epgTz,epgDst,epgExtra,startGroup,resume,manageCats,refreshPlaylist')); // the demo has no per-playlist state, cache or categories
     await back();
     check('Back closes settings', await page.evaluate(() => !settingsOpen && document.getElementById('settingsOverlay').classList.contains('hidden')));
     // Diagnostics overlay
@@ -696,6 +776,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('Diagnostics opens from Settings with startup marks, stream state and the logged error', dg.open && !dg.settings && dg.shown && /script-start \d+/.test(dg.text) && /channels-applied/.test(dg.text) && /Stream: /.test(dg.text) && /diag probe entry/.test(dg.text), dg.text.slice(0, 200).replace(/\n/g, ' | '));
     await back();
     check('Back closes Diagnostics', await page.evaluate(() => !diagOpen && document.getElementById('diagOverlay').classList.contains('hidden')));
+    // AV sync (rooted TV only): no Homebrew service here, so the row is absent and nothing is touched
+    check('AV sync row is hidden when the Homebrew service is unavailable', await page.evaluate(() => _hbAvailable === false && !settingsRows().some(r => r.id === 'avSync') && _avSyncOrig === null && settings.avSync === -1));
+    const avs = await page.evaluate(() => { _hbAvailable = true; const r = settingsRows().find(r => r.id === 'avSync'); const out = { rows: r && r.options.length, first: r && r.options[0].label, second: r && r.options[1].label, last: r && r.options[r.options.length - 1].label, get: r && r.get(), keys: [avSyncKeyFor('external_arc'), avSyncKeyFor('external_optical'), avSyncKeyFor('bt_soundbar'), avSyncKeyFor('wisa_speaker'), avSyncKeyFor('tv_speaker')].join(), cmd: lunaSettingsCmd('setSystemSettings', { category: 'sound', settings: { avSync: 'on', avSyncSpeaker: '3' } }) }; _hbAvailable = false; return out; });
+    check('AV sync row (when rooted) offers TV setting + LG\'s 0-60 range, picks the key per sound output and drives settingsservice through luna-send', avs.rows === 62 && avs.first === 'TV setting' && avs.second === '0' && avs.last === '60' && avs.get === -1 && avs.keys === 'avSyncSpeaker,avSyncSpdif,avSyncBtSurround,avSyncWisa,avSyncSpeaker' && avs.cmd === `luna-send -n 1 luna://com.webos.settingsservice/setSystemSettings '{"category":"sound","settings":{"avSync":"on","avSyncSpeaker":"3"}}'`, JSON.stringify(avs));
     await key('ColorF2Yellow', 405);
     check('Yellow key opens settings', await page.evaluate(() => settingsOpen));
     // Clear favorites via confirm dialog
@@ -718,7 +802,14 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('fatal hls.js network error (dead playlist) hands the channel to the native player without marking it incompatible', !hlsFb.hls && hlsFb.broken.length === 0 && hlsFb.src === hlsFb.url, JSON.stringify(hlsFb));
     // Let the native player exhaust its reload budget on that dead channel, then clear the toast it leaves behind
     await page.waitForFunction(() => document.getElementById('epgToastTitle').textContent === 'Stream Error', { timeout: 25000 }).catch(() => {});
-    await page.evaluate(() => { settings.liveBuffer = 0; saveSettings(); _hlsBroken.clear(); document.getElementById('epgToastTitle').textContent = ''; });
+    // Frame rate on the hls.js path is counted from the remuxed segments (the playlist states none, like the provider's)
+    const fpsOrigUrl = await page.evaluate(() => { const u = channels[1].url; channels[1].url = 'http://localhost:8765/hls50/index.m3u8'; selectChannel(1); return u; });
+    await page.waitForFunction(() => liveEngine.fps > 0, { timeout: 20000 }).catch(() => {});
+    const fps = await page.evaluate(() => ({ hls: liveEngineActive(), fps: liveEngine.fps, samples: liveEngine.fpsSamples.map(x => +x.toFixed(2)), tech: liveEngine.tech,
+        lvl: liveEngine.hls && liveEngine.hls.levels[0] && liveEngine.hls.levels[0].frameRate, snap: [fpsSnap(29.95), fpsSnap(23.98), fpsSnap(49.6), fpsSnap(37.2)], fmt: [fmtFps(29.97), fmtFps(23.976), fmtFps(50)] }));
+    check('hls.js path measures the frame rate from segment samples when the playlist has no FRAME-RATE; shown on the codec line',
+        fps.hls && !fps.lvl && fps.fps === 50 && /· 50 fps ·/.test(fps.tech) && fps.snap.join() === '29.97,23.976,50,37' && fps.fmt.join() === '29.97 fps,23.976 fps,50 fps', JSON.stringify(fps));
+    await page.evaluate(u => { channels[1].url = u; settings.liveBuffer = 0; saveSettings(); _hlsBroken.clear(); document.getElementById('epgToastTitle').textContent = ''; }, fpsOrigUrl);
     check('rewind buffer Off again: next channel load is native', await page.evaluate(() => { selectChannel(3); return !liveEngineActive() && (videoPlayer.getAttribute('src') || '') === channels[3].url; }));
 
     // ---------- XMLTV name fallback (unit-level: the demo has no XMLTV feed) ----------
@@ -809,6 +900,78 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const fb = await page.evaluate(() => epgFocusedRowIdx);
     await key('ArrowDown', 40);
     check('guide navigation resumes after closing settings', await page.evaluate(() => epgFocusedRowIdx) === fb + 1);
+
+    // ---------- hls.js: a refused stream (HTML instead of a playlist) is not held against the channel ----------
+    const hlsCls = await page.evaluate(() => {
+        const out = {};
+        for (const [k, body] of [['html', '<html><body>Max connections reached</body></html>'], ['empty', ''], ['playlist', '#EXTM3U\n#EXT-X-GARBAGE']]) {
+            const u = 'http://hls.test/' + k + '.m3u8';
+            liveEngine.url = u;
+            onHlsError(u, { fatal: true, type: Hls.ErrorTypes.NETWORK_ERROR, details: Hls.ErrorDetails.MANIFEST_PARSING_ERROR, response: { url: u, data: body }, networkDetails: { status: 200 } });
+            out[k] = _hlsBroken.has(u);
+        }
+        out.log = _diagLog.map(e => e.msg).filter(m => /hls\.js fatal/.test(m)).slice(-3);
+        return out;
+    });
+    check('manifest parse error: an HTML or empty reply is a network failure; only a real #EXTM3U marks the channel hls-incompatible', !hlsCls.html && !hlsCls.empty && hlsCls.playlist &&
+        /HTTP 200 reply: <html><body>Max connections reached.*not a playlist/.test(hlsCls.log[0]) && /reply: \(empty\)/.test(hlsCls.log[1]) && !/not a playlist/.test(hlsCls.log[2]), JSON.stringify(hlsCls));
+    // ---------- Diagnostics: last failure with the server reply, account line, persisted log, Red clears ----------
+    const diag = await page.evaluate(() => {
+        openDiag();
+        const text = document.getElementById('diagText').textContent;
+        diagSave();
+        const stored = JSON.parse(localStorage.getItem('iptv_diag_log') || '[]').length;
+        handleDiagKey({ key: 'ColorF0Red', keyCode: 403, preventDefault() {} });
+        const after = { mem: _diagLog.length, stored: JSON.parse(localStorage.getItem('iptv_diag_log') || '[]').length };
+        closeDiag();
+        return { lastFail: /Last stream failure: .* hls\.js · networkError\/manifestParsingError · HTTP 200/.test(text), reply: /Server reply: #EXTM3U #EXT-X-GARBAGE/.test(text), acct: /Account check: /.test(text), stored, after };
+    });
+    check('Diagnostics shows the last stream failure with the server reply and the account check; log persists and Red clears it', diag.lastFail && diag.reply && diag.acct && diag.stored > 0 && diag.after.mem === 0 && diag.after.stored === 0, JSON.stringify(diag));
+    // ---------- Event (PPV) channels: times read from names fill the guide and order the group ----------
+    const ev = await page.evaluate(() => {
+        const H = 3600000, now = Math.floor(Date.now() / 60000) * 60000;
+        const p2 = n => String(n).padStart(2, '0');
+        const ymd = t => { const d = new Date(t); return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`; };
+        const hm = t => { const d = new Date(t); return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`; };
+        const day = t => { const d = new Date(t); return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()]} ${d.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()]}`; };
+        const names = [
+            `End | Old Match | all | ${ymd(now - 10 * H)} | ${hm(now - 10 * H)} (GMT) | 8K EXCLUSIVE | US: TEST PPV 1`,  // finished long ago → hidden
+            `Slot 2 | 7pm Somebody at Somewhere`,                                                                        // no zone → not an event
+            `NEXT | LATER VS LATEST | ${day(now + 3 * H)} ${hm(now + 3 * H)} UTC (UK) | 8K EXCLUSIVE | UK: TEST PPV 3`,
+            `UFC 04 : MAIN CARD start:${ymd(now - H / 2)} ${hm(now - H / 2)}:00 stop:${ymd(now + 2 * H)} ${hm(now + 2 * H)}:00`, // on now
+            `NEXT | SOON VS SOONER | ${day(now - 3 * H)} ${hm(now - 3 * H)} EDT (US) | 8K EXCLUSIVE | US: TEST PPV 5`,     // EDT wall-clock: starts now + 1 h
+            `(Test) (PPV) 006 |  (2098-12-31 08:00:01)`,                                                                  // placeholder slot
+        ];
+        const parsed = names.map(n => parseEventName({ name: n, group: 'US| TEST PPV' }));
+        const base = channels.findIndex(c => c.group === 'Group 30');
+        const orig = channels.slice(base, base + 6);
+        orig.forEach((c, i) => { channels[base + i] = Object.assign({}, c, { name: names[i], group: 'US| TEST PPV', tvgId: `ev${i}.test` }); });
+        buildChannelIndexMap();
+        const saveGroup = currentGroup, saveMode = settings.ppvEvents;
+        currentGroup = 'US| TEST PPV';
+        settings.ppvEvents = 'hide'; renderChannelList();
+        const hide = currentFilteredChannels.map(c => c.tvgId).join();
+        settings.ppvEvents = 'sort'; renderChannelList();
+        const sort = currentFilteredChannels.map(c => c.tvgId).join();
+        settings.ppvEvents = 'off'; renderChannelList();
+        const off = currentFilteredChannels.map(c => c.tvgId).join();
+        const cur = getCurrentProgramme('ev3.test'), next = getNextProgramme('ev2.test');
+        const html = epgProgsHtml(channels[base + 3]);
+        orig.forEach((c, i) => { channels[base + i] = c; });
+        buildChannelIndexMap();
+        settings.ppvEvents = saveMode; currentGroup = saveGroup; refreshCurrentView();
+        return {
+            starts: parsed.map(e => e ? (e.start - now) / H : null), tags: parsed.map(e => e ? e.tag : null), titles: parsed.map(e => e ? e.title : null),
+            stop3: parsed[3] && (parsed[3].stop - now) / H, hide, sort, off, cur: cur && cur.title, next: next && next.title, block: /epg-prog-block now-playing[^>]*>.*MAIN CARD/.test(html),
+            setting: settingsRows().some(r => r.id === 'ppvEvents'),
+        };
+    });
+    check('event names parsed: GMT pipe date, UTC/EDT day formats, start:/stop:; zone-less and placeholder names ignored',
+        JSON.stringify(ev.starts) === JSON.stringify([-10, null, 3, -0.5, 1, null]) && ev.stop3 === 2 && ev.tags.join() === 'ended,,next,,next,' &&
+        ev.titles.join('|') === 'Old Match||LATER VS LATEST|MAIN CARD|SOON VS SOONER|', JSON.stringify(ev));
+    check('event group: sorted by start time, finished hidden (Sort, hide finished) or last (Sort), untouched when As listed',
+        ev.hide === 'ev3.test,ev4.test,ev2.test,ev1.test,ev5.test' && ev.sort === 'ev3.test,ev4.test,ev2.test,ev0.test,ev1.test,ev5.test' && ev.off === 'ev0.test,ev1.test,ev2.test,ev3.test,ev4.test,ev5.test' && ev.setting, JSON.stringify(ev));
+    check('event fills the guide for a channel without EPG: current programme, next, now-playing block', ev.cur === 'MAIN CARD' && ev.next === 'LATER VS LATEST' && ev.block, JSON.stringify(ev));
 
     check('no uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await browser.close();

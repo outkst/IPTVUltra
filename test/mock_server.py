@@ -63,7 +63,7 @@ for _ci, _c in enumerate(VOD_CATS):
     for _j in range(60):
         VOD.append({'num': _j, 'name': f"{_c['category_name']} Movie {_j + 1:02d}", 'stream_type': 'movie', 'stream_id': 5000 + _ci * 100 + _j,
                     'stream_icon': '', 'rating': f"{5 + (_j % 5)}.{_j % 10}", 'rating_5based': 3, 'added': str(1700000000 + _ci * 86400 + _j * 3600),
-                    'category_id': _c['category_id'], 'container_extension': 'mp4'})
+                    'category_id': _c['category_id'], 'container_extension': 'mp4', 'genre': 'Thriller, Crime' if _j % 3 == 0 else 'Family', 'year': str(1990 + _j % 30)})
 SERIES_CATS = [{'category_id': str(200 + i), 'category_name': n} for i, n in enumerate(['Drama Series', 'Comedy Series', 'Adult Series'])]
 SERIES = []
 for _ci, _c in enumerate(SERIES_CATS):
@@ -121,6 +121,18 @@ class H(http.server.SimpleHTTPRequestHandler):
                 stats['timeshift_requests'] = stats.get('timeshift_requests', 0) + 1
                 stats['last_timeshift'] = u.path
             return self.send_clip()
+        if u.path.startswith('/hls50/'):  # 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the provider's)
+            name = os.path.basename(u.path)
+            path = os.path.join(os.path.dirname(CLIP), 'hls50', name)
+            if not os.path.isfile(path):
+                self.send_response(404); self.end_headers(); return
+            data = open(path, 'rb').read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl' if name.endswith('.m3u8') else 'video/mp2t')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if u.path.startswith('/movie/') or u.path.startswith('/series/'):
             with lock:
                 stats['media_requests'] = stats.get('media_requests', 0) + 1
@@ -129,6 +141,9 @@ class H(http.server.SimpleHTTPRequestHandler):
         if u.path == '/__stats':
             with lock:
                 return self.send_json(stats)
+        if u.path == '/__cons':
+            with lock: stats['cons'] = {'active': int(q.get('active', ['0'])[0]), 'max': int(q.get('max', ['1'])[0])}
+            return self.send_json({'ok': True})
         if u.path == '/__reset':
             with lock:
                 stats['epg_requests'] = 0; stats['epg_stream_ids'] = []
@@ -140,7 +155,8 @@ class H(http.server.SimpleHTTPRequestHandler):
                 return self.send_json({'user_info': {'auth': 0}})
             action = q.get('action', [''])[0]
             if action == '':
-                return self.send_json({'user_info': {'auth': 1, 'username': 'user', 'status': 'Active'}, 'server_info': {'timezone': 'Europe/Amsterdam'}})
+                with lock: cons = dict(stats.get('cons', {'active': 0, 'max': 1}))
+                return self.send_json({'user_info': {'auth': 1, 'username': 'user', 'status': 'Active', 'active_cons': str(cons['active']), 'max_connections': str(cons['max'])}, 'server_info': {'timezone': 'Europe/Amsterdam'}})
             if action == 'get_live_categories':
                 return self.send_json(CATS)
             if action == 'get_live_streams':
@@ -160,7 +176,9 @@ class H(http.server.SimpleHTTPRequestHandler):
                     v = next((x for x in VOD if x['stream_id'] == vid), None)
                     if not v: return self.send_json({})
                     return self.send_json({'info': {'movie_image': '', 'plot': f"Plot of {v['name']}.", 'cast': 'A. Actor, B. Actor', 'director': 'D. Director',
-                                                    'genre': 'Action', 'releasedate': '2023-05-01', 'duration': '00:00:20', 'duration_secs': 20, 'rating': v['rating'], 'backdrop_path': []},
+                                                    'genre': 'Action', 'releasedate': '2023-05-01', 'duration': '00:00:20', 'duration_secs': 20, 'rating': v['rating'], 'backdrop_path': [],
+                                                    'tmdb_id': '123', 'age': 'PG-13', 'country': 'USA', 'youtube_trailer': 'abc123', 'bitrate': 5000000,
+                                                    'video': {'width': 1920, 'height': 1080, 'codec_name': 'h264', 'r_frame_rate': '24000/1001'}, 'audio': {'codec_name': 'aac', 'channels': 6}},
                                            'movie_data': {'stream_id': vid, 'name': v['name'], 'container_extension': 'mp4', 'category_id': v['category_id']}})
                 if action == 'get_series_info':
                     return self.send_json(series_info(int(q.get('series_id', ['0'])[0])))
