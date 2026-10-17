@@ -1875,14 +1875,25 @@ function saveFavorites() {
     getPlaylistState(_activePlaylistKey).favs = [...favoriteIds];
     savePlaylistState();
 }
+// Providers write quality tags in superscript ("ᵁᴴᴰ ³⁸⁴⁰ᴾ", "⁴ᵏ", "⁸ᴷ", "ᶠᴴᴰ"). Each run of superscript characters
+// becomes its own plain word ("uhd 3840p"), split where letters meet digits so word boundaries still find the tag.
+const SUPER_MAP = { '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁺': '+', '⁽': '(', '⁾': ')',
+    'ᴬ': 'a', 'ᴮ': 'b', 'ᴰ': 'd', 'ᴱ': 'e', 'ᴳ': 'g', 'ᴴ': 'h', 'ᴵ': 'i', 'ᴶ': 'j', 'ᴷ': 'k', 'ᴸ': 'l', 'ᴹ': 'm', 'ᴺ': 'n', 'ᴼ': 'o', 'ᴾ': 'p',
+    'ᴿ': 'r', 'ᵀ': 't', 'ᵁ': 'u', 'ⱽ': 'v', 'ᵂ': 'w', 'ᵃ': 'a', 'ᵇ': 'b', 'ᶜ': 'c', 'ᵈ': 'd', 'ᵉ': 'e', 'ᶠ': 'f', 'ᵍ': 'g', 'ʰ': 'h', 'ⁱ': 'i',
+    'ʲ': 'j', 'ᵏ': 'k', 'ˡ': 'l', 'ᵐ': 'm', 'ⁿ': 'n', 'ᵒ': 'o', 'ᵖ': 'p', 'ʳ': 'r', 'ˢ': 's', 'ᵗ': 't', 'ᵘ': 'u', 'ᵛ': 'v', 'ʷ': 'w', 'ˣ': 'x',
+    'ʸ': 'y', 'ᶻ': 'z' };
+const _RE_SUPER_RUN = new RegExp('[' + Object.keys(SUPER_MAP).join('') + ']+', 'g');
+function unsuperscript(s) {
+    return String(s || '').replace(_RE_SUPER_RUN, run => ' ' + Array.from(run, c => SUPER_MAP[c]).join('').replace(/([a-z])(\d)/g, '$1 $2') + ' ');
+}
 // Quality from the channel name, for choosing among variants: 8K > 4K/UHD > FHD/1080 > HD/720 > untagged > SD/576/480/360
 function nameQualityRank(name) {
-    const n = String(name || '').toLowerCase();
+    const n = unsuperscript(name).toLowerCase();
     if (/\b(8k|4320p?)\b/.test(n)) return 6;
-    if (/\b(4k|uhd|2160p?|3840p?)\b|ᵁᴴᴰ/.test(n)) return 5;
-    if (/\b(fhd|1080[pi]?)\b|ᶠᴴᴰ/.test(n)) return 4;
-    if (/\b(hd|720p?)\b|ᴴᴰ/.test(n)) return 3;
-    if (/\b(sd|576[pi]?|480[pi]?|360p?)\b|ˢᴰ/.test(n)) return 1;
+    if (/\b(4k|uhd|2160p?|3840p?)\b/.test(n)) return 5;
+    if (/\b(fhd|1080[pi]?)\b/.test(n)) return 4;
+    if (/\b(hd|720p?)\b/.test(n)) return 3;
+    if (/\b(sd|576[pi]?|480[pi]?|360p?)\b/.test(n)) return 1;
     return 2;
 }
 // Applied playlist: load its favorites. The first time, favorites saved globally by tvg-id (before 3.12) are

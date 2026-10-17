@@ -986,14 +986,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         delete ps.favs; localStorage.setItem('iptv_favorites', JSON.stringify(['dup.test', 'ch20.test', 'gone.test']));
         favoritesLoad();
         const migrated = [...favoriteIds].join();
-        const ranks = ['X 8K', 'X ᵁᴴᴰ 3840P', 'X 4K', 'X FHD', 'X 1080p', 'X HD', 'X 720p', 'X', 'X SD', 'X 480p'].map(nameQualityRank).join();
+        const ranks = ['X 8K', 'X ᵁᴴᴰ 3840P', 'X 4K', 'X FHD', 'X 1080p', 'X HD', 'X 720p', 'X', 'X SD', 'X 480p',
+            'X ⁸ᴷ', 'X ⁴ᵏ & ³⁸⁴⁰ᴾ', 'X ᵁᴴᴰ³⁸⁴⁰ᴾ', 'X ᴴᴰᴿ ³⁸⁴⁰ᴾ', 'X ᶠᴴᴰ', 'X ᴴᴰ', 'X ⁽ᴮᴷ⁾ ᴿᴬᵂ', 'X ˢᴰ'].map(nameQualityRank).join();
         [10, 11, 12].forEach((i, k) => Object.assign(channels[i], save[k]));
         buildChannelIndexMap();
         ps.favs = savedPs; savePlaylistState(); favoriteIds = new Set(savedFavs);
         if (savedLegacy === null) localStorage.removeItem('iptv_favorites'); else localStorage.setItem('iptv_favorites', savedLegacy);
         return { listed, migrated, ranks };
     });
-    check('starring one quality variant lists only that channel; old tvg-id favorites convert to the best-quality variant', fv.listed === 'Dup FHD' && fv.migrated === 's:12,s:20' && fv.ranks === '6,5,5,4,4,3,3,2,1,1', JSON.stringify(fv));
+    check('starring one quality variant lists only that channel; old tvg-id favorites convert to the best-quality variant', fv.listed === 'Dup FHD' && fv.migrated === 's:12,s:20' && fv.ranks === '6,5,5,4,4,3,3,2,1,1,6,5,5,5,4,3,2,1', JSON.stringify(fv));
 
     check('no uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await browser.close();
