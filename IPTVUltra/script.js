@@ -799,8 +799,10 @@ const LANG_NAMES = {
 // ----- EPG (XMLTV) -----
 let _chanByNum = new Map(); // provider channel number → index in channels[] (direct entry with the digit keys)
 let _chanByUrl = new Map(); // stream URL → index (Recent list, alternate sources)
-let _chansByFavId = new Map(); // favorite id (tvgId or idx_N) → [channels], so Favorites can follow the user's order
-function favIdOf(ch, idx) { return ch.tvgId || `idx_${idx}`; }
+let _chansByFavId = new Map(); // favorite id → [channels], so Favorites can follow the user's order
+// A favorite is one exact channel: the Xtream stream id, else the stream URL. (Until 3.12 it was the tvg-id, which
+// quality variants share, so starring the 1080p entry also listed its 720p and 480p copies.)
+function favIdOf(ch, idx) { return ch.streamId != null && ch.streamId !== '' ? `s:${ch.streamId}` : ch.url ? `u:${ch.url}` : `idx_${idx}`; }
 function buildChannelIndexMap() {
     channelIndexMap = new Map();
     _chanByNum = new Map();
@@ -1075,7 +1077,7 @@ function recentChannels() {
 // Favorites in the user's order (the Set keeps insertion order; Manage favorites rebuilds it)
 function favoriteChannels() {
     const out = [];
-    for (const id of favoriteIds) { const l = _chansByFavId.get(id); if (l) for (const c of l) out.push(c); }
+    for (const id of favoriteIds) { const l = _chansByFavId.get(id); if (l) out.push(l[0]); } // a URL listed twice is still one favorite
     return out;
 }
 
@@ -1197,22 +1199,17 @@ function resolveEpgId(tvgId) {
 // A channel with a tvg-id is aliased in epgIdMap; one without gets the XMLTV id as its tvgId (its favorite key moves with it).
 function applyEpgNameFallback(nameMap) {
     if (!nameMap || !nameMap.size || currentPlaylistType !== 'm3u') return 0;
-    let n = 0, favChanged = false;
+    let n = 0;
     for (let i = 0; i < channels.length; i++) {
         const ch = channels[i];
         if (resolveEpgId(ch.tvgId)) continue;
         const cid = nameMap.get(normChannelName(ch.name));
         if (!cid || !epgData.has(cid)) continue;
         if (ch.tvgId) epgIdMap.set(ch.tvgId.toLowerCase(), cid);
-        else {
-            const oldFav = `idx_${i}`;
-            if (favoriteIds.has(oldFav)) { favoriteIds.delete(oldFav); favoriteIds.add(cid); favChanged = true; }
-            ch.tvgId = cid;
-        }
+        else ch.tvgId = cid;
         n++;
     }
-    if (n) buildChannelIndexMap(); // favorite ids and search cache follow the new tvgIds
-    if (favChanged) saveFavorites();
+    if (n) buildChannelIndexMap(); // search cache and EPG lookups follow the new tvgIds
     return n;
 }
 
@@ -1676,6 +1673,7 @@ function applyM3UChannels(parsed, url, epgUrl, fromCache) {
     searchInput.value = '';
     _activePlaylistKey = 'm:' + url;
     epgOffsetLoad();
+    favoritesLoad();
     _m3uSource = { url, epgUrl };
     rememberLastPlaylist(_activePlaylistKey);
     currentGroup = initialGroupFor(_activePlaylistKey);
@@ -1767,6 +1765,7 @@ https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`;
         searchInput.value = '';
         _activePlaylistKey = 'm:demo'; // not remembered for auto-load
         epgOffsetLoad();
+        favoritesLoad();
         currentGroup = initialGroupFor(_activePlaylistKey);
         currentPlaylistType = 'm3u';
         extractGroups();
@@ -1870,7 +1869,47 @@ function renderCats() {
     });
     const f = list.querySelector('.cats-row.focused'); if (f) f.scrollIntoView({ block: 'nearest' });
 }
-function saveFavorites() { localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds])); }
+// Favorites belong to the playlist they were starred in (playlist state `favs`, in the user's order)
+function saveFavorites() {
+    if (!_activePlaylistKey) return;
+    getPlaylistState(_activePlaylistKey).favs = [...favoriteIds];
+    savePlaylistState();
+}
+// Quality from the channel name, for choosing among variants: 8K > 4K/UHD > FHD/1080 > HD/720 > untagged > SD/576/480/360
+function nameQualityRank(name) {
+    const n = String(name || '').toLowerCase();
+    if (/\b(8k|4320p?)\b/.test(n)) return 6;
+    if (/\b(4k|uhd|2160p?|3840p?)\b|ᵁᴴᴰ/.test(n)) return 5;
+    if (/\b(fhd|1080[pi]?)\b|ᶠᴴᴰ/.test(n)) return 4;
+    if (/\b(hd|720p?)\b|ᴴᴰ/.test(n)) return 3;
+    if (/\b(sd|576[pi]?|480[pi]?|360p?)\b|ˢᴰ/.test(n)) return 1;
+    return 2;
+}
+// Applied playlist: load its favorites. The first time, favorites saved globally by tvg-id (before 3.12) are
+// converted: each becomes the best-quality channel among those sharing that tvg-id (first listed on a tie).
+function favoritesLoad() {
+    const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
+    if (!ps) { favoriteIds = new Set(); return; }
+    if (Array.isArray(ps.favs)) { favoriteIds = new Set(ps.favs); return; }
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.getItem('iptv_favorites') || '[]') || []; } catch (_) { legacy = []; }
+    const byTvg = new Map();
+    for (let i = 0; i < channels.length; i++) {
+        const ch = channels[i];
+        if (!ch.tvgId) continue;
+        const best = byTvg.get(ch.tvgId);
+        if (best === undefined || nameQualityRank(ch.name) > nameQualityRank(channels[best].name)) byTvg.set(ch.tvgId, i);
+    }
+    const out = [];
+    for (const id of legacy) {
+        const m = /^idx_(\d+)$/.exec(String(id));
+        const i = m ? +m[1] : byTvg.get(id);
+        if (i !== undefined && channels[i]) out.push(favIdOf(channels[i], i));
+    }
+    favoriteIds = new Set(out);
+    saveFavorites();
+    if (out.length) diagLog(`Favorites: ${out.length} of ${legacy.length} saved favorites matched this playlist (best-quality variant kept)`);
+}
 function catsToggleHidden() {
     const g = _catsNames[catsFocus]; if (!g) return;
     if (catsMode === 'favs') {
@@ -2100,7 +2139,7 @@ function renderChannelList() {
             if (renderedItems.has(i)) continue;
             const ch = filtered[i];
             const originalIndex = getChannelIndex(ch);
-            const fav = favoriteIds.has(ch.tvgId || `idx_${originalIndex}`);
+            const fav = favoriteIds.has(favIdOf(ch, originalIndex));
             const div = document.createElement('div');
             div.className = 'virtual-item' + (currentChannelIndex === originalIndex ? ' active' : '') +
                 (stdFocusZone === 'channels' && i === stdFocusIdx ? ' focused' : '');
@@ -2132,10 +2171,10 @@ function renderChannelList() {
             const starSpan = div.querySelector('.favorite-star');
             starSpan.onclick = (e) => {
                 e.stopPropagation();
-                const id = ch.tvgId || `idx_${originalIndex}`;
+                const id = favIdOf(ch, originalIndex);
                 if (favoriteIds.has(id)) favoriteIds.delete(id);
                 else favoriteIds.add(id);
-                localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
+                saveFavorites();
                 if (currentGroup === 'favorites' && !currentSearchQuery) renderChannelList(); // list membership changed
                 else starSpan.textContent = favoriteIds.has(id) ? '★' : '☆';          // otherwise update in place
             };
@@ -2554,6 +2593,7 @@ function goToHomeScreen() {
     resetVodState(false);
     exitEPGMode();
     _activePlaylistKey = null; _epgShiftOn = false; _epgTz = ''; _epgExtraMs = 0;
+    favoriteIds = new Set(); // favorites belong to a playlist; the next one applied loads its own
     if (settingsOpen) closeSettings();
     currentPlaylistType = null;
     isLoading = false;
@@ -2940,7 +2980,7 @@ function buildEPGRow(i) {
     row.style.cssText = `position:absolute;top:${i * EPG_ROW_H}px;left:0;right:0`;
 
     const logoSrc = ch.tvgLogo && !_epgLogoFailed.has(ch.tvgLogo) ? escapeHtml(ch.tvgLogo) : '';
-    const favId = ch.tvgId || `idx_${origIdx}`;
+    const favId = favIdOf(ch, origIdx);
     const isFav = favoriteIds.has(favId);
     const labelHtml = `<div class="epg-ch-label"><div class="epg-ch-logo-wrap${logoSrc ? ' has-logo' : ''}"><span class="epg-ch-no-logo">📺</span>${logoSrc ? `<img class="epg-ch-logo" data-src="${logoSrc}" decoding="async" onerror="epgLogoFailed(this)">` : ''}</div><span class="epg-ch-name">${escapeHtml(ch.name.length > 22 ? ch.name.slice(0, 20) + '…' : ch.name)}</span><button class="epg-fav-btn${isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${isFav ? '★' : '☆'}</button></div>`;
 
@@ -3180,7 +3220,7 @@ function updateEPGInfoPanel(ch) {
     if (groupEl) groupEl.textContent = ch.group || '';
 
     if (favBtn) {
-        const favId = ch.tvgId || `idx_${getChannelIndex(ch)}`;
+        const favId = favIdOf(ch, getChannelIndex(ch));
         favBtn.dataset.favId = favId;
         const isFav = favoriteIds.has(favId);
         favBtn.textContent = isFav ? '★' : '☆';
@@ -3457,7 +3497,7 @@ function prefetchFavoritesEpg() {
     const ids = new Set();
     for (let i = 0; i < channels.length; i++) {
         const ch = channels[i];
-        if (ch.tvgId && favoriteIds.has(ch.tvgId) && epgNeedsFetch(ch.tvgId)) ids.add(ch.tvgId);
+        if (ch.tvgId && favoriteIds.has(favIdOf(ch, i)) && epgNeedsFetch(ch.tvgId)) ids.add(ch.tvgId);
     }
     if (!ids.size) return;
     _epgPrefetchActive = true;
@@ -3620,6 +3660,7 @@ function applyXtreamChannels(parsed, base, username, password, fromCache, tz, ep
     searchInput.value = '';
     _activePlaylistKey = 'x:' + base + '|' + username;
     epgOffsetLoad();
+    favoritesLoad();
     _m3uSource = null;
     rememberLastPlaylist(_activePlaylistKey);
     currentGroup = initialGroupFor(_activePlaylistKey);
@@ -5761,7 +5802,7 @@ function handleDiagKey(e) {
 
 function clearFavorites() {
     favoriteIds.clear();
-    localStorage.setItem('iptv_favorites', '[]');
+    saveFavorites();
     document.querySelectorAll('.epg-fav-btn, .epg-info-fav-btn').forEach(el => { el.textContent = '☆'; el.classList.remove('fav-active'); });
     refreshViewIfLoaded();
     if (settingsOpen) renderSettings();
@@ -5916,7 +5957,7 @@ function updateEPGNavVisibility() {
 function toggleEPGFav(id) {
     if (favoriteIds.has(id)) favoriteIds.delete(id);
     else favoriteIds.add(id);
-    localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
+    saveFavorites();
     const isFav = favoriteIds.has(id);
     document.querySelectorAll('.epg-fav-btn, .epg-info-fav-btn').forEach(el => {
         if (el.dataset.favId === id) {
@@ -6388,8 +6429,7 @@ document.addEventListener('keydown', (e) => {
 
 // ----- Initialization -----
 
-const savedFavs = localStorage.getItem('iptv_favorites');
-if (savedFavs) try { favoriteIds = new Set(JSON.parse(savedFavs)); } catch (e) { }
+// Favorites are loaded per playlist when one is applied (favoritesLoad); 'iptv_favorites' is only read to convert old ones
 loadSavedPlaylists();
 const lastUrl = localStorage.getItem('last_m3u_url');
 if (lastUrl) newM3uUrl.value = lastUrl;

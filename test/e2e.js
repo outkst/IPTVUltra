@@ -53,15 +53,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await page.evaluate(() => { settingsRows().find(r => r.id === 'subAuto').set(true); }); // the remaining checks exercise the auto-on path
     check('guide opened with lazy EPG (requests ≈ favorites + visible rows)', s.epg_requests > 0 && s.epg_requests <= rendered + 10, `requests=${s.epg_requests} renderedRows=${rendered} channels=3000`);
     check('favorites (group) view shows favorite rows', await page.evaluate(() => currentGroup === 'favorites' && currentFilteredChannels.length === 2));
+    check('favorites saved by tvg-id before 3.12 were converted to exact channels (stream ids) for this playlist', await page.evaluate(() => [...favoriteIds].join() === 's:3,s:4' && JSON.parse(localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey].favs.join() === 's:3,s:4'), await page.evaluate(() => [...favoriteIds].join()));
     // Manage favorites: order follows the Set; the manager reorders / removes / restores
     await page.evaluate(() => { openCatsManager('favs'); catsMove(1); });
-    check('Manage favorites: Right moves the focused favorite down and the Favorites group follows the new order', await page.evaluate(() => { renderChannelList(); return catsOpen && catsMode === 'favs' && [...favoriteIds].slice(0, 2).join() === 'ch4.test,ch3.test' && currentFilteredChannels[0].tvgId === 'ch4.test' && catsFocus === 1 && /Channel 00003/.test(document.querySelector('.cats-row.focused .settings-name').textContent); }), await page.evaluate(() => [...favoriteIds].join()));
+    check('Manage favorites: Right moves the focused favorite down and the Favorites group follows the new order', await page.evaluate(() => { renderChannelList(); return catsOpen && catsMode === 'favs' && [...favoriteIds].slice(0, 2).join() === 's:4,s:3' && currentFilteredChannels[0].tvgId === 'ch4.test' && catsFocus === 1 && /Channel 00003/.test(document.querySelector('.cats-row.focused .settings-name').textContent); }), await page.evaluate(() => [...favoriteIds].join()));
     await page.evaluate(() => catsToggleHidden());
-    check('OK removes the focused favorite but keeps it listed (struck through) for undo', await page.evaluate(() => !favoriteIds.has('ch3.test') && _catsNames.includes('ch3.test') && document.querySelector('.cats-row.focused').classList.contains('cats-hidden')));
+    check('OK removes the focused favorite but keeps it listed (struck through) for undo', await page.evaluate(() => !favoriteIds.has('s:3') && _catsNames.includes('s:3') && document.querySelector('.cats-row.focused').classList.contains('cats-hidden')));
     await page.evaluate(() => catsToggleHidden());
-    check('OK again restores it in place', await page.evaluate(() => [...favoriteIds].slice(0, 2).join() === 'ch4.test,ch3.test' && !document.querySelector('.cats-row.focused').classList.contains('cats-hidden')));
+    check('OK again restores it in place', await page.evaluate(() => [...favoriteIds].slice(0, 2).join() === 's:4,s:3' && !document.querySelector('.cats-row.focused').classList.contains('cats-hidden')));
     await back(); await sleep(200);
-    check('Back closes the favorites manager; the guide lists favorites in the new order', await page.evaluate(() => !catsOpen && currentFilteredChannels.map(c => c.tvgId).join() === 'ch4.test,ch3.test' && JSON.parse(localStorage.getItem('iptv_favorites')).join() === 'ch4.test,ch3.test'));
+    check('Back closes the favorites manager; the guide lists favorites in the new order', await page.evaluate(() => !catsOpen && currentFilteredChannels.map(c => c.tvgId).join() === 'ch4.test,ch3.test' && JSON.parse(localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey].favs.join() === 's:4,s:3'));
     const loadedBlocks = await page.evaluate(() => document.querySelectorAll('#epgBody .epg-prog-block').length);
     check('visible rows received programme blocks', loadedBlocks > 0, `blocks=${loadedBlocks}`);
     check('info panel shows programme for playing channel', await page.evaluate(() => /Show/.test(document.getElementById('epgInfoTitle').textContent)), await page.evaluate(() => document.getElementById('epgInfoTitle').textContent));
@@ -788,7 +789,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     await key('Enter', 13);
     check('Clear favorites opens confirm dialog', await page.evaluate(() => !confirmDialog.classList.contains('hidden')));
     await key('ArrowLeft', 37); await key('Enter', 13); await sleep(100);
-    check('confirm Yes clears favorites, settings still open', await page.evaluate(() => favoriteIds.size === 0 && settingsOpen && localStorage.getItem('iptv_favorites') === '[]'));
+    check('confirm Yes clears favorites, settings still open', await page.evaluate(() => favoriteIds.size === 0 && settingsOpen && JSON.parse(localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey].favs.length === 0));
     await back();
 
     // ---------- hls.js live engine: takes HLS channels when the buffer is on, falls back to native on a fatal error ----------
@@ -972,6 +973,27 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check('event group: sorted by start time, finished hidden (Sort, hide finished) or last (Sort), untouched when As listed',
         ev.hide === 'ev3.test,ev4.test,ev2.test,ev1.test,ev5.test' && ev.sort === 'ev3.test,ev4.test,ev2.test,ev0.test,ev1.test,ev5.test' && ev.off === 'ev0.test,ev1.test,ev2.test,ev3.test,ev4.test,ev5.test' && ev.setting, JSON.stringify(ev));
     check('event fills the guide for a channel without EPG: current programme, next, now-playing block', ev.cur === 'MAIN CARD' && ev.next === 'LATER VS LATEST' && ev.block, JSON.stringify(ev));
+
+    // ---------- Favorites are exact channels: quality variants sharing a tvg-id are not pulled in ----------
+    const fv = await page.evaluate(() => {
+        const save = [10, 11, 12].map(i => ({ name: channels[i].name, tvgId: channels[i].tvgId }));
+        const savedFavs = [...favoriteIds], ps = getPlaylistState(_activePlaylistKey), savedPs = ps.favs, savedLegacy = localStorage.getItem('iptv_favorites');
+        [['Dup HD', 10], ['Dup FHD', 11], ['Dup SD', 12]].forEach(([n, i]) => { channels[i].name = n; channels[i].tvgId = 'dup.test'; });
+        buildChannelIndexMap();
+        favoriteIds = new Set([favIdOf(channels[11], 11)]);
+        const listed = favoriteChannels().map(c => c.name).join();
+        // Conversion of an old tvg-id favorite keeps the best-quality variant even when it is not listed first
+        delete ps.favs; localStorage.setItem('iptv_favorites', JSON.stringify(['dup.test', 'ch20.test', 'gone.test']));
+        favoritesLoad();
+        const migrated = [...favoriteIds].join();
+        const ranks = ['X 8K', 'X ᵁᴴᴰ 3840P', 'X 4K', 'X FHD', 'X 1080p', 'X HD', 'X 720p', 'X', 'X SD', 'X 480p'].map(nameQualityRank).join();
+        [10, 11, 12].forEach((i, k) => Object.assign(channels[i], save[k]));
+        buildChannelIndexMap();
+        ps.favs = savedPs; savePlaylistState(); favoriteIds = new Set(savedFavs);
+        if (savedLegacy === null) localStorage.removeItem('iptv_favorites'); else localStorage.setItem('iptv_favorites', savedLegacy);
+        return { listed, migrated, ranks };
+    });
+    check('starring one quality variant lists only that channel; old tvg-id favorites convert to the best-quality variant', fv.listed === 'Dup FHD' && fv.migrated === 's:12,s:20' && fv.ranks === '6,5,5,4,4,3,3,2,1,1', JSON.stringify(fv));
 
     check('no uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await browser.close();
