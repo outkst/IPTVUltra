@@ -3222,6 +3222,12 @@ body.live-player #videoPlayer {
 .cats-row .settings-name .settings-sub { display: inline; margin-left: 8px; }
 .vod-dextra { color: #8b93a7; }
 
+/* Versions menu: name on the first line, group · number · resolution on the second */
+.versions-card { width: 56rem; }
+.version-row .settings-sub { display: block; margin-left: 0; }
+.version-row .settings-val { white-space: nowrap; color: #ffd479; }
+.versions-card .settings-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
 /* Diagnostics overlay */
 .diag-card { width: 64rem; }
 .diag-text {

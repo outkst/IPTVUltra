@@ -469,6 +469,7 @@ function liveTechFromHls() {
     const reach = hlsReachMinutes(lvl.bitrate);
     bits.push(`⏪ ${reach < settings.liveBuffer ? '~' : ''}${reach} min`);
     liveEngine.tech = bits.join(' · ');
+    noteCurrentStreamTech();
     if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = liveEngine.tech; }
     else showFeedStats(liveEngine.tech);
 }
@@ -818,7 +819,7 @@ function buildChannelIndexMap() {
         if (_chansByFavId.has(fid)) _chansByFavId.get(fid).push(ch); else _chansByFavId.set(fid, [ch]);
     }
     _searchCache = { query: null, result: null };
-    _altSources.clear();
+    _altSources.clear(); _altIndex = null;
     buildEventProgs();
 }
 function chDisplayNum(ch, idx) { return ch && ch.num > 0 ? ch.num : idx + 1; }
@@ -1022,18 +1023,21 @@ function normChannelName(name) {
     return String(name || '').toLowerCase().replace(_RE_NAME_BRACKETS, ' ').replace(_RE_NAME_TAGS, ' ').replace(_RE_NON_ALNUM, '');
 }
 const _altSources = new Map(); // channel index → [indices] (built on first need, reset with the channel list)
+let _altIndex = null;           // { byId, byName }: lower-case tvg-id / normalised name → [indices], built once per list
 function alternateSources(idx) {
     if (_altSources.has(idx)) return _altSources.get(idx);
     const ch = channels[idx];
     const out = [];
     if (ch) {
-        const id = (ch.tvgId || '').toLowerCase(), nm = normChannelName(ch.name);
-        for (let i = 0; i < channels.length; i++) {
-            if (i === idx) continue;
-            const c = channels[i];
-            if (c.url === ch.url) continue;
-            if ((id && (c.tvgId || '').toLowerCase() === id) || (nm && normChannelName(c.name) === nm)) out.push(i);
+        if (!_altIndex) {
+            const byId = new Map(), byName = new Map();
+            const add = (m, k, i) => { if (!k) return; const l = m.get(k); if (l) l.push(i); else m.set(k, [i]); };
+            for (let i = 0; i < channels.length; i++) { const c = channels[i]; add(byId, (c.tvgId || '').toLowerCase(), i); add(byName, normChannelName(c.name), i); }
+            _altIndex = { byId, byName };
         }
+        const id = (ch.tvgId || '').toLowerCase(), nm = normChannelName(ch.name);
+        const set = new Set([].concat((id && _altIndex.byId.get(id)) || [], (nm && _altIndex.byName.get(nm)) || []));
+        for (const i of [...set].sort((a, b) => a - b)) if (i !== idx && channels[i].url !== ch.url) out.push(i);
     }
     _altSources.set(idx, out);
     return out;
@@ -1081,6 +1085,142 @@ function favoriteChannels() {
     return out;
 }
 
+// ----- Versions of a channel (quality variants) -----
+// Providers list one channel several times (FHD, HD, RAW, backups) under one tvg-id or one name: the same set
+// alternateSources() falls back through. The Versions menu (live player banner button; long press OK on a guide or
+// channel-list row) lists them with the resolution and frame rate seen the last time each one played. OK watches a
+// version; Green makes it the favorite in place of the starred one (only on request). A version's real quality is
+// only known after playing it (the provider allows one connection per account, so nothing can be probed in the
+// background); the numbers fill in as channels are watched (`iptv_stream_tech`, per playlist and favIdOf key).
+const STREAM_TECH_KEY = 'iptv_stream_tech';
+const STREAM_TECH_MAX = 800;
+const _streamTech = loadJson(STREAM_TECH_KEY, {}) || {};
+function streamTechOf(ch, idx) { return _activePlaylistKey ? _streamTech[_activePlaylistKey + '|' + favIdOf(ch, idx)] || null : null; }
+// Remember what the playing live channel actually delivers (called on resize/metadata, hls level info, media service info)
+function noteCurrentStreamTech() {
+    if (!_activePlaylistKey || currentChannelIndex < 0 || vodMode !== 'live' || vodPlay.active || catchup) return;
+    let w = videoPlayer.videoWidth, h = videoPlayer.videoHeight, fps = 0;
+    if (liveEngineActive()) {
+        const hls = liveEngine.hls, lvl = hls.levels && hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
+        fps = (lvl && lvl.frameRate) || liveEngine.fps || 0;
+    } else if (liveUms && liveUms.video) {
+        const vi = liveUms.videoInfo || {};
+        fps = vi.frameRate || liveUms.video.frameRate || liveUms.measuredFps || 0;
+        if (!(w > 0)) { w = vi.width || liveUms.video.width; h = vi.height || liveUms.video.height; }
+    }
+    if (!(w > 0 && h > 0)) return;
+    const ch = channels[currentChannelIndex], k = _activePlaylistKey + '|' + favIdOf(ch, currentChannelIndex);
+    const old = _streamTech[k];
+    if (!(fps > 0) && old && old.w === w && old.h === h) fps = old.fps || 0; // fps arrives after the size; keep the last one meanwhile
+    if (old && old.w === w && old.h === h && old.fps === fps && Date.now() - old.at < 86400000) return;
+    delete _streamTech[k];
+    _streamTech[k] = { w, h, fps: fps > 0 ? fps : 0, at: Date.now() };
+    const ks = Object.keys(_streamTech);
+    if (ks.length > STREAM_TECH_MAX) delete _streamTech[ks[0]];
+    saveJson(STREAM_TECH_KEY, _streamTech);
+}
+function versionsOf(idx) { return channels[idx] ? [idx].concat(alternateSources(idx)) : []; }
+function streamTechLabel(t) { return t ? `${t.w}×${t.h}${t.fps ? ' · ' + fmtFps(t.fps) : ''}` : 'not watched yet'; }
+// Expected height from the name when the version has not been watched (untagged sits between SD and HD)
+const RANK_HEIGHT = { 6: 4320, 5: 2160, 4: 1080, 3: 720, 2: 600, 1: 480 };
+let versionsOpen = false, versionsFocus = 0, _versionsRows = [], _versionsOrigin = -1, _versionsFavChanged = false;
+function openVersions(idx) {
+    const list = versionsOf(idx);
+    const ov = document.getElementById('versionsOverlay');
+    if (list.length < 2 || !ov) return false;
+    if (settingsOpen) closeSettings();
+    _versionsOrigin = idx; _versionsFavChanged = false;
+    _versionsRows = list.map((i, order) => {
+        const ch = channels[i], tech = streamTechOf(ch, i);
+        return { i, ch, tech, order, h: tech ? tech.h : RANK_HEIGHT[nameQualityRank(ch.name)], fps: tech ? tech.fps || 0 : 0 };
+    });
+    _versionsRows.sort((a, b) => (b.h - a.h) || (b.fps - a.fps) || ((b.tech ? 1 : 0) - (a.tech ? 1 : 0)) || (a.i - b.i));
+    const known = _versionsRows.filter(r => r.tech);
+    const best = known.length >= 2 ? known.reduce((m, r) => (r.tech.h > m.tech.h || (r.tech.h === m.tech.h && (r.tech.fps || 0) > (m.tech.fps || 0))) ? r : m) : null;
+    _versionsRows.forEach(r => { r.best = r === best; });
+    versionsFocus = Math.max(0, _versionsRows.findIndex(r => r.i === idx));
+    versionsOpen = true;
+    document.getElementById('versionsTitle').textContent = `⇄ Versions · ${channels[idx].name}`;
+    ov.classList.remove('hidden');
+    renderVersions();
+    return true;
+}
+function closeVersions() {
+    if (!versionsOpen) return;
+    versionsOpen = false;
+    const ov = document.getElementById('versionsOverlay'); if (ov) ov.classList.add('hidden');
+    const list = document.getElementById('versionsList'); if (list) list.innerHTML = '';
+    if (_versionsFavChanged) { _versionsFavChanged = false; refreshViewIfLoaded(); }
+}
+function renderVersions() {
+    const list = document.getElementById('versionsList'); if (!list) return;
+    list.innerHTML = '';
+    _versionsRows.forEach((r, k) => {
+        const fav = favoriteIds.has(favIdOf(r.ch, r.i));
+        const tags = [r.i === currentChannelIndex ? '▶ Playing' : '', r.best ? 'Best' : '', fav ? '★' : ''].filter(Boolean).join('  ');
+        const row = document.createElement('div');
+        row.className = 'settings-row cats-row version-row' + (k === versionsFocus ? ' focused' : '') + (r.i === currentChannelIndex ? ' on' : '');
+        row.innerHTML = `<div class="settings-label"><div class="settings-name">${escapeHtml(r.ch.name)}</div>` +
+            `<div class="settings-sub">${escapeHtml(r.ch.group || '')} · #${chDisplayNum(r.ch, r.i)} · ${streamTechLabel(r.tech)}</div></div>` +
+            `<div class="settings-value"><span class="settings-val">${tags}</span></div>`;
+        row.addEventListener('click', () => { versionsFocus = k; versionsWatch(); });
+        list.appendChild(row);
+    });
+    const f = list.querySelector('.cats-row.focused'); if (f) f.scrollIntoView({ block: 'nearest' });
+}
+function versionsWatch() {
+    const r = _versionsRows[versionsFocus]; if (!r) return;
+    closeVersions();
+    if (r.i === currentChannelIndex) return;
+    selectChannel(r.i);
+    if (livePlayer.active) { updateLiveOsd(); showVodOsd(); }
+    else moveCursorToChannel(r.ch);
+}
+// Green: this version becomes the favorite. It takes the place (and position) of the starred version of this
+// channel; with several starred, of the one the menu was opened for; with none, it is added at the end.
+function versionsMakeFavorite() {
+    const r = _versionsRows[versionsFocus]; if (!r) return;
+    const newId = favIdOf(r.ch, r.i);
+    if (favoriteIds.has(newId)) { showEPGToast(`${r.ch.name} is already a favorite`, 'success', 'Favorites'); hideEPGToast(2500); return; }
+    const starred = _versionsRows.map(x => favIdOf(x.ch, x.i)).filter(id => favoriteIds.has(id));
+    const originId = favIdOf(channels[_versionsOrigin], _versionsOrigin);
+    const replaceId = starred.length === 1 ? starred[0] : favoriteIds.has(originId) ? originId : null;
+    const replaced = replaceId ? (_versionsRows.find(x => favIdOf(x.ch, x.i) === replaceId) || {}).ch : null;
+    const ids = [...favoriteIds];
+    if (replaceId) ids[ids.indexOf(replaceId)] = newId; else ids.push(newId);
+    favoriteIds = new Set(ids);
+    saveFavorites();
+    _versionsFavChanged = true;
+    showEPGToast(replaced ? `★ ${r.ch.name} replaces ${replaced.name}` : `★ ${r.ch.name} added`, 'success', 'Favorites');
+    hideEPGToast(3500);
+    renderVersions();
+}
+function handleVersionsKey(e) {
+    const k = e.key, kc = e.keyCode;
+    if (k === 'ArrowUp' || kc === 38) { e.preventDefault(); versionsFocus = Math.max(0, versionsFocus - 1); renderVersions(); }
+    else if (k === 'ArrowDown' || kc === 40) { e.preventDefault(); versionsFocus = Math.min(_versionsRows.length - 1, versionsFocus + 1); renderVersions(); }
+    else if (k === 'Enter' || kc === 13) { e.preventDefault(); versionsWatch(); }
+    else if (kc === 404 || k === 'ColorF1Green') { e.preventDefault(); versionsMakeFavorite(); }
+    else if (k === 'ArrowLeft' || k === 'ArrowRight' || kc === 37 || kc === 39) e.preventDefault();
+}
+// OK on a guide or channel-list row acts on release; held for LONG_PRESS_MS it opens Versions instead
+// (only when the channel has other versions; otherwise the release does the normal thing)
+let _rowOk = null; // { timer, fired, short }
+function rowOkPress(e, idx, shortAct) {
+    e.preventDefault();
+    if (_rowOk && e.repeat) return; // auto-repeat while the key is held
+    if (_rowOk) clearTimeout(_rowOk.timer); // a release we never saw
+    const st = { fired: false, short: shortAct };
+    st.timer = setTimeout(() => { if (_rowOk === st && openVersions(idx)) st.fired = true; }, LONG_PRESS_MS);
+    _rowOk = st;
+}
+document.addEventListener('keyup', e => {
+    if (!_rowOk || !(e.key === 'Enter' || e.keyCode === 13)) return;
+    const st = _rowOk; _rowOk = null;
+    clearTimeout(st.timer);
+    if (!st.fired) st.short();
+});
+
 // ----- Direct channel number entry -----
 // Digits on the remote (in Live, guide or channel list, and in the live player) type a provider channel
 // number into an overlay; after 2 s without another digit (or at 5 digits) the channel is selected.
@@ -1107,7 +1247,7 @@ function digitKeyValue(e) {
 function digitEntryAllowed() {
     if (!mainApp || mainApp.style.display === 'none' || !channels.length) return false;
     if (confirmDialog && !confirmDialog.classList.contains('hidden')) return false;
-    if (settingsOpen || catsOpen || diagOpen || vodPlay.active || vodMode !== 'live') return false;
+    if (settingsOpen || catsOpen || diagOpen || versionsOpen || vodPlay.active || vodMode !== 'live') return false;
     if (_isTextInput(document.activeElement)) return false;
     return !_chanByNum.size ? false : true;
 }
@@ -4726,7 +4866,7 @@ function handleVodBrowseKey(e, up, down, left, right, enter) {
 }
 
 // ── playback ─────────────────────────────────────────────────
-function _inPlayerMode() { return (!!document.fullscreenElement || playerActive()) && !settingsOpen && !diagOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
+function _inPlayerMode() { return (!!document.fullscreenElement || playerActive()) && !settingsOpen && !diagOpen && !versionsOpen && !(confirmDialog && !confirmDialog.classList.contains('hidden')); }
 function showPlayerControls() { if (playerActive()) showVodOsd(); else showTopControls(); }
 function vodNextVisible() { return !document.getElementById('vodNext').classList.contains('hidden'); }
 function restoreLiveVideoSlot() {
@@ -4929,6 +5069,7 @@ function playerButtonsFor() {
         if (catchup) btns.push({ id: 'live', label: '⏩ Back to live', act: catchupBackToLive });
         else if (liveBehindSecs() > 5) btns.push({ id: 'live', label: '⏩ Go live', act: liveGoLive });
         btns.push({ id: 'cc', label: 'CC Audio & Subtitles', act: () => { if (vodTracksOpen()) closeVodTracks(); else openVodTracks(); } });
+        if (!catchup && versionsOf(currentChannelIndex).length > 1) btns.push({ id: 'versions', label: '⇄ Versions', act: () => { closeVodTracks(); openVersions(currentChannelIndex); } });
         btns.push({ id: 'guide', label: currentPlaylistType === 'xtream' ? '📺 Guide' : '📡 Channels', act: exitLivePlayer });
         btns.push({ id: 'settings', label: '⚙️ Settings', act: () => { closeVodTracks(); openSettings(); } });
     }
@@ -5380,6 +5521,7 @@ function umsTechUpdated(u) {
         const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s;
         if (s && vodPlay.key) { vodTech[vodPlay.key] = s; const ks = Object.keys(vodTech); if (ks.length > 300) delete vodTech[ks[0]]; saveJson('iptv_vod_tech', vodTech); }
     } else if (u.kind === 'live' && liveUms === u) {
+        noteCurrentStreamTech();
         if (livePlayer.active) { const el = document.getElementById('vodOsdTech'); if (el) el.textContent = s; if (s) showVodOsd(); }
         else if (s) showFeedStats(s);
     }
@@ -6007,6 +6149,7 @@ function handleRemoteNav(e) {
     }
 
     // Diagnostics / Sort menu / Categories manager / Settings overlay own the remote while open
+    if (versionsOpen) { handleVersionsKey(e); return; }
     if (diagOpen) { handleDiagKey(e); return; }
     if (vodSortOpen) { handleVodSortKey(e); return; }
     if (catsOpen) { handleCatsKey(e); return; }
@@ -6046,7 +6189,7 @@ function handleRemoteNav(e) {
         else if (down) { e.preventDefault(); epgFocusedRowIdx = Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1); updateEPGRowFocus(); }
         else if (left) { e.preventDefault(); epgMoveCursor(-1); }
         else if (right) { e.preventDefault(); epgMoveCursor(1); }
-        else if (enter) { e.preventDefault(); selectEPGFocusedChannel(); }
+        else if (enter) { const ch = currentFilteredChannels[epgFocusedRowIdx]; if (ch) rowOkPress(e, getChannelIndex(ch), selectEPGFocusedChannel); else e.preventDefault(); }
         return;
     }
 
@@ -6067,8 +6210,10 @@ function handleRemoteNav(e) {
                 const ch = currentFilteredChannels[stdFocusIdx];
                 if (!ch) return;
                 const idx = getChannelIndex(ch);
-                if (idx === currentChannelIndex) toggleVideoFullscreen(); // Enter on the playing row toggles fullscreen
-                else selectChannel(idx);
+                rowOkPress(e, idx, () => {
+                    if (idx === currentChannelIndex) toggleVideoFullscreen(); // Enter on the playing row toggles fullscreen
+                    else selectChannel(idx);
+                });
             }
         }
         return;
@@ -6225,7 +6370,9 @@ if (epgClearSearchBtn) {
 }
 subtitleBtn.addEventListener('click', () => { toggleSubtitlePanel(); showTopControls(); });
 audioBtn.addEventListener('click', () => { toggleAudioPanel(); showTopControls(); });
+videoPlayer.addEventListener('resize', noteCurrentStreamTech);
 videoPlayer.addEventListener('loadedmetadata', function () {
+    noteCurrentStreamTech();
     updateSubtitleButton(); updateAudioButton();
     if (vodMode === 'live' && !vodPlay.active && !livePlayer.active && !liveEngineActive()) {
         setTimeout(() => { if (!(liveUms && liveUms.video) && videoPlayer.videoWidth) showFeedStats(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`); }, 1500);
@@ -6276,13 +6423,15 @@ document.addEventListener('keydown', handleRemoteNav);
 let _enterPressTime = 0;
 let _enterDown = false;
 const LONG_PRESS_MS = 600;
+// Capture phase: runs before handleRemoteNav, so a press that opens the player (Play on a details page, OK on a
+// guide row) is not also taken as a player OK on its release (which paused the movie it had just started)
 document.addEventListener('keydown', (e) => {
     if (!_inPlayerMode()) return;
     if (e.key !== 'Enter' && e.keyCode !== 13) return;
     if (_enterDown) return; // ignore key-repeat
     _enterDown = true;
     _enterPressTime = Date.now();
-});
+}, true);
 document.addEventListener('keyup', (e) => {
     if (!_enterDown) return;
     if (e.key !== 'Enter' && e.keyCode !== 13) return;
@@ -6384,7 +6533,7 @@ document.addEventListener('keydown', (e) => {
     if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
     if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0) return;
     if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
-    if (settingsOpen || catsOpen || diagOpen) return;
+    if (settingsOpen || catsOpen || diagOpen || versionsOpen) return;
     if (vodMode !== 'live' && !vodPlay.active) return;
     if (vodPlay.active && (kc === 427 || kc === 428)) return;
     e.preventDefault();
@@ -6403,6 +6552,7 @@ document.addEventListener('keydown', (e) => {
         confirmNo.click();
         return;
     }
+    if (versionsOpen) { e.preventDefault(); closeVersions(); return; }
     if (diagOpen) { e.preventDefault(); closeDiag(); return; }
     if (vodSortOpen) { e.preventDefault(); closeVodSort(); return; }
     if (catsOpen) { e.preventDefault(); closeCatsManager(); return; }

@@ -18,10 +18,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
     page.on('console', m => { if (m.type() === 'error' && !/net::|404|Failed to load resource|MEDIA|PalmServiceBridge/.test(m.text())) errors.push('console: ' + m.text()); });
     const channelsName = () => 'Channel ';
+    // OK is pressed and released (guide and channel-list rows act on release; a long press opens Versions)
     const key = (k, kc) => page.evaluate((k, kc) => {
         const ev = new KeyboardEvent('keydown', { key: k, keyCode: kc, bubbles: true, cancelable: true });
         Object.defineProperty(ev, 'keyCode', { get: () => kc });
         document.dispatchEvent(ev);
+        if (kc === 13) { const up = new KeyboardEvent('keyup', { key: k, keyCode: kc, bubbles: true, cancelable: true }); Object.defineProperty(up, 'keyCode', { get: () => kc }); document.dispatchEvent(up); }
     }, k, kc);
     const back = () => key('GoBack', 461);
 
@@ -806,10 +808,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     // Frame rate on the hls.js path is counted from the remuxed segments (the playlist states none, like the provider's)
     const fpsOrigUrl = await page.evaluate(() => { const u = channels[1].url; channels[1].url = 'http://localhost:8765/hls50/index.m3u8'; selectChannel(1); return u; });
     await page.waitForFunction(() => liveEngine.fps > 0, { timeout: 20000 }).catch(() => {});
-    const fps = await page.evaluate(() => ({ hls: liveEngineActive(), fps: liveEngine.fps, samples: liveEngine.fpsSamples.map(x => +x.toFixed(2)), tech: liveEngine.tech,
+    const fps = await page.evaluate(() => ({ rec: streamTechOf(channels[1], 1), hls: liveEngineActive(), fps: liveEngine.fps, samples: liveEngine.fpsSamples.map(x => +x.toFixed(2)), tech: liveEngine.tech,
         lvl: liveEngine.hls && liveEngine.hls.levels[0] && liveEngine.hls.levels[0].frameRate, snap: [fpsSnap(29.95), fpsSnap(23.98), fpsSnap(49.6), fpsSnap(37.2)], fmt: [fmtFps(29.97), fmtFps(23.976), fmtFps(50)] }));
     check('hls.js path measures the frame rate from segment samples when the playlist has no FRAME-RATE; shown on the codec line',
-        fps.hls && !fps.lvl && fps.fps === 50 && /· 50 fps ·/.test(fps.tech) && fps.snap.join() === '29.97,23.976,50,37' && fps.fmt.join() === '29.97 fps,23.976 fps,50 fps', JSON.stringify(fps));
+        fps.hls && !fps.lvl && fps.fps === 50 && /· 50 fps ·/.test(fps.tech) && fps.rec && fps.rec.w === 320 && fps.rec.h === 180 && fps.rec.fps === 50 && fps.snap.join() === '29.97,23.976,50,37' && fps.fmt.join() === '29.97 fps,23.976 fps,50 fps', JSON.stringify(fps));
     await page.evaluate(u => { channels[1].url = u; settings.liveBuffer = 0; saveSettings(); _hlsBroken.clear(); document.getElementById('epgToastTitle').textContent = ''; }, fpsOrigUrl);
     check('rewind buffer Off again: next channel load is native', await page.evaluate(() => { selectChannel(3); return !liveEngineActive() && (videoPlayer.getAttribute('src') || '') === channels[3].url; }));
 
@@ -995,6 +997,64 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         return { listed, migrated, ranks };
     });
     check('starring one quality variant lists only that channel; old tvg-id favorites convert to the best-quality variant', fv.listed === 'Dup FHD' && fv.migrated === 's:12,s:20' && fv.ranks === '6,5,5,4,4,3,3,2,1,1,6,5,5,5,4,3,2,1', JSON.stringify(fv));
+
+    // ---------- Versions: the same channel's variants, with remembered quality; watch one, make one the favorite ----------
+    const vs = await page.evaluate(() => {
+        const idx = [30, 31, 32], save = idx.map(i => ({ name: channels[i].name, tvgId: channels[i].tvgId }));
+        [['Vers FHD', 30], ['Vers HD', 31], ['Vers', 32]].forEach(([n, i]) => { channels[i].name = n; channels[i].tvgId = 'vers.test'; });
+        buildChannelIndexMap();
+        const key = i => _activePlaylistKey + '|' + favIdOf(channels[i], i);
+        const savedTech = idx.map(i => _streamTech[key(i)]);
+        _streamTech[key(30)] = { w: 1280, h: 720, fps: 50, at: Date.now() };
+        _streamTech[key(32)] = { w: 1920, h: 1080, fps: 60, at: Date.now() };
+        const savedFavs = [...favoriteIds];
+        favoriteIds = new Set(['s:1', favIdOf(channels[30], 30), 's:2']);
+        const out = { n: versionsOf(30).length };
+        out.opened = openVersions(30);
+        out.order = _versionsRows.map(r => r.ch.name + (r.best ? '*' : '')).join();
+        out.focus = _versionsRows[versionsFocus].ch.name;
+        out.text = document.getElementById('versionsList').textContent;
+        versionsFocus = _versionsRows.findIndex(r => r.ch.name === 'Vers');
+        handleVersionsKey({ key: 'ColorF1Green', keyCode: 404, preventDefault() {} });
+        out.favs = [...favoriteIds].join();
+        out.stored = getPlaylistState(_activePlaylistKey).favs.join();
+        handleVersionsKey({ key: 'Enter', keyCode: 13, preventDefault() {} });
+        out.closed = !versionsOpen;
+        out.playing = channels[currentChannelIndex].name;
+        enterLivePlayer();
+        out.btn = playerButtonsFor().map(b => b.id).join();
+        exitLivePlayer();
+        out.single = openVersions(5); // a channel with no other version: no menu
+        window.__vsRestore = () => {
+            idx.forEach((i, k) => Object.assign(channels[i], save[k]));
+            idx.forEach((i, k) => { if (savedTech[k]) _streamTech[key(i)] = savedTech[k]; else delete _streamTech[key(i)]; });
+            buildChannelIndexMap(); favoriteIds = new Set(savedFavs); saveFavorites();
+        };
+        return out;
+    });
+    check('Versions lists the variants best first (remembered resolution beats the name), marks the best, opens on the chosen one',
+        vs.n === 3 && vs.opened && vs.order === 'Vers*,Vers FHD,Vers HD' && vs.focus === 'Vers FHD' && /1920×1080 · 60 fps/.test(vs.text) && /not watched yet/.test(vs.text) && vs.single === false, JSON.stringify(vs));
+    check('Green makes the focused version the favorite in place of the starred one; OK watches it; the live player offers the Versions button',
+        vs.favs === 's:1,s:33,s:2' && vs.stored === vs.favs && vs.closed && vs.playing === 'Vers' && /,versions,/.test(vs.btn), JSON.stringify(vs));
+    // Long press OK on a guide row opens Versions without tuning; a short press tunes as before
+    const vlp = await page.evaluate(async () => {
+        const ev = (type) => { const e = new KeyboardEvent(type, { key: 'Enter', keyCode: 13, bubbles: true, cancelable: true }); Object.defineProperty(e, 'keyCode', { get: () => 13 }); document.dispatchEvent(e); };
+        currentGroup = 'all'; refreshCurrentView();
+        const fi = currentFilteredChannels.indexOf(channels[31]);
+        epgFocusedRowIdx = fi; epgFocusT = 0; updateEPGRowFocus();
+        const before = currentChannelIndex;
+        ev('keydown');
+        await new Promise(r => setTimeout(r, LONG_PRESS_MS + 150));
+        const open = versionsOpen, focus = versionsOpen && _versionsRows[versionsFocus].ch.name;
+        ev('keyup');
+        const after = currentChannelIndex;
+        closeVersions();
+        ev('keydown'); ev('keyup');
+        const tuned = channels[currentChannelIndex].name;
+        window.__vsRestore();
+        return { fi, open, focus, unchanged: after === before, tuned };
+    });
+    check('long press OK on a guide row opens Versions for that row without tuning; a short press tunes it', vlp.fi >= 0 && vlp.open && vlp.focus === 'Vers HD' && vlp.unchanged && vlp.tuned === 'Vers HD', JSON.stringify(vlp));
 
     check('no uncaught page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
     await browser.close();
