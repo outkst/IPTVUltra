@@ -1,114 +1,212 @@
 # IPTV Ultra
 
-A webOS TV application for LG Smart TVs that streams IPTV channels from M3U playlists or Xtream Codes providers, with full EPG (Electronic Programme Guide) support.
+IPTV Ultra is a webOS app for LG Smart TVs. It plays live TV, movies, and
+series from IPTV providers. It accepts Xtream Codes accounts and M3U playlists,
+and it shows a programme guide (EPG).
 
 ## Features
 
-- **M3U playlist support** — load channels from any M3U/M3U8 URL
-- **Xtream Codes support** — connect directly with a server URL, username, and password
-- **EPG guide** — full scrollable programme guide with current/next show info, progress bar, and per-channel now-playing display
-- Browse and filter channels by group
-- Search channels with scored ranking (exact → prefix → multi-term → substring)
-- Favorites — star any channel; persisted across sessions
-- Save multiple playlists and switch between them
-- Settings (Yellow key or ⚙️ buttons): text size, 12/24-hour clock, auto-load last playlist, per-playlist starting group and resume-last-channel, show adult categories, clear favorites
-- **Movies and Series** (Xtream) — Live / Movies / Series switch above the groups column (Blue key cycles). Poster grid per category, Home with Continue Watching, Recently Added and Favorites, details pages, resume where you left off, series seasons and episodes with watched marks and auto-play next. Playback uses an app-drawn player with a progress bar, ±10 s / ±60 s seeking and fast scrubbing. Embedded subtitle and audio tracks are selected automatically from Settings (English subtitles by default) and can be changed with the Green key.
-- Full-screen player with an on-screen banner (channel, Now/Next, codec line), subtitle and audio track menu, and D-pad focus for the bar and buttons; the same player handles Movies and Series
-- Full LG remote control navigation
+### Live TV
+
+- **Xtream Codes and M3U.** Connect with a server URL, a username, and a
+  password, or with the URL of an `.m3u` or `.m3u8` playlist. You can save
+  many playlists and change between them.
+- **Programme guide.** Xtream playlists open in a guide with a timeline, a
+  "now" line, and an information panel for the focused programme. The guide
+  loads programme data only for the rows that you see, the channel that
+  plays, and your favorites. Thus, a provider with 17,000 channels opens in a
+  few seconds.
+- **Channel list.** M3U playlists open in a channel list. If you give an
+  XMLTV URL, each row shows the current programme. A channel without a
+  matching `tvg-id` is matched to the guide data by its name.
+- **Catch-up.** On channels that the provider archives, the guide goes back
+  up to 72 hours. Select a past programme to watch it from the start.
+- **Live rewind.** On HLS channels, the app keeps a buffer of the stream.
+  You can pause live TV, go back, and return to live.
+- **Player.** The player banner shows the channel number, the current and
+  next programme, and the video format (codec, resolution, frame rate). It
+  also gives subtitle and audio track selection.
+- **Channel numbers.** Type a number on the remote to go to that channel.
+- **Previous channel.** Push the red key, or hold OK in the player.
+- **Channel surfing.** In the player, push Up or Down to see what is on
+  other channels without a change of channel. Push OK to watch.
+- **Versions.** A channel can have more than one version, for example 4K,
+  FHD, and HD. Hold OK on a channel, or select **Versions** in the player, to
+  see all versions with the quality that the app measured during play.
+- **Alternate sources.** If a stream stops and does not start again, the app
+  tries the next version of the same channel.
+- **Event channels (PPV).** The app reads the event time from the channel
+  name, shows the event in the guide, sorts the group by start time, and can
+  hide finished events.
+- **Favorites, Recent, and categories.** Star a channel to add it to
+  Favorites, and put your favorites in your own order. The Recent group shows
+  the last 20 channels that you watched. You can hide categories and change
+  their order.
+- **Search.** Search by channel name, group, or the title of the current
+  programme.
+- **Local cache.** The channel list and the guide data are kept on the TV.
+  The app opens with them immediately and gets new data in the background.
+
+### Movies and series (Xtream)
+
+- Push the blue key to change between Live, Movies, and Series.
+- Each category shows a grid of posters. The home screen shows Continue
+  Watching, Recently Added, and Favorites.
+- Push the green key in a grid to sort (newest, A to Z, year, rating) or to
+  show one genre.
+- The details page shows the age rating, country, release date, and file
+  format.
+- The app remembers your position in each movie and episode. A series starts
+  at the next episode that you did not watch, and the next episode can start
+  automatically.
+- You can mark a movie, an episode, or a full season as watched.
+- Subtitle and audio tracks are selected automatically in your languages.
+  You can set the subtitle size, colour, opacity, background, edge, and
+  timing.
+
+### Settings
+
+Push the yellow key to open Settings. Settings include these items:
+
+- Text size, 12-hour or 24-hour clock, and automatic load of the last
+  playlist.
+- For each playlist: the starting group, resume of the last channel, the EPG
+  timezone, and an EPG time adjustment.
+- The live rewind buffer, subtitle languages and style, and automatic play of
+  the next episode.
+- **Manage favorites**, **Manage categories**, and **Refresh playlist now**.
+- **Diagnostics**: the app version, memory, stream state, the last stream
+  failure, and a log of errors.
+
+## Remote control
+
+| Key | Action |
+|---|---|
+| OK | Watch the selected channel. On the channel that plays, open the player. |
+| Hold OK | On a channel row: open **Versions**. In the player: previous channel. |
+| Back | Close the player, the menu, or the screen. |
+| Red | Previous channel. |
+| Green | In the player: audio and subtitles. In a movie or series grid: sort and genre. |
+| Yellow | Settings. |
+| Blue | Change between Live, Movies, and Series. |
+| 0–9 | Go to a channel number. |
+| CH+ and CH- | Next or previous channel. |
+| Left and Right in the player | Go back or forward. Hold the key to go faster. |
 
 ## Screenshots
-Login
+
+These screenshots are from an earlier version of the app.
+
+Start page:
 
 <img src="https://i.imgur.com/HLriZGy.png" width="500" />
 
-M3U Playlist Viewer
+M3U channel list:
 
 <img src="https://i.imgur.com/8OUuXP3.jpeg" width="900" />
 
-Xtream Code Viewer
+Xtream guide:
 
 <img src="https://i.imgur.com/eBib3Bz.png" width="900" />
 
-## Adding a Playlist
-
-### M3U URL
-
-On the start screen enter any HTTP/HTTPS URL pointing to an `.m3u` or `.m3u8` playlist file. Optionally provide an XMLTV EPG URL in the EPG field to load programme data alongside the channels.
+## Add a playlist
 
 ### Xtream Codes
 
-On the start screen switch to the **Xtream Codes** tab and enter:
+1. On the start page, select the **Xtream API** tab.
+2. Enter the server URL, the username, and the password from your provider.
+   For example:
 
-| Field | Example |
-|---|---|
-| Server URL | `http://provider.example.com:8080` |
-| Username | `myuser` |
-| Password | `mypassword` |
+   | Field | Example |
+   |---|---|
+   | Server URL | `http://provider.example.com:8080` |
+   | Username | `myuser` |
+   | Password | `mypassword` |
 
-The app fetches your full channel list via the Xtream API and loads EPG data on demand — for the channels currently visible in the guide, the playing channel, and your favorites — so even very large providers open in seconds. No separate EPG URL is needed.
+3. Select **Save Playlist**.
 
-## EPG (Electronic Programme Guide)
+You do not need an EPG URL. The app gets the programme data from the
+provider.
 
-Xtream playlists open directly in the guide view, a scrollable 7-hour timeline for every channel. M3U playlists use the channel list view; when an XMLTV URL is provided, each row shows the current programme and the player shows a Now/Next overlay.
+### M3U playlist
 
-### Guide layout
-
-- **Time strip** — hour labels with tick marks at every 15 minutes (:15, :30, :45)
-- **NOW marker** — a red line tracks the current time across all rows
-- **Focused row** — the remote-cursor row and its programme blocks are highlighted in blue
-- **Playing channel** — the currently playing channel is highlighted in amber/gold, distinct from the focused row
-- **Prev/Next buttons** — snap the timeline backwards or forwards 30 minutes; hide automatically at the guide boundaries
-- **EPG search** — filter channels by name directly from the guide's corner search box
-
-### Info panel
-
-The info panel (top-right of the EPG view) shows details for the focused channel:
-
-- Channel logo and name
-- Current programme title, time range, and duration
-- Programme description
-- **Up Next** — the next scheduled airing's title, description, and start/end time
-- **Favorite button** (top-right of the panel) — toggle the channel as a favorite; syncs instantly with the channel list and guide rows
-
-### Groups
-
-- The groups column can be shown or hidden while in the EPG view
-- When hidden, a **floating Groups button** appears in the top-left corner to restore it
-
-EPG data is trimmed to a 6-hour lookahead window to keep memory usage low on webOS hardware.
+1. On the start page, select the **Direct URL** tab.
+2. Enter the URL of the `.m3u` or `.m3u8` playlist.
+3. Optional: enter the URL of an XMLTV file to get programme data.
+4. Select **Save Playlist**.
 
 ## Requirements
 
-- LG Smart TV running webOS
-- TV must be in Developer Mode to sideload
-- [webOS SDK](https://webostv.developer.lge.com/sdk/installation/) (`ares` CLI) for packaging and installation
+- An LG Smart TV with webOS.
+- One of these:
+  - The TV in Developer Mode.
+  - A rooted TV with the Homebrew Channel.
+- The [webOS SDK](https://webostv.developer.lge.com/develop/tools/cli-installation)
+  `ares` command-line tools, to install the app from a computer.
 
-## Installation
+## Install
 
-Download the latest `.ipk` from [Releases](../../releases) and install via the webOS CLI:
+1. Download the latest `.ipk` file from [Releases](../../releases).
+2. Install the app and start it:
+
+   ```bash
+   ares-install --device <your-tv> com.outkst.iptvultra_<version>_all.ipk
+   ares-launch --device <your-tv> com.outkst.iptvultra
+   ```
+
+On a rooted TV, `ares-install` can fail with the error "Unable to exec",
+because the SSH server of the Homebrew Channel has no SFTP. In this case, copy
+the `.ipk` file to `/tmp` on the TV and install it with this command:
 
 ```bash
-ares-install com.outkst.iptvultra_<version>_all.ipk --device <your-tv>
-ares-launch com.outkst.iptvultra --device <your-tv>
+luna-send -i luna://com.webos.appInstallService/dev/install \
+  '{"id":"com.ares.defaultName","ipkUrl":"/tmp/<file>.ipk","subscribe":true}'
 ```
 
-## Building from Source
+## Build from source
 
-No build system required — the source is directly deployable.
+The app has no build step. Package the `IPTVUltra/` directory and install the
+package:
 
 ```bash
-# From the IPTVUltra/ directory
-ares-package .
-ares-install com.outkst.iptvultra_<version>_all.ipk --device <your-tv>
+ares-package IPTVUltra --outdir build
+ares-install --device <your-tv> build/com.outkst.iptvultra_<version>_all.ipk
 ```
 
-## Project Structure
+The version in the file name comes from `IPTVUltra/appinfo.json`.
+
+## Tests
+
+The `test/` directory has end-to-end checks. The checks run the app in
+headless Chrome with a mock Xtream server, so you do not need a TV. You need
+Node.js, Python 3, and Google Chrome.
+
+```bash
+cd test
+npm install
+python mock_server.py 3000   # Terminal 1: the mock provider and the app
+node e2e.js                  # Terminal 2: the checks
+```
+
+For more information, see [`test/README.md`](test/README.md).
+
+## Project structure
 
 ```
 IPTVUltra/
-├── index.html        # App shell
-├── script.js         # All application logic
-├── style.css         # Dark TV-oriented theme
-├── appinfo.json      # webOS app metadata
-└── webOSTVjs-1.2.13/ # webOS SDK library
+├── index.html         # App shell
+├── script.js          # All application logic
+├── style.css          # Dark TV theme
+├── appinfo.json       # webOS app metadata
+├── hls.min.js         # hls.js, for the live rewind buffer
+└── webOSTVjs-1.2.13/  # webOS SDK library
+test/                  # Headless end-to-end checks and a mock provider
 ```
+
+The code follows the Google style guides. The format settings are in
+`.clang-format`, `.prettierrc.json`, and `.style.yapf`.
+
+## License
+
+IPTV Ultra is licensed under the GNU General Public License v3.0. See
+[`LICENSE`](LICENSE).
