@@ -3311,8 +3311,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                             pb: window.__pb,
                             start: !startPage.classList.contains('hidden'),
                             main: mainApp.style.display,
-                            dlg: confirmDialog.classList.contains('hidden'),
-                            fs: !!document.fullscreenElement
+                            dlg: confirmDialog.classList.contains('hidden')
                           }));
   check(
       'Back on start page calls webOS.platformBack', st.pb === 1 && st.start,

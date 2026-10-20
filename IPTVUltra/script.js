@@ -3727,7 +3727,7 @@ function showStreamError(msg) {
 
 // Enter on the already-playing row (or a click on the live picture): open the
 // app-owned player
-function toggleVideoFullscreen() {
+function toggleLivePlayer() {
   if (livePlayer.active) {
     exitLivePlayer();
     return;
@@ -7619,8 +7619,7 @@ function handleVodBrowseKey(e, up, down, left, right, enter) {
 
 // ── playback ─────────────────────────────────────────────────
 function _inPlayerMode() {
-  return (!!document.fullscreenElement || playerActive()) && !settingsOpen &&
-      !diagOpen && !versionsOpen &&
+  return playerActive() && !settingsOpen && !diagOpen && !versionsOpen &&
       !(confirmDialog && !confirmDialog.classList.contains('hidden'));
 }
 function showPlayerControls() {
@@ -9744,7 +9743,6 @@ function handleSettingsKey(e) {
   }
 }
 function openSettings() {
-  if (document.fullscreenElement) return;
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
   const ov = document.getElementById('settingsOverlay');
   if (!ov) return;
@@ -10138,7 +10136,7 @@ function selectEPGFocusedChannel() {
     return;
   }
   if (idx === currentChannelIndex) {
-    toggleVideoFullscreen();
+    toggleLivePlayer();
     return;
   }
   const row = epgRenderedRows.get(epgFocusedRowIdx);
@@ -10194,9 +10192,6 @@ function handleRemoteNav(e) {
     return;
   }
 
-  // Fullscreen playback keys (seek, trick-play, play/pause) have dedicated
-  // listeners
-  if (document.fullscreenElement) return;
   if (playerActive()) {
     handleVodPlayerKey(e, up, down, left, right, enter);
     return;
@@ -10330,8 +10325,7 @@ function handleRemoteNav(e) {
         const idx = getChannelIndex(ch);
         rowOkPress(e, idx, () => {
           if (idx === currentChannelIndex)
-            toggleVideoFullscreen();  // Enter on the playing row toggles
-                                      // fullscreen
+            toggleLivePlayer();  // OK on the playing row opens the player
           else
             selectChannel(idx);
         });
@@ -10691,8 +10685,8 @@ if (videoPlayer.audioTracks) {
 }
 document.addEventListener('keydown', handleRemoteNav);
 
-// Long-press Enter in fullscreen: switch to last-viewed channel
-// Short-press Enter in fullscreen: play/pause
+// OK in the player acts on release: a long press in the live player switches
+// to the last-viewed channel, a short press on the bar toggles pause
 let _enterPressTime = 0;
 let _enterDown = false;
 const LONG_PRESS_MS = 600;
@@ -10714,48 +10708,27 @@ document.addEventListener('keyup', (e) => {
   _enterPressTime = 0;
   if (!_inPlayerMode()) return;
   e.preventDefault();
-  if (playerActive()) {
-    if (vodTracksOpen())
-      activateVodTrack();
-    else if (vodNextVisible())
-      activateVodNext();
-    else if (livePlayer.active && surf.active)
-      surfTune();
-    else if (
-        player.focus === 'buttons' &&
-        document.getElementById('vodOsd').classList.contains('visible'))
-      activatePlayerButton();
-    else if (livePlayer.active && held >= LONG_PRESS_MS) {
-      if (lastChannelIndex >= 0 && channels[lastChannelIndex])
-        selectChannel(lastChannelIndex);
-    } else if (livePlayer.active)
-      toggleLivePause();
-    else
-      toggleVodPause();  // OK on the bar: play/pause (no long-press action in
-                         // VOD)
-    return;
-  }
-  if (held >= LONG_PRESS_MS) {
+  if (vodTracksOpen())
+    activateVodTrack();
+  else if (vodNextVisible())
+    activateVodNext();
+  else if (livePlayer.active && surf.active)
+    surfTune();
+  else if (
+      player.focus === 'buttons' &&
+      document.getElementById('vodOsd').classList.contains('visible'))
+    activatePlayerButton();
+  else if (livePlayer.active && held >= LONG_PRESS_MS) {
     if (lastChannelIndex >= 0 && channels[lastChannelIndex])
       selectChannel(lastChannelIndex);
-  } else {
-    if (videoPlayer.paused)
-      videoPlayer.play().catch(e => console.log);
-    else
-      videoPlayer.pause();
-    showTopControls();
-  }
+  } else if (livePlayer.active)
+    toggleLivePause();
+  else
+    toggleVodPause();  // OK on the bar: play/pause (no long-press action in
+                       // VOD)
 });
 
-document.addEventListener('fullscreenchange', () => {
-  showTopControls();
-  if (!document.fullscreenElement) {
-    _holdKeyDir = null;
-    if (_isHolding()) _stopHold();
-  }
-});
-
-// Hold Left/Right in fullscreen: short-press = ±3s seek; hold = trick play
+// Hold Left/Right in the player: short-press = ±3s seek; hold = trick play
 document.addEventListener('keydown', (e) => {
   if (!_inPlayerMode()) return;
   if (playerActive() && (vodNextVisible() || vodTracksOpen()))
@@ -10833,8 +10806,7 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 // Dedicated remote keys: Play (415), Pause (19), CH+ (427), CH- (428).
-// These work in fullscreen and in both main views; nothing else in fullscreen
-// reacts apart from OK, Back and the Left/Right seek handlers above.
+// These work in the player and in both main views.
 document.addEventListener('keydown', (e) => {
   const kc = e.keyCode;
   if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
@@ -10928,12 +10900,6 @@ document.addEventListener('keydown', (e) => {
       openVodList('home');
     } else
       setVodMode('live');
-    return;
-  }
-
-  if (document.fullscreenElement) {
-    e.preventDefault();
-    document.exitFullscreen();
     return;
   }
 
