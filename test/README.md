@@ -1,7 +1,10 @@
-# Headless end-to-end checks
+# End-to-end tests
 
-Drives the app in headless Chrome against a mock Xtream Codes server.
-No TV required. Requires Node, Python 3, and Google Chrome at the default install path.
+The tests operate the app in Chrome without a window, with a mock Xtream Codes
+server. Thus, a TV is not necessary. You must have Node.js, Python 3, and
+Google Chrome in its usual directory.
+
+Use these commands:
 
 ```powershell
 cd test
@@ -11,10 +14,17 @@ node e2e.js                     # terminal 2: runs ~240 checks, exits non-zero o
 node load_order.js              # no server needed: checks the load order of IPTVUltra/js/
 ```
 
-`load_order.js` makes sure that code that runs at load time uses only functions
-from its own file or an earlier file in the `index.html` script list. A function
-from a later file is not yet defined at that time, and the app stops at
-start-up.
+## Load order of the app scripts
 
-`mock_server.py` serves `../IPTVUltra` at `/` and a fake `player_api.php` on the same origin.
-`/__stats` reports how many `get_short_epg` requests the app made, which is how the lazy EPG loader is verified.
+`load_order.js` examines the scripts in the `index.html` list. The code that
+operates at load time must use only functions from the same file or from a
+previous file in the list. A function from a subsequent file is not available
+at that time, and the app stops at start-up.
+
+## Mock server
+
+`mock_server.py` sends the files of `../IPTVUltra` at `/`, and a mock
+`player_api.php` from the same server. `/__stats` shows the number of
+`get_short_epg` requests that the app sent. The tests use this number to
+examine the EPG loader, which must get EPG data only for the rows on the
+screen.
