@@ -12,3 +12,7 @@ CLAUDE.md
 img/
 test/node_modules/
 __pycache__/
+
+# Local deploy script and editor state
+deploy.ps1
+.vscode/
