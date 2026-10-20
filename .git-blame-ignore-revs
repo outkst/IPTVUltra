@@ -1,0 +1,6 @@
+# Commits that only change format. git blame skips them:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# GitHub reads this file automatically.
+
+# Reformat code to Google style (2026-10-19)
+f0b83272fdb816c98f5d3400be27b42c833be6d2
