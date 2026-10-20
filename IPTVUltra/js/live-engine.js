@@ -596,6 +596,8 @@ function _hideTrickBadge() {
 
 function _startHold(dir) {
   if (_trickHoldDir) return;
+  // Live with no buffer on an archive channel: the rewind goes to the archive
+  if (dir === 'left' && !liveEngineActive() && liveLeftIntoArchive(10)) return;
   _trickHoldDir = dir;
   _trickHoldStart = Date.now();
   videoPlayer.pause();
@@ -636,6 +638,14 @@ function _startHold(dir) {
     const speed = _getRampSpeed(ramp, heldMs);
     const range = _seekRange();
     if (dir === 'left') {
+      // At the start of the hls.js buffer, the rewind continues in the archive
+      if (liveEngineActive() && !catchup &&
+          videoPlayer.currentTime <= range.start + 0.5) {
+        const target = liveWallTimeAt(range.start);
+        _stopHold();
+        rewindIntoArchive(target);
+        return;
+      }
       videoPlayer.currentTime =
           Math.max(range.start, videoPlayer.currentTime + speed * 0.1);
       _showTrickBadge('◀◀ ' + Math.abs(speed) + '×');

@@ -24,7 +24,9 @@ and it shows a program guide (EPG).
 - **Catch-up.** On channels with an archive, the guide shows the programs of
   the last 72 h. Select a program from the archive to see it from the start.
 - **Live rewind.** On HLS channels, the app keeps a buffer of the stream. You
-  can pause live TV, rewind it, and then go to live TV again.
+  can pause live TV, rewind it, and then go to live TV again. On channels with
+  an archive, the rewind continues in the archive when it gets to the start of
+  the buffer.
 - **Player.** The banner of the player shows the channel number, the current
   program, the next program, and the video format (codec, resolution, and
   frame rate). In the player, you can also select the subtitle track and the

@@ -419,6 +419,9 @@ document.addEventListener('keyup', (e) => {
   if (_isHolding()) {
     _stopHold();
   } else if (dir && held < HOLD_THRESHOLD_MS) {
+    // On an archive channel, a step that goes before the start of the buffer
+    // continues in the archive
+    if (dir === 'left' && liveLeftIntoArchive(3)) return;
     _seekBy(
         (dir === 'left' ? -1 : 1) *
         (vodPlay.active || catchup ?

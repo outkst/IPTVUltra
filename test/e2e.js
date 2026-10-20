@@ -7,6 +7,68 @@ const check = (name, ok, info = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${info ? '  — ' + info : ''}`);
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+// Rewind into the archive: Left in the live player of an archive channel
+// continues in the archive. The suite has the buffer Off (the <video> element
+// without hls.js), so the archive starts 10 s behind live. The mock clip is
+// only some seconds long, so a seek into the archive ends it immediately, and
+// the app goes back to live. Thus, the test records the call of startCatchup
+// and examines that record. The live player must show channel 50 (3-day
+// archive).
+async function rewindIntoArchiveTests(page) {
+  const leftEvent = type => page.evaluate(type => {
+    const ev = new KeyboardEvent(
+        type, {key: 'ArrowLeft', keyCode: 37, bubbles: true, cancelable: true});
+    Object.defineProperty(ev, 'keyCode', {get: () => 37});
+    document.dispatchEvent(ev);
+  }, type);
+  const leftKey = async holdMs => {
+    await leftEvent('keydown');
+    await sleep(holdMs);
+    await leftEvent('keyup');
+  };
+  await page.evaluate(() => {
+    window.__archive = null;
+    const orig = startCatchup;
+    startCatchup = function(chIdx, prog, startAt) {
+      window.__archive = {
+        at: Date.now(),
+        start: prog.start,
+        stop: prog.stop,
+        startAt,
+        url: catchupUrl(channels[chIdx], prog),
+        player: livePlayer.active
+      };
+      return orig.apply(this, arguments);
+    };
+  });
+  const archiveCall = () => page.evaluate(() => {
+    const a = window.__archive;
+    window.__archive = null;
+    return a;
+  });
+  const isArchive = a => !!a && a.player && Math.abs(a.stop - a.at) < 2000 &&
+      a.at - (a.start + a.startAt * 1000) >= 9000 &&
+      a.at - (a.start + a.startAt * 1000) < 12000 &&
+      /\/timeshift\/user\/pass\/\d+\/[\d:-]+\/50\.ts$/.test(a.url);
+  await sleep(300);
+  await leftKey(50);
+  await sleep(100);
+  const ra1 = await archiveCall();
+  check(
+      'a short press of Left in the live player of an archive channel continues in the archive, 10 s behind live',
+      isArchive(ra1), JSON.stringify(ra1));
+  await page.evaluate(() => catchupBackToLive());
+  await sleep(300);
+  await leftKey(await page.evaluate(() => HOLD_THRESHOLD_MS + 200));
+  await sleep(100);
+  const ra2 = await archiveCall();
+  check(
+      'a hold of Left in the live player of an archive channel also continues in the archive',
+      isArchive(ra2), JSON.stringify(ra2));
+  await page.evaluate(() => catchupBackToLive());
+  await sleep(300);
+}
 const stats = async () => (await fetch(BASE + '/__stats')).json();
 
 (async () => {
@@ -289,6 +351,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                   videoPlayer.getAttribute('src') || '') &&
               currentChannelIndex ===
                   getChannelIndex(currentFilteredChannels[49])));
+  await rewindIntoArchiveTests(page);
   await back();
   await back();
   await sleep(200);  // banner, then leave the player

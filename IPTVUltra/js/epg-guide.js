@@ -273,8 +273,9 @@ async function fetchXtreamEpgFull(tvgId) {
   }
 }
 // Play a past programme from the provider archive in the live slot (native
-// pipeline)
-function startCatchup(chIdx, prog) {
+// pipeline). `startAt` is the position in the program (in s) where the
+// stream starts.
+function startCatchup(chIdx, prog, startAt) {
   const ch = channels[chIdx];
   if (!ch || !channelHasCatchup(ch)) return;
   if (vodPlay.active) stopVodPlayback(false);
@@ -291,7 +292,8 @@ function startCatchup(chIdx, prog) {
     chIdx,
     prog,
     url: catchupUrl(ch, prog),
-    dur: (prog.stop - prog.start) / 1000
+    dur: (prog.stop - prog.start) / 1000,
+    seekTo: startAt > 0 ? startAt : 0
   };
   videoPlayer.pause();
   umsNoteCurrentId();
@@ -300,6 +302,16 @@ function startCatchup(chIdx, prog) {
     liveUms = null;
   } else
     liveUmsRefresh();
+  if (catchup.seekTo) {
+    const c = catchup;
+    videoPlayer.addEventListener('loadedmetadata', () => {
+      if (catchup !== c) return;
+      try {
+        videoPlayer.currentTime = c.seekTo;
+      } catch (_) { /* not seekable: plays from the programme start */
+      }
+    }, {once: true});
+  }
   videoPlayer.play().catch(() => {});
   startStallWatchdog();
   channelInfoTag.innerText = `⏪ ${ch.name} · ${prog.title}`;
@@ -322,6 +334,63 @@ function catchupBackToLive() {
   const idx = catchup.chIdx;
   catchup = null;
   if (channels[idx]) selectChannel(idx);
+}
+
+// ── Rewind into the archive ─────────────────────────────────────
+// On an archive channel, a rewind in the live player can go before the start
+// of the hls.js buffer. Then the rewind continues in the provider archive, at
+// the same time of day. If the live stream has no buffer (the `<video>`
+// element without hls.js), Left starts the archive
+// `ARCHIVE_NATIVE_BEHIND_MS` before the live point. In the archive, the rewind
+// stops at the start of the program.
+const ARCHIVE_NATIVE_BEHIND_MS = 10000;
+// The clock time of a position in the live stream, in `Date.now()` units
+function liveWallTimeAt(t) {
+  if (!liveEngineActive()) return Date.now();
+  const r = liveBufferRange();
+  return Date.now() - Math.max(0, r.live - t) * 1000;
+}
+// The program to play for a time on a channel. This is the EPG program that
+// contains the time, cut at `Date.now()` if it continues. If the EPG
+// has no program for the time, the result starts at the time (rounded down
+// to 60 s) and stops at `Date.now()`. The result is `null` if the EPG
+// shows that the archive does not have the program.
+//
+// The provider gives `has_archive` 0 to the program that is on at this time.
+// But the archive has the first part of that program. Thus, the value is
+// correct only for a program that stopped.
+function archiveProgAt(ch, ms, now) {
+  const progs = epgProgsOf(ch.tvgId) || [];
+  const p = progs.find(x => !x.fromName && x.start <= ms && ms < x.stop);
+  if (p) {
+    if (p.hasArchive === false && p.stop <= now) return null;
+    return {start: p.start, stop: Math.min(p.stop, now), title: p.title};
+  }
+  return {start: Math.floor(ms / 60000) * 60000, stop: now, title: 'Archive'};
+}
+// Start the archive of the channel that plays, at `targetMs`. The result is
+// `false` if the channel has no archive for that time. Then the function does
+// no action.
+function rewindIntoArchive(targetMs) {
+  const idx = currentChannelIndex;
+  const ch = idx >= 0 ? channels[idx] : null;
+  if (!ch || catchup || vodPlay.active || !channelHasCatchup(ch)) return false;
+  const now = Date.now();
+  if (targetMs >= now || targetMs < now - ch.archive * 86400000) return false;
+  const prog = archiveProgAt(ch, targetMs, now);
+  if (!prog) return false;
+  startCatchup(idx, prog, (targetMs - prog.start) / 1000);
+  return true;
+}
+// Left in the live player. The result is `true` if a step of `stepSec` goes
+// before the start of the buffer, and the archive starts.
+function liveLeftIntoArchive(stepSec) {
+  if (catchup || vodPlay.active || !livePlayer.active) return false;
+  if (!liveEngineActive())
+    return rewindIntoArchive(Date.now() - ARCHIVE_NATIVE_BEHIND_MS);
+  const t = videoPlayer.currentTime || 0;
+  if (t - stepSec >= liveBufferRange().start) return false;
+  return rewindIntoArchive(liveWallTimeAt(t) - stepSec * 1000);
 }
 
 function enterEPGMode() {
