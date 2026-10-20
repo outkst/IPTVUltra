@@ -195,7 +195,7 @@ For more information, see [`test/README.md`](test/README.md).
 ```
 IPTVUltra/
 ├── index.html         # App shell
-├── script.js          # All application logic
+├── js/                # Application logic, in load order (see index.html)
 ├── style.css          # Dark TV theme
 ├── appinfo.json       # webOS app metadata
 ├── hls.min.js         # hls.js, for the live rewind buffer
