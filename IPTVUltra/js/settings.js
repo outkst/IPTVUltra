@@ -109,7 +109,7 @@ function settingsRows() {
       id: 'clock',
       type: 'choice',
       label: 'Clock',
-      sub: 'Guide, Now/Next and programme times',
+      sub: 'Guide, Now/Next and program times',
       options: [{v: '12', label: '12-hour'}, {v: '24', label: '24-hour'}],
       get: () => settings.clock,
       set: v => {
@@ -143,7 +143,7 @@ function settingsRows() {
       label: 'Daylight saving',
       disabled: !t || !epgTzSettingsFor(t.key).tz,
       sub: t && epgTzSettingsFor(t.key).tz ?
-          'Automatic follows that zone\'s rules on each programme\'s date; pin standard or daylight time if the provider never switches' :
+          'Automatic follows that zone\'s rules on each program\'s date; pin standard or daylight time if the provider never switches' :
           'Choose an EPG timezone first',
       options: EPG_DST_OPTIONS,
       get: () => epgTzSettingsFor(t && t.key).dst,
@@ -341,7 +341,7 @@ function settingsRows() {
     {
       id: 'subColor',
       type: 'choice',
-      label: 'Subtitle colour',
+      label: 'Subtitle color',
       sub: 'Movies and Series',
       options: SUB_COLOR_OPTIONS,
       get: () => settings.subColor,

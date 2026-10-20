@@ -261,7 +261,7 @@ function updateLiveOsd() {
     document.getElementById('vodOsdTitle').textContent =
         `${chDisplayNum(sc, getChannelIndex(sc))}  ${sc.name}`;
     document.getElementById('vodOsdSub').textContent = [
-      sc.group || '', now ? now.title : (sc.tvgId ? 'Loading programme …' : '')
+      sc.group || '', now ? now.title : (sc.tvgId ? 'Loading program …' : '')
     ].filter(Boolean).join(' · ');
     let pct = 0;
     if (now && now.stop > now.start)

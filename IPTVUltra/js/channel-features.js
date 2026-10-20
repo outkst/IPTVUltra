@@ -1028,7 +1028,7 @@ async function loadEPG(url) {
         // Yield inside the loop so GC can run between elements
         if (programmeCount > 0 && programmeCount % 128 === 0) {
           const _progMsg = `${(bytesRead / 1048576).toFixed(1)} MB — ${
-              programmeCount.toLocaleString()} programmes …`;
+              programmeCount.toLocaleString()} programs …`;
           statusArea.innerText = `📅 EPG: ${_progMsg}`;
           showEPGToast(_progMsg, 'loading');
           await new Promise(r => setTimeout(r, 0));
@@ -1071,7 +1071,7 @@ async function loadEPG(url) {
 
     const mb = (bytesRead / 1048576).toFixed(1);
     const readyMsg = `${epgData.size.toLocaleString()} channels, ${
-        programmeCount.toLocaleString()} programmes (${mb} MB)${
+        programmeCount.toLocaleString()} programs (${mb} MB)${
         byName ? `, ${byName.toLocaleString()} matched by name` : ''}`;
     statusArea.innerText = `📅 EPG ready — ${readyMsg}`;
     showEPGToast(readyMsg, 'success');
