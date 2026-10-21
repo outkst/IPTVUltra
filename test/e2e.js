@@ -3209,6 +3209,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         tech: liveEngine.tech,
         lvl: liveEngine.hls && liveEngine.hls.levels[0] &&
             liveEngine.hls.levels[0].frameRate,
+        live:
+            !!(liveEngine.hls && liveEngine.hls.levels[0] &&
+               liveEngine.hls.levels[0].details &&
+               liveEngine.hls.levels[0].details.live),
         snap: [fpsSnap(29.95), fpsSnap(23.98), fpsSnap(49.6), fpsSnap(37.2)],
         fmt: [fmtFps(29.97), fmtFps(23.976), fmtFps(50)]
       }));
@@ -3219,6 +3223,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           fps.rec.fps === 50 && fps.snap.join() === '29.97,23.976,50,37' &&
           fps.fmt.join() === '29.97 fps,23.976 fps,50 fps',
       JSON.stringify(fps));
+  // The fixture ends with #EXT-X-ENDLIST, like the first playlist of a cold
+  // provider relay; the live playlist loader removes it
+  check(
+      'hls.js live playlist with #EXT-X-ENDLIST stays live (cold relay)',
+      fps.live, JSON.stringify(fps));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
