@@ -48,6 +48,31 @@ function hlsAvailable() {
 function liveEngineActive() {
   return !!liveEngine.hls;
 }
+// The provider starts a relay when the first viewer connects. The first
+// playlist of a cold relay has 1 segment and #EXT-X-ENDLIST (seen on the
+// "CA| SPORTSNET PPV" channels, 2026-10-20). hls.js then plays the stream as a
+// finished VOD: approximately 11 s, then the state ENDED. Later playlists of
+// the same stream are usual live playlists. A live channel does not end, thus
+// this playlist loader removes the tag.
+let _livePlaylistLoader = null;
+function livePlaylistLoader() {
+  if (_livePlaylistLoader) return _livePlaylistLoader;
+  _livePlaylistLoader = class extends Hls.DefaultConfig.loader {
+    load(context, config, callbacks) {
+      const onSuccess = callbacks.onSuccess;
+      super.load(context, config, Object.assign({}, callbacks, {
+        onSuccess(response, stats, ctx, networkDetails) {
+          if (typeof response.data === 'string') {
+            response.data =
+                response.data.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
+          }
+          onSuccess(response, stats, ctx, networkDetails);
+        }
+      }));
+    }
+  };
+  return _livePlaylistLoader;
+}
 function liveEngineDestroy() {
   if (liveEngine.hls) {
     try {
@@ -84,6 +109,7 @@ function loadLiveSource(url) {
     capLevelToPlayerSize: false,
     manifestLoadingMaxRetry: 2,
     fragLoadingMaxRetry: 4,
+    pLoader: livePlaylistLoader(),  // a live playlist never ends
   });
   liveEngine.hls = hls;
   liveEngine.url = url;
