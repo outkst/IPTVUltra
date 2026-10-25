@@ -290,7 +290,7 @@ videoPlayer.addEventListener('error', function() {
   if (_errRetryTimer) clearTimeout(_errRetryTimer);
   _errRetryTimer = setTimeout(function() {
     _errRetryTimer = null;
-    if (currentChannelIndex === idx) reloadStream(true);
+    if (currentChannelIndex === idx) reloadStream(true, 'error retry');
   }, 2500);
 });
 videoArea.addEventListener('mousemove', showTopControls);
