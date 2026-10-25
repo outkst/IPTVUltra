@@ -73,6 +73,44 @@ function livePlaylistLoader() {
   };
   return _livePlaylistLoader;
 }
+// A cold relay can also restart. Its next playlist then starts again at
+// MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
+// SPORTSNET PPV 13", 2026-10-25). hls.js cannot merge it ("media sequence
+// mismatch") and stops with a fatal level parsing error. A new hls.js on the
+// same URL reads the new playlist. HLS_RELAY_RESTARTS limits the restarts of 1
+// URL in HLS_RELAY_WINDOW_MS. Then the usual hand-over to the native player
+// occurs.
+const HLS_RELAY_RESTARTS = 3;
+const HLS_RELAY_WINDOW_MS = 120 * 1000;
+const _hlsRelayRestart = {
+  url: '',
+  n: 0,
+  at: 0
+};
+/**
+ * Starts hls.js again on the playing live channel after its relay restarted.
+ * @param {string} url The URL of the channel.
+ * @return {boolean} True when hls.js started again.
+ */
+function hlsRelayRestart(url) {
+  if (!(vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
+        channels[currentChannelIndex].url === url)) {
+    return false;
+  }
+  const r = _hlsRelayRestart, now = Date.now();
+  if (r.url !== url || now - r.at > HLS_RELAY_WINDOW_MS) {
+    r.url = url;
+    r.n = 0;
+    r.at = now;
+  }
+  if (r.n >= HLS_RELAY_RESTARTS) return false;
+  r.n++;
+  diagLog(
+      `hls.js restarted after a relay restart (${r.n}/${HLS_RELAY_RESTARTS})`);
+  loadLiveSource(url);
+  videoPlayer.play().catch(() => {});
+  return true;
+}
 function liveEngineDestroy() {
   if (liveEngine.hls) {
     try {
@@ -155,11 +193,15 @@ function onHlsError(url, data) {
   const reply = isParse ?
       (body.replace(/\s+/g, ' ').trim().slice(0, 160) || '(empty)') :
       '';
+  const why = !isParse && data.reason ?
+      ` (${String(data.reason).replace(/\s+/g, ' ').slice(0, 120)})` :
+      '';
   diagLog(
       `hls.js fatal ${data.type}/${data.details}${
           status ? ` HTTP ${status}` : ''}${reply ? ` reply: ${reply}` : ''}` +
-      `${notPlaylist ? ' → not a playlist, treated as a network failure' : ''}${
-          document.hidden ? ' (app hidden)' : ''}`);
+      `${why}${
+          notPlaylist ? ' → not a playlist, treated as a network failure' :
+                        ''}${document.hidden ? ' (app hidden)' : ''}`);
   noteStreamFail(
       'hls.js',
       `${data.type}/${data.details}${status ? ` · HTTP ${status}` : ''}`,
@@ -171,6 +213,10 @@ function onHlsError(url, data) {
   if (document.hidden) {
     liveEngine.resumeUrl = url;
     liveEngineDestroy();
+    return;
+  }
+  if (data.details === Hls.ErrorDetails.LEVEL_PARSING_ERROR &&
+      hlsRelayRestart(url)) {
     return;
   }
   // A media error gets one in-place recovery (hls.js re-creates its
