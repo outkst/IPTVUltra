@@ -22,7 +22,8 @@ const liveEngine = {
   resumeUrl: '',
   fps: 0,
   fpsSamples: [],
-  relayWaits: 0
+  relayWaits: 0,
+  placeholder: false
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -102,6 +103,10 @@ function livePlaylistLoader() {
             response.data = text.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
             if (/^\s*#EXTM3U/.test(text)) {
               _hlsLastPlaylist.set(context.url, response.data);
+              // Not for an audio or a subtitle playlist
+              if (context.type === 'manifest' || context.type === 'level') {
+                notePlaceholderPlaylist(text);
+              }
             }
           }
           this._relayWaitFrom = 0;
@@ -121,6 +126,30 @@ function livePlaylistLoader() {
     }
   };
   return _livePlaylistLoader;
+}
+// For an event that is finished or did not start, the provider sends a 15 s
+// black placeholder (".../video/black.ts") with #EXT-X-ENDLIST (seen on the
+// "ENDED" channels of "CA| SPORTSNET PPV", 2026-10-25). The app then tells why
+// the picture is black.
+const HLS_PLACEHOLDER_SEGMENT = /(^|\/)black\.ts(\?|#|$)/;
+/**
+ * Tells the user when a live playlist has only placeholder segments.
+ * @param {string} text The playlist text.
+ */
+function notePlaceholderPlaylist(text) {
+  const segs = text.split(/\r?\n/).filter(l => l && l[0] !== '#');
+  const placeholder =
+      segs.length > 0 && segs.every(l => HLS_PLACEHOLDER_SEGMENT.test(l));
+  if (placeholder === liveEngine.placeholder) return;
+  liveEngine.placeholder = placeholder;
+  if (!placeholder) return;
+  const t = 'The event of this channel is not on the air';
+  statusArea.innerText = `⚠️ ${t}`;
+  showEPGToast(
+      `${t}. The provider sends a black picture until the event starts.`,
+      'error', 'No broadcast');
+  hideEPGToast(8000);
+  diagLog('The provider sends a placeholder (black.ts) for this channel');
 }
 // A cold relay can also restart. Its next playlist then starts again at
 // MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
@@ -174,6 +203,7 @@ function liveEngineDestroy() {
 // Point the live <video> at a channel URL through whichever engine fits.
 // Returns true when hls.js took it.
 function loadLiveSource(url) {
+  _lastStreamOpenAt = Date.now();
   liveEngineDestroy();
   if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
     videoPlayer.src = url;
@@ -215,6 +245,7 @@ function loadLiveSource(url) {
   liveEngine.fps = 0;
   liveEngine.fpsSamples = [];
   liveEngine.relayWaits = 0;
+  liveEngine.placeholder = false;
   _hlsLastPlaylist.clear();  // a new start must not get an old playlist
   liveEngine.subManual = false;
   liveEngine.audioManual = false;
@@ -441,10 +472,15 @@ function liveGoLive() {
 // A second device on a one-connection account makes every channel fail with a
 // plain network error. On a stream failure the auth call is repeated (cheap,
 // never a stream) and active_cons / max_connections tell.
-let _consInfo = null;  // { active, max, status, exp, at }
+// The provider counts the last stream of this app for approximately 15 s after
+// a channel change. Thus, a full account is reported only when a second check
+// _consRecheckMs later is also full and the channel still does not play
+// (`confirmed`). Before, the app told you that a different device streamed.
+let _consInfo = null;  // { active, max, status, exp, at, confirmed }
 let _consCheckAt = 0;
-async function xtreamCheckConnections() {
-  if (!_xt || Date.now() - _consCheckAt < 15000) return _consInfo;
+let _consRecheckMs = 20 * 1000;  // the e2e suite sets a shorter time
+async function xtreamCheckConnections(force = false) {
+  if (!_xt || (!force && Date.now() - _consCheckAt < 15000)) return _consInfo;
   _consCheckAt = Date.now();
   try {
     const r = await fetch(
@@ -459,7 +495,8 @@ async function xtreamCheckConnections() {
       max: isNaN(max) ? -1 : max,
       status: String(ui.status || ''),
       exp: parseInt(ui.exp_date) > 0 ? parseInt(ui.exp_date) * 1000 : 0,
-      at: Date.now()
+      at: Date.now(),
+      confirmed: false
     };
   } catch (_) { /* provider unreachable: nothing to say */
   }
@@ -471,24 +508,82 @@ function accountProblemText(ci) {
   if (!ci || Date.now() - ci.at > 60000) return '';
   if (/expired|disabled|banned/i.test(ci.status))
     return `Account ${ci.status.toLowerCase()}`;
-  if (ci.max > 0 && ci.active >= ci.max)
+  if (ci.confirmed && consFull(ci))
     return ci.max === 1 ?
         'Another device is streaming with this account (1 connection allowed)' :
         `All ${ci.max} connections of this account are in use`;
   return '';
 }
+/**
+ * Tells if all the connections of the account are in use.
+ * @param {?Object} ci The result of xtreamCheckConnections.
+ * @return {boolean} True when the account is full.
+ */
+function consFull(ci) {
+  return !!ci && ci.max > 0 && ci.active >= ci.max;
+}
+let _consRecheckTimer = null;  // 1 recheck for the app, not for each channel
+let _lastStreamOpenAt = 0;     // set by loadLiveSource
 function noteStreamFailureForAccount(idx) {
   if (!_xt || currentPlaylistType !== 'xtream') return;
   xtreamCheckConnections().then(ci => {
-    const t = accountProblemText(ci);
-    if (!t || currentChannelIndex !== idx) return;
-    statusArea.innerText = `⚠️ ${t}`;
-    showEPGToast(
-        `${t}. Stop playback on the other device, then press Reload.`, 'error',
-        'Connection limit');
-    hideEPGToast(8000);
-    diagLog(`Account: ${t} (active ${ci.active} / max ${ci.max})`);
+    if (!ci || currentChannelIndex !== idx) return;
+    if (accountProblemText(ci)) {
+      reportAccountProblem(ci);
+    } else if (consFull(ci)) {
+      scheduleAccountRecheck();
+    }
   });
+}
+/**
+ * Tells if a recheck of a full account is pending.
+ * @return {boolean} True while the app waits for the recheck.
+ */
+function consRecheckPending() {
+  return !!_consRecheckTimer;
+}
+/**
+ * Starts the recheck _consRecheckMs after the last stream that the app opened.
+ * The automatic reloads and the alternate sources open new streams, and the
+ * provider counts each of them for a short time.
+ */
+function scheduleAccountRecheck() {
+  if (_consRecheckTimer) return;
+  const wait = _lastStreamOpenAt + _consRecheckMs - Date.now();
+  _consRecheckTimer = setTimeout(recheckFullAccount, Math.max(wait, 0));
+}
+/**
+ * Checks the account again after a first check found it full. Only a new
+ * answer counts: on a failure, xtreamCheckConnections gives the old result.
+ */
+function recheckFullAccount() {
+  _consRecheckTimer = null;
+  if (Date.now() - _lastStreamOpenAt < _consRecheckMs) {
+    scheduleAccountRecheck();  // the app opened a stream in the wait
+    return;
+  }
+  const playing = !videoPlayer.paused && videoPlayer.readyState >= 3;
+  if (currentChannelIndex < 0 || vodMode !== 'live' || playing) return;
+  const old = _consInfo;  // a new answer is always a new object
+  xtreamCheckConnections(true).then(ci => {
+    if (!ci || ci === old || !consFull(ci)) return;
+    ci.confirmed = true;
+    reportAccountProblem(ci);
+  });
+}
+/**
+ * Shows the account problem in the status line and a toast, and logs it.
+ * @param {!Object} ci The result of xtreamCheckConnections.
+ */
+function reportAccountProblem(ci) {
+  const t = accountProblemText(ci);
+  if (!t) return;
+  statusArea.innerText = `⚠️ ${t}`;
+  showEPGToast(
+      `${t}. Stop playback on the other device, then press Reload.`, 'error',
+      'Connection limit');
+  hideEPGToast(8000);
+  diagLog(`Account: ${t} (active ${ci.active} / max ${ci.max})`);
 }
 
 // ----- AV sync through Homebrew root exec (rooted TVs only) -----
