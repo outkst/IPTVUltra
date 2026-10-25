@@ -12,9 +12,11 @@ function startStallWatchdog() {
   _stallBufAt = 0;
   stallWatchdogTimer = setInterval(function() {
     // hls.js with no media yet waits for a relay (see livePlaylistLoader). Its
-    // own timeouts stop a dead server.
+    // own timeouts stop a dead server. A placeholder (black.ts) stops at its
+    // end, and a reload cannot make the event start.
     if (videoPlayer.paused || currentChannelIndex < 0 ||
-        (liveEngineActive() && videoPlayer.readyState === 0)) {
+        (liveEngineActive() &&
+         (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;
       return;
     }
@@ -93,7 +95,10 @@ function showStreamError(msg) {
         'error', 'Connection limit');
   else
     showEPGToast(
-        `${name ? name + ': ' : ''}${msg}${tried}. Press Reload to retry.`,
+        `${name ? name + ': ' : ''}${msg}${tried}. ${
+            consRecheckPending() ?
+                'Checking whether another device is using this account…' :
+                'Press Reload to retry.'}`,
         'error', 'Stream Error');
   hideEPGToast(7000);
   diagLog(`Stream error: ${name}: ${msg}${tried}${acct ? ' · ' + acct : ''}`);
@@ -469,13 +474,16 @@ function reloadStream(auto) {
     liveUmsRefresh();
   if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
   startStallWatchdog();
-  statusArea.innerText = isAuto ?
+  const reloading = isAuto ?
       `🔄 Reloading (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …` :
       '🔄 Reloading ...';
+  statusArea.innerText = reloading;
   setTimeout(() => {
-    // The user can go to the start page in the 2 s
+    // The user can go to the start page in the 2 s, and a different message
+    // (account, placeholder) can replace the text
     const ch = channels[currentChannelIndex];
-    if (ch) statusArea.innerText = `▶️ ${ch.name}`;
+    if (ch && statusArea.innerText === reloading)
+      statusArea.innerText = `▶️ ${ch.name}`;
   }, 2000);
   showTopControls();
 }

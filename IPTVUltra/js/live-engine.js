@@ -103,7 +103,10 @@ function livePlaylistLoader() {
             response.data = text.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
             if (/^\s*#EXTM3U/.test(text)) {
               _hlsLastPlaylist.set(context.url, response.data);
-              notePlaceholderPlaylist(text);
+              // Not for an audio or a subtitle playlist
+              if (context.type === 'manifest' || context.type === 'level') {
+                notePlaceholderPlaylist(text);
+              }
             }
           }
           this._relayWaitFrom = 0;
@@ -128,7 +131,7 @@ function livePlaylistLoader() {
 // black placeholder (".../video/black.ts") with #EXT-X-ENDLIST (seen on the
 // "ENDED" channels of "CA| SPORTSNET PPV", 2026-10-25). The app then tells why
 // the picture is black.
-const HLS_PLACEHOLDER_SEGMENT = /\/black\.ts(\?|#|$)/;
+const HLS_PLACEHOLDER_SEGMENT = /(^|\/)black\.ts(\?|#|$)/;
 /**
  * Tells the user when a live playlist has only placeholder segments.
  * @param {string} text The playlist text.
@@ -200,6 +203,7 @@ function liveEngineDestroy() {
 // Point the live <video> at a channel URL through whichever engine fits.
 // Returns true when hls.js took it.
 function loadLiveSource(url) {
+  _lastStreamOpenAt = Date.now();
   liveEngineDestroy();
   if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
     videoPlayer.src = url;
@@ -518,6 +522,8 @@ function accountProblemText(ci) {
 function consFull(ci) {
   return !!ci && ci.max > 0 && ci.active >= ci.max;
 }
+let _consRecheckTimer = null;  // 1 recheck for the app, not for each channel
+let _lastStreamOpenAt = 0;     // set by loadLiveSource
 function noteStreamFailureForAccount(idx) {
   if (!_xt || currentPlaylistType !== 'xtream') return;
   xtreamCheckConnections().then(ci => {
@@ -525,19 +531,42 @@ function noteStreamFailureForAccount(idx) {
     if (accountProblemText(ci)) {
       reportAccountProblem(ci);
     } else if (consFull(ci)) {
-      setTimeout(() => recheckFullAccount(idx), _consRecheckMs);
+      scheduleAccountRecheck();
     }
   });
 }
 /**
- * Checks the account again after a first check found it full.
- * @param {number} idx The channel that failed.
+ * Tells if a recheck of a full account is pending.
+ * @return {boolean} True while the app waits for the recheck.
  */
-function recheckFullAccount(idx) {
+function consRecheckPending() {
+  return !!_consRecheckTimer;
+}
+/**
+ * Starts the recheck _consRecheckMs after the last stream that the app opened.
+ * The automatic reloads and the alternate sources open new streams, and the
+ * provider counts each of them for a short time.
+ */
+function scheduleAccountRecheck() {
+  if (_consRecheckTimer) return;
+  const wait = _lastStreamOpenAt + _consRecheckMs - Date.now();
+  _consRecheckTimer = setTimeout(recheckFullAccount, Math.max(wait, 0));
+}
+/**
+ * Checks the account again after a first check found it full. Only a new
+ * answer counts: on a failure, xtreamCheckConnections gives the old result.
+ */
+function recheckFullAccount() {
+  _consRecheckTimer = null;
+  if (Date.now() - _lastStreamOpenAt < _consRecheckMs) {
+    scheduleAccountRecheck();  // the app opened a stream in the wait
+    return;
+  }
   const playing = !videoPlayer.paused && videoPlayer.readyState >= 3;
-  if (currentChannelIndex !== idx || playing) return;
+  if (currentChannelIndex < 0 || vodMode !== 'live' || playing) return;
+  const old = _consInfo;  // a new answer is always a new object
   xtreamCheckConnections(true).then(ci => {
-    if (!consFull(ci) || currentChannelIndex !== idx) return;
+    if (!ci || ci === old || !consFull(ci)) return;
     ci.confirmed = true;
     reportAccountProblem(ci);
   });

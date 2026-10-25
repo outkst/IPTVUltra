@@ -118,8 +118,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const typeText = text => page.evaluate(text => {
     for (const ch of text) {
       const el = document.activeElement || document.body;
-      const kc =
-          /[a-z]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : ch.charCodeAt(0);
+      // Letters, digits, and space have their key codes. Other characters get
+      // 0, because their character codes are the codes of keys such as the
+      // arrows (for example, '(' is 40, ArrowDown).
+      const kc = /[a-z0-9 ]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : 0;
       const ev = new KeyboardEvent(
           'keydown', {key: ch, bubbles: true, cancelable: true});
       Object.defineProperty(ev, 'keyCode', {get: () => kc});
@@ -2860,6 +2862,29 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       own.title !== 'Connection limit' && own.cons === '0/1' &&
           own.text === '' && !own.log,
       JSON.stringify(own));
+  // If the recheck gets no answer, the old full result is not confirmed
+  const stale = await page.evaluate(async () => {
+    const realFetch = window.fetch;
+    window.fetch = () => Promise.reject(new Error('offline'));
+    _consInfo = {active: 1, max: 1, status: 'Active', exp: 0, at: Date.now()};
+    _lastStreamOpenAt = 0;
+    document.getElementById('epgToastTitle').textContent = '';
+    recheckFullAccount();
+    await new Promise(r => setTimeout(r, 300));
+    window.fetch = realFetch;
+    const r = {
+      confirmed: _consInfo.confirmed,
+      text: accountProblemText(_consInfo),
+      title: document.getElementById('epgToastTitle').textContent
+    };
+    _consInfo = null;
+    return r;
+  });
+  check(
+      'a recheck with no answer does not confirm the old full result',
+      !stale.confirmed && stale.text === '' &&
+          stale.title !== 'Connection limit',
+      JSON.stringify(stale));
   // A dead stream on a one-connection account that is busy elsewhere is
   // explained as such
   await fetch(BASE + '/__cons?active=1&max=1');
@@ -3446,6 +3471,26 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       black.title === 'No broadcast' && black.placeholder &&
           /not on the air/.test(black.status) && black.log,
       JSON.stringify(black));
+  // The watchdog does not reload a placeholder: a reload cannot start the
+  // event
+  const blackHls = await page.evaluate(() => {
+    window.__blackHls = liveEngine.hls;
+    return _reloadAttempts;
+  });
+  await sleep(14000);
+  const blackAfter = await page.evaluate(
+      () => ({
+        same: liveEngine.hls === window.__blackHls,
+        reloads: _reloadAttempts,
+        pattern: [
+          'black.ts', '/a/video/black.ts?x=1', 'notblack.ts', '/a/seg1.ts'
+        ].map(u => HLS_PLACEHOLDER_SEGMENT.test(u))
+      }));
+  check(
+      'the watchdog does not reload a black.ts placeholder; the pattern accepts a relative URI',
+      blackAfter.same && blackAfter.reloads === blackHls &&
+          blackAfter.pattern.join() === 'true,true,false,false',
+      JSON.stringify(blackAfter));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
