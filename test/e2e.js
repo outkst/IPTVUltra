@@ -996,28 +996,50 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
 
   // Minute tick must not treat every minute as an hour rollover on a catch-up
   // (72 h) window (regression: guide drifted into the past)
+  // The 2 tests use a fixed time in the hour of the skeleton. With the real
+  // time, they failed when the hour changed after the skeleton was built.
   const tick = await page.evaluate(() => {
-    const x0 = _epgX, s0 = _epgSkeletonWinStart;
-    epgMinuteTick();
-    epgMinuteTick();
-    return {x0, x1: _epgX, s0, s1: _epgSkeletonWinStart, past: epgPastHours()};
+    const realNow = Date.now;
+    window.__pinnedNow =
+        _epgSkeletonWinStart + epgPastHours() * 3600000 + 1800000;
+    Date.now = () => window.__pinnedNow;
+    try {
+      const x0 = _epgX, s0 = _epgSkeletonWinStart;
+      epgMinuteTick();
+      epgMinuteTick();
+      return {
+        x0,
+        x1: _epgX,
+        s0,
+        s1: _epgSkeletonWinStart,
+        past: epgPastHours()
+      };
+    } finally {
+      Date.now = realNow;
+    }
   });
   check(
       'minute tick keeps the pan and the skeleton when the hour has not rolled over (72 h catch-up window)',
       tick.past === 72 && tick.x1 === tick.x0 && tick.s1 === tick.s0,
       JSON.stringify(tick));
   const hourRoll = await page.evaluate(() => {
-    const x0 = _epgX;
-    _epgSkeletonWinStart -= 3600000;
-    epgMinuteTick();
-    return {
-      x0,
-      x1: _epgX,
-      px: EPG_PX_PER_MIN * 60,
-      rebuilt: _epgSkeletonWinStart ===
-          Math.floor((Date.now() - epgPastHours() * 3600000) / 3600000) *
-              3600000
-    };
+    const realNow = Date.now;
+    Date.now = () => window.__pinnedNow;
+    try {
+      const x0 = _epgX;
+      _epgSkeletonWinStart -= 3600000;
+      epgMinuteTick();
+      return {
+        x0,
+        x1: _epgX,
+        px: EPG_PX_PER_MIN * 60,
+        rebuilt: _epgSkeletonWinStart ===
+            Math.floor((Date.now() - epgPastHours() * 3600000) / 3600000) *
+                3600000
+      };
+    } finally {
+      Date.now = realNow;
+    }
   });
   check(
       'a real hour rollover shifts the pan by one hour and rebuilds the skeleton once',
