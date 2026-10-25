@@ -201,9 +201,14 @@ function liveEngineDestroy() {
   liveEngine.tech = '';
 }
 // Point the live <video> at a channel URL through whichever engine fits.
-// Returns true when hls.js took it.
-function loadLiveSource(url) {
+// Returns true when hls.js took it. A cause (for example 'watchdog') goes to
+// the diagnostics log, so that each unusual start tells why it occurred.
+function loadLiveSource(url, cause = '') {
   _lastStreamOpenAt = Date.now();
+  if (cause) {
+    const ch = channels[currentChannelIndex];
+    diagLog(`Live start (${cause}): ${ch ? ch.name.slice(0, 60) : url}`);
+  }
   liveEngineDestroy();
   if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
     videoPlayer.src = url;
@@ -744,7 +749,7 @@ document.addEventListener('visibilitychange', () => {
       !vodPlay.active && currentChannelIndex >= 0 &&
       channels[currentChannelIndex].url === liveEngine.resumeUrl) {
     liveEngine.resumeUrl = '';
-    reloadStream(false);
+    reloadStream(false, 'return from background');
   }
 });
 

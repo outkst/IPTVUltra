@@ -3626,6 +3626,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'manual Reload resets the auto-reload budget',
       await page.evaluate(
           () => _reloadAttempts === 0 && stallWatchdogTimer !== null));
+  check(
+      'each reload writes its cause in the diagnostics log',
+      await page.evaluate(
+          () =>
+              _diagLog.some(e => /^Live start \(Reload button\)/.test(e.msg)) &&
+              _diagLog.some(
+                  e => /^Live start \((error retry|watchdog)\)/.test(e.msg))));
   // A slow relay: the playhead waits at the end of the buffer, and the
   // buffer got data a short time ago. The watchdog waits and does not
   // reload.

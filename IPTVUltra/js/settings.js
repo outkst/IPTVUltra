@@ -266,7 +266,7 @@ function settingsRows() {
         saveSettings();
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
             (liveEngineActive() || v > 0))
-          reloadStream(false);
+          reloadStream(false, 'Settings');
       }
     },
     {
