@@ -3228,6 +3228,32 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'hls.js live playlist with #EXT-X-ENDLIST stays live (cold relay)',
       fps.live, JSON.stringify(fps));
+  // A relay that restarts sends MEDIA-SEQUENCE 0 again with a different
+  // segment. hls.js starts again on the same URL and keeps the channel.
+  await page.evaluate(() => {
+    channels[1].url =
+        'http://localhost:8765/hlsrestart/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsRelayRestart.n >= 1 && liveEngineActive() &&
+              liveEngine.hls.levels[0] && liveEngine.hls.levels[0].details,
+          {timeout: 30000})
+      .catch(() => {});
+  const relay = await page.evaluate(() => ({
+                                      n: _hlsRelayRestart.n,
+                                      hls: liveEngineActive(),
+                                      broken: _hlsBroken.size,
+                                      url: liveEngine.url,
+                                      log: _diagLog.slice(-3).map(d => d.msg)
+                                    }));
+  check(
+      'hls.js starts again on the same URL after a relay restart (media sequence mismatch)',
+      relay.n >= 1 && relay.hls && relay.broken === 0 &&
+          /\/hlsrestart\//.test(relay.url) &&
+          relay.log.some(m => /relay restart/.test(m)),
+      JSON.stringify(relay));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
