@@ -11,7 +11,10 @@ function startStallWatchdog() {
   _stallBufEnd = 0;
   _stallBufAt = 0;
   stallWatchdogTimer = setInterval(function() {
-    if (videoPlayer.paused || currentChannelIndex < 0) {
+    // hls.js with no media yet waits for a relay (see livePlaylistLoader). Its
+    // own timeouts stop a dead server.
+    if (videoPlayer.paused || currentChannelIndex < 0 ||
+        (liveEngineActive() && videoPlayer.readyState === 0)) {
       stallCount = 0;
       return;
     }

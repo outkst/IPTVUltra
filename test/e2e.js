@@ -3360,33 +3360,71 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               /\/hlsrestart\//.test(relay.url) &&
               relay.log.some(m => /relay restart/.test(m)),
           JSON.stringify(relay));
-      // A relay that is not ready answers "Cannot read ..._.m3u8". hls.js
-      // starts again after 3 s and keeps the channel.
+      // A relay that is not ready answers "Cannot read ..._.m3u8". The
+      // playlist loader requests the playlist again each 3 s, and hls.js gets
+      // no error.
       await page.evaluate(() => {
         _hlsRelayRestart.url = '';
+        _hlsRelayRestart.n = 0;
         channels[1].url =
             'http://localhost:8765/hlscold/index.m3u8?r=' + Date.now();
         selectChannel(1);
       });
       await page
           .waitForFunction(
-              () => _hlsRelayRestart.n >= 2 && liveEngineActive() &&
-                  liveEngine.hls.levels[0] && liveEngine.hls.levels[0].details,
+              () => liveEngineActive() && liveEngine.hls.levels[0] &&
+                  liveEngine.hls.levels[0].details,
               {timeout: 30000})
           .catch(() => {});
       const cold =
           await page.evaluate(() => ({
-                                n: _hlsRelayRestart.n,
+                                waits: liveEngine.relayWaits,
+                                restarts: _hlsRelayRestart.n,
                                 hls: liveEngineActive(),
                                 src: videoPlayer.getAttribute('src') || '',
                                 reloads: _reloadAttempts,
-                                log: _diagLog.slice(-4).map(d => d.msg)
+                                log: _diagLog.slice(-3).map(d => d.msg)
                               }));
       check(
-          'hls.js starts again after 3 s when the relay is not ready ("Cannot read ..._.m3u8"), without a reload or the native player',
-          cold.n === 2 && cold.hls && !/hlscold/.test(cold.src) &&
-              cold.reloads === 0 && cold.log.some(m => /not ready/.test(m)),
+          'hls.js waits while the relay is not ready ("Cannot read ..._.m3u8"): no error, no restart, no reload, no native player',
+          cold.waits === 1 && cold.restarts === 0 && cold.hls &&
+              !/hlscold/.test(cold.src) && cold.reloads === 0 &&
+              cold.log.some(m => /waits for the relay/.test(m)),
           JSON.stringify(cold));
+      // A relay that answers "Cannot read" between 2 good playlists: hls.js
+      // keeps the same instance and gets the next playlist.
+      await page.evaluate(() => {
+        window.__flapErrors = 0;
+        channels[1].url =
+            'http://localhost:8765/hlsflap/index.m3u8?r=' + Date.now();
+        selectChannel(1);
+        window.__flapHls = liveEngine.hls;
+        liveEngine.hls.on(Hls.Events.ERROR, (_, d) => {
+          if (d.fatal) window.__flapErrors++;
+        });
+      });
+      await page
+          .waitForFunction(
+              () => liveEngine.hls === window.__flapHls &&
+                  liveEngine.hls.levels[0] &&
+                  liveEngine.hls.levels[0].details &&
+                  liveEngine.hls.levels[0].details.fragments.length === 3,
+              {timeout: 30000})
+          .catch(() => {});
+      const flap = await page.evaluate(
+          () => ({
+            same: liveEngine.hls === window.__flapHls,
+            frags: liveEngine.hls && liveEngine.hls.levels[0] &&
+                liveEngine.hls.levels[0].details &&
+                liveEngine.hls.levels[0].details.fragments.length,
+            fatal: window.__flapErrors,
+            restarts: _hlsRelayRestart.n
+          }));
+      check(
+          'a "Cannot read" answer to a playlist reload keeps hls.js and its playlist (no error, no restart)',
+          flap.same && flap.frags === 3 && flap.fatal === 0 &&
+              flap.restarts === 0,
+          JSON.stringify(flap));
       await page.evaluate(u => {
         channels[1].url = u;
         settings.liveBuffer = 0;
