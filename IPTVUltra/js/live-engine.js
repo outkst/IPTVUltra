@@ -21,7 +21,8 @@ const liveEngine = {
   recovered: false,
   resumeUrl: '',
   fps: 0,
-  fpsSamples: []
+  fpsSamples: [],
+  relayWaits: 0
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -54,24 +55,110 @@ function liveEngineActive() {
 // finished VOD: approximately 11 s, then the state ENDED. Later playlists of
 // the same stream are usual live playlists. A live channel does not end, thus
 // this playlist loader removes the tag.
+//
+// When the relay cannot send the stream, the provider answers the playlist
+// request with the text "Cannot read /home/nxt/storage/streams/<id>_.m3u8"
+// (seen on channels 13980 to 13983, 2026-10-25). This occurs before the relay
+// is ready, and also between 2 good playlists. hls.js cannot parse the text,
+// and a new start plays the first segment again. Thus, the loader does not give
+// the text to hls.js:
+// - For the first playlist of a URL, the loader requests the playlist again
+//   each HLS_RELAY_WAIT_MS, for a maximum of HLS_RELAY_WAIT_MAX_MS.
+// - For a reload, the loader gives the last good playlist. hls.js sees an
+//   unchanged playlist and reloads it later.
+const HLS_RELAY_NOT_READY = /^\s*Cannot read \S*\.m3u8/;
+const HLS_RELAY_WAIT_MS = 3000;
+const HLS_RELAY_WAIT_MAX_MS = 60 * 1000;
+const _hlsLastPlaylist = new Map();  // playlist URL -> last good text
 let _livePlaylistLoader = null;
 function livePlaylistLoader() {
   if (_livePlaylistLoader) return _livePlaylistLoader;
   _livePlaylistLoader = class extends Hls.DefaultConfig.loader {
     load(context, config, callbacks) {
       const onSuccess = callbacks.onSuccess;
+      const from = this._relayWaitFrom || Date.now();
       super.load(context, config, Object.assign({}, callbacks, {
-        onSuccess(response, stats, ctx, networkDetails) {
-          if (typeof response.data === 'string') {
-            response.data =
-                response.data.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
+        onSuccess: (response, stats, ctx, networkDetails) => {
+          const text = response.data;
+          if (typeof text === 'string' && HLS_RELAY_NOT_READY.test(text)) {
+            const last = _hlsLastPlaylist.get(context.url);
+            if (last) {
+              response.data = last;
+            } else if (Date.now() - from < HLS_RELAY_WAIT_MAX_MS) {
+              if (!this._relayWaitFrom) {
+                liveEngine.relayWaits++;
+                diagLog('hls.js waits for the relay of the provider');
+              }
+              this._relayWaitFrom = from;
+              this._relayTimer = setTimeout(() => {
+                this._relayTimer = null;
+                // A loader accepts only 1 load: start with new statistics
+                this.stats = new this.stats.constructor();
+                this.load(context, config, callbacks);
+              }, HLS_RELAY_WAIT_MS);
+              return;
+            }
+          } else if (typeof text === 'string') {
+            response.data = text.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
+            if (/^\s*#EXTM3U/.test(text)) {
+              _hlsLastPlaylist.set(context.url, response.data);
+            }
           }
+          this._relayWaitFrom = 0;
           onSuccess(response, stats, ctx, networkDetails);
         }
       }));
     }
+    abort() {
+      clearTimeout(this._relayTimer);
+      this._relayTimer = null;
+      super.abort();
+    }
+    destroy() {
+      clearTimeout(this._relayTimer);
+      this._relayTimer = null;
+      super.destroy();
+    }
   };
   return _livePlaylistLoader;
+}
+// A cold relay can also restart. Its next playlist then starts again at
+// MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
+// SPORTSNET PPV 13", 2026-10-25). hls.js cannot merge it ("media sequence
+// mismatch") and stops with a fatal level parsing error. A new hls.js on the
+// same URL reads the new playlist. HLS_RELAY_RESTARTS limits the restarts of 1
+// URL in HLS_RELAY_WINDOW_MS. Then the usual hand-over to the native player
+// occurs.
+const HLS_RELAY_RESTARTS = 5;
+const HLS_RELAY_WINDOW_MS = 120 * 1000;
+const _hlsRelayRestart = {
+  url: '',
+  n: 0,
+  at: 0
+};
+/**
+ * Starts hls.js again on the playing live channel after its relay restarted.
+ * @param {string} url The URL of the channel.
+ * @return {boolean} True when hls.js started again.
+ */
+function hlsRelayRestart(url) {
+  if (!(vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
+        channels[currentChannelIndex].url === url)) {
+    return false;
+  }
+  const r = _hlsRelayRestart, now = Date.now();
+  if (r.url !== url || now - r.at > HLS_RELAY_WINDOW_MS) {
+    r.url = url;
+    r.n = 0;
+    r.at = now;
+  }
+  if (r.n >= HLS_RELAY_RESTARTS) return false;
+  r.n++;
+  diagLog(
+      `hls.js restarted after a relay restart (${r.n}/${HLS_RELAY_RESTARTS})`);
+  loadLiveSource(url);
+  videoPlayer.play().catch(() => {});
+  return true;
 }
 function liveEngineDestroy() {
   if (liveEngine.hls) {
@@ -110,6 +197,15 @@ function loadLiveSource(url) {
     manifestLoadingMaxRetry: 2,
     fragLoadingMaxRetry: 4,
     pLoader: livePlaylistLoader(),  // a live playlist never ends
+    // The provider can keep a playlist request open for approximately 10 s
+    playlistLoadPolicy: {
+      default: {
+        maxTimeToFirstByteMs: 20000,
+        maxLoadTimeMs: 30000,
+        timeoutRetry: {maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0},
+        errorRetry: {maxNumRetry: 2, retryDelayMs: 1000, maxRetryDelayMs: 8000}
+      }
+    },
   });
   liveEngine.hls = hls;
   liveEngine.url = url;
@@ -118,6 +214,8 @@ function loadLiveSource(url) {
   liveEngine.resumeUrl = '';
   liveEngine.fps = 0;
   liveEngine.fpsSamples = [];
+  liveEngine.relayWaits = 0;
+  _hlsLastPlaylist.clear();  // a new start must not get an old playlist
   liveEngine.subManual = false;
   liveEngine.audioManual = false;
   videoPlayer.removeAttribute(
@@ -155,11 +253,16 @@ function onHlsError(url, data) {
   const reply = isParse ?
       (body.replace(/\s+/g, ' ').trim().slice(0, 160) || '(empty)') :
       '';
+  const cause = data.reason || (data.error && data.error.message) || '';
+  const why = !isParse && cause ?
+      ` (${String(cause).replace(/\s+/g, ' ').slice(0, 120)})` :
+      '';
   diagLog(
       `hls.js fatal ${data.type}/${data.details}${
           status ? ` HTTP ${status}` : ''}${reply ? ` reply: ${reply}` : ''}` +
-      `${notPlaylist ? ' → not a playlist, treated as a network failure' : ''}${
-          document.hidden ? ' (app hidden)' : ''}`);
+      `${why}${
+          notPlaylist ? ' → not a playlist, treated as a network failure' :
+                        ''}${document.hidden ? ' (app hidden)' : ''}`);
   noteStreamFail(
       'hls.js',
       `${data.type}/${data.details}${status ? ` · HTTP ${status}` : ''}`,
@@ -171,6 +274,10 @@ function onHlsError(url, data) {
   if (document.hidden) {
     liveEngine.resumeUrl = url;
     liveEngineDestroy();
+    return;
+  }
+  if (data.details === Hls.ErrorDetails.LEVEL_PARSING_ERROR &&
+      hlsRelayRestart(url)) {
     return;
   }
   // A media error gets one in-place recovery (hls.js re-creates its

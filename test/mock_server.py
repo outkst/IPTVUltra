@@ -1,12 +1,13 @@
 """Mock Xtream Codes server + static host for the IPTV Ultra app.
 
-Serves the app from C:/repos/IPTVUltra/IPTVUltra at / and a fake
+Serves the app from ../IPTVUltra at / and a fake
 player_api.php at /player_api.php on the same origin (no CORS issues).
 Counts get_short_epg requests so lazy loading can be verified at /__stats.
 """
 import http.server, json, time, urllib.parse, os, sys, threading
 
-APP_DIR = r'C:\repos\IPTVUltra\IPTVUltra'
+APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                       'IPTVUltra')
 N_CHANNELS = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 PORT = 8765
 stats = {'epg_requests': 0, 'epg_stream_ids': [], 'live_streams': 0}
@@ -228,6 +229,69 @@ class H(http.server.SimpleHTTPRequestHandler):
                                                         0) + 1
                 stats['last_timeshift'] = u.path
             return self.send_clip()
+        if u.path == '/hlsrestart/index.m3u8':
+            # A provider relay that restarts: the first playlist has segment 0,
+            # each later playlist starts again at MEDIA-SEQUENCE 0 with a
+            # different segment. Each value of ?r= is a different relay.
+            with lock:
+                relays = stats.setdefault('relay_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            segs = ['seg0.ts'] if n == 1 else ['seg1.ts', 'seg2.ts']
+            body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                    '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                    ''.join('#EXTINF:2.000000,\n/hls50/%s\n' % s
+                            for s in segs)).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if u.path == '/hlscold/index.m3u8':
+            # A provider relay that is not ready: the first 2 answers are a
+            # text, then the playlist comes. Each value of ?r= is a relay.
+            with lock:
+                relays = stats.setdefault('cold_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            if n <= 2:
+                body = b'Cannot read /home/nxt/storage/streams/1_.m3u8'
+                ctype = 'text/plain'
+            else:
+                body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                        '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                        ''.join('#EXTINF:2.000000,\n/hls50/seg%d.ts\n' % i
+                                for i in range(3))).encode()
+                ctype = 'application/vnd.apple.mpegurl'
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if u.path == '/hlsflap/index.m3u8':
+            # A provider relay that answers "Cannot read" between 2 good
+            # playlists. Each value of ?r= is a relay.
+            with lock:
+                relays = stats.setdefault('flap_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            if 2 <= n <= 4:
+                body = b'Cannot read /home/nxt/storage/streams/1_.m3u8'
+                ctype = 'text/plain'
+            else:
+                body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                        '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                        ''.join('#EXTINF:2.000000,\n/hls50/seg%d.ts\n' % i
+                                for i in range(2 if n == 1 else 3))).encode()
+                ctype = 'application/vnd.apple.mpegurl'
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path.startswith(
                 '/hls50/'
         ):  # 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the provider's)

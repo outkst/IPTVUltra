@@ -737,4 +737,12 @@ const STALL_THRESHOLD_CHECKS = 5;  // ~10 s of no progress
 const MAX_AUTO_RELOADS = 3;  // auto-reload budget per channel before giving up
 let _reloadAttempts = 0;
 let _stallGoodChecks = 0;
+// A slow relay of the provider adds 1 segment each 30 to 40 s (seen on the "CA|
+// SPORTSNET PPV" channels, 2026-10-25). Playback stops between the segments,
+// but the buffer still gets data. A reload starts the relay cold again. Thus,
+// the watchdog does not reload a playhead at the end of the buffer while the
+// buffer got data in the last STALL_ALIVE_MS.
+const STALL_ALIVE_MS = 45 * 1000;
+let _stallBufEnd = 0;
+let _stallBufAt = 0;
 let _errRetryTimer = null;

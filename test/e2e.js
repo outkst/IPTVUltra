@@ -3271,6 +3271,97 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'hls.js live playlist with #EXT-X-ENDLIST stays live (cold relay)',
       fps.live, JSON.stringify(fps));
+  // A relay that restarts sends MEDIA-SEQUENCE 0 again with a different
+  // segment. hls.js starts again on the same URL and keeps the channel.
+  await page.evaluate(() => {
+    channels[1].url =
+        'http://localhost:8765/hlsrestart/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsRelayRestart.n >= 1 && liveEngineActive() &&
+              liveEngine.hls.levels[0] && liveEngine.hls.levels[0].details,
+          {timeout: 30000})
+      .catch(() => {});
+  const relay = await page.evaluate(() => ({
+                                      n: _hlsRelayRestart.n,
+                                      hls: liveEngineActive(),
+                                      broken: _hlsBroken.size,
+                                      url: liveEngine.url,
+                                      log: _diagLog.slice(-3).map(d => d.msg)
+                                    }));
+  check(
+      'hls.js starts again on the same URL after a relay restart (media sequence mismatch)',
+      relay.n >= 1 && relay.hls && relay.broken === 0 &&
+          /\/hlsrestart\//.test(relay.url) &&
+          relay.log.some(m => /relay restart/.test(m)),
+      JSON.stringify(relay));
+  // A relay that is not ready answers "Cannot read ..._.m3u8". The
+  // playlist loader requests the playlist again each 3 s, and hls.js gets
+  // no error.
+  await page.evaluate(() => {
+    _hlsRelayRestart.url = '';
+    _hlsRelayRestart.n = 0;
+    channels[1].url =
+        'http://localhost:8765/hlscold/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => liveEngineActive() && liveEngine.hls.levels[0] &&
+              liveEngine.hls.levels[0].details,
+          {timeout: 30000})
+      .catch(() => {});
+  const cold = await page.evaluate(() => {
+    return {
+      waits: liveEngine.relayWaits,
+      restarts: _hlsRelayRestart.n,
+      hls: liveEngineActive(),
+      src: videoPlayer.getAttribute('src') || '',
+      reloads: _reloadAttempts,
+      log: _diagLog.slice(-3).map(d => d.msg)
+    };
+  });
+  check(
+      'hls.js waits for a relay that is not ready: no error, restart, or reload',
+      cold.waits === 1 && cold.restarts === 0 && cold.hls &&
+          !/hlscold/.test(cold.src) && cold.reloads === 0 &&
+          cold.log.some(m => /waits for the relay/.test(m)),
+      JSON.stringify(cold));
+  // A relay that answers "Cannot read" between 2 good playlists: hls.js
+  // keeps the same instance and gets the next playlist.
+  await page.evaluate(() => {
+    window.__flapErrors = 0;
+    channels[1].url =
+        'http://localhost:8765/hlsflap/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+    window.__flapHls = liveEngine.hls;
+    liveEngine.hls.on(Hls.Events.ERROR, (_, d) => {
+      if (d.fatal) window.__flapErrors++;
+    });
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.hls === window.__flapHls &&
+              liveEngine.hls.levels[0] && liveEngine.hls.levels[0].details &&
+              liveEngine.hls.levels[0].details.fragments.length === 3,
+          {timeout: 30000})
+      .catch(() => {});
+  const flap = await page.evaluate(() => {
+    const d = liveEngine.hls && liveEngine.hls.levels[0] &&
+        liveEngine.hls.levels[0].details;
+    return {
+      same: liveEngine.hls === window.__flapHls,
+      frags: d && d.fragments.length,
+      fatal: window.__flapErrors,
+      restarts: _hlsRelayRestart.n
+    };
+  });
+  check(
+      'a "Cannot read" playlist reload keeps hls.js and its playlist',
+      flap.same && flap.frags === 3 && flap.fatal === 0 && flap.restarts === 0,
+      JSON.stringify(flap));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
@@ -3406,6 +3497,52 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'manual Reload resets the auto-reload budget',
       await page.evaluate(
           () => _reloadAttempts === 0 && stallWatchdogTimer !== null));
+  // A slow relay: the playhead waits at the end of the buffer, and the
+  // buffer got data a short time ago. The watchdog waits and does not
+  // reload.
+  await page.evaluate(() => {  // stop the dead stream of the last test
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
+  });
+  await new Promise(r => setTimeout(r, 1000));
+  await page.evaluate(() => {
+    const v = videoPlayer;
+    clearTimeout(_errRetryTimer);
+    _reloadAttempts = 0;
+    window.__slow = {end: 10.5, reloads: 0, reload: window.reloadStream};
+    window.reloadStream = () => window.__slow.reloads++;
+    Object.defineProperty(v, 'paused', {get: () => false, configurable: true});
+    Object.defineProperty(
+        v, 'currentTime', {get: () => 10, set() {}, configurable: true});
+    Object.defineProperty(v, 'readyState', {get: () => 2, configurable: true});
+    Object.defineProperty(v, 'buffered', {
+      get: () => ({length: 1, start: () => 0, end: () => window.__slow.end}),
+      configurable: true
+    });
+    startStallWatchdog();
+  });
+  await new Promise(r => setTimeout(r, 14000));
+  const slow = await page.evaluate(() => {
+    const r = {
+      reloads: window.__slow.reloads,
+      attempts: _reloadAttempts,
+      count: stallCount,
+      aliveAgo: Date.now() - _stallBufAt,
+      thr: STALL_THRESHOLD_CHECKS,
+      alive: STALL_ALIVE_MS
+    };
+    for (const k of ['paused', 'currentTime', 'readyState', 'buffered'])
+      delete videoPlayer[k];
+    window.reloadStream = window.__slow.reload;
+    startStallWatchdog();
+    return r;
+  });
+  check(
+      'watchdog waits for a slow relay (playhead at the buffer end) and does not reload',
+      slow.reloads === 0 && slow.attempts === 0 &&
+          slow.count === slow.thr - 1 && slow.aliveAgo < slow.alive,
+      JSON.stringify(slow));
+
 
   // Back → dialog in standard view; Back on start page calls platformBack
   await page.evaluate(() => {
