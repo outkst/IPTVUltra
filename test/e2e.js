@@ -77,7 +77,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     headless: true,
     args: [
       '--window-size=1920,1080', '--autoplay-policy=no-user-gesture-required',
-      '--no-sandbox'
+      '--no-sandbox',
+      // Keep the page active when the screen of the PC locks
+      '--disable-features=CalculateNativeWinOcclusion',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding'
     ],
     defaultViewport: {width: 1920, height: 1080},
   });
@@ -106,6 +110,31 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     }
   }, k, kc);
   const back = () => key('GoBack', 461);
+  // Real mouse and keyboard input through CDP sometimes does not reach the
+  // page in headless Chrome on Windows (seen on 2026-10-24, probably when the
+  // screen of the PC locks). Thus, the suite uses script events. typeText()
+  // sends keydown to the focused element and adds the character only when no
+  // handler prevents it, as a browser does.
+  const typeText = text => page.evaluate(text => {
+    for (const ch of text) {
+      const el = document.activeElement || document.body;
+      // Letters, digits, and space have their key codes. Other characters get
+      // 0, because their character codes are the codes of keys such as the
+      // arrows (for example, '(' is 40, ArrowDown).
+      const kc = /[a-z0-9 ]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : 0;
+      const ev = new KeyboardEvent(
+          'keydown', {key: ch, bubbles: true, cancelable: true});
+      Object.defineProperty(ev, 'keyCode', {get: () => kc});
+      el.dispatchEvent(ev);
+      if (!ev.defaultPrevented && 'value' in el) {
+        el.value += ch;
+        el.dispatchEvent(new InputEvent(
+            'input', {bubbles: true, data: ch, inputType: 'insertText'}));
+      }
+      el.dispatchEvent(new KeyboardEvent('keyup', {key: ch, bubbles: true}));
+    }
+  }, text);
+  const click = sel => page.$eval(sel, el => el.click());
 
   await fetch(BASE + '/__reset');  // server may have been running across runs
   await page.goto(BASE + '/', {waitUntil: 'load'});
@@ -133,10 +162,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               LIVE_BUFFER_OPTIONS.some(o => o.v === 5)));
 
   // ---------- Xtream: add + load ----------
-  await page.type('#xtreamServer', BASE);
-  await page.type('#xtreamUsername', 'user');
-  await page.type('#xtreamPassword', 'pass');
-  await page.click('#saveXtreamBtn');
+  for (const [sel, text] of [
+           ['#xtreamServer', BASE], ['#xtreamUsername', 'user'],
+           ['#xtreamPassword', 'pass']]) {
+    await page.focus(sel);
+    await typeText(text);
+  }
+  await click('#saveXtreamBtn');
   await page.waitForSelector('.saved-item', {timeout: 5000});
   // Pre-seed two favorites so the prefetch path runs (tvgIds ch3.test,
   // ch4.test)
@@ -145,8 +177,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     favoriteIds.add('ch4.test');
     localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
   });
-  await page.click('.saved-item');
-  await page.click('#loadSelectedBtn');
+  await click('.saved-item');
+  await click('#loadSelectedBtn');
   await page.waitForFunction(
       () => document.getElementById('epgView').style.display === 'flex' &&
           epgRenderedRows.size > 0,
@@ -1050,7 +1082,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // Search typing in the EPG corner box must not be hijacked by guide
   // navigation
   await page.focus('#epgSearchInput');
-  await page.keyboard.type('Channel 000');
+  await typeText('Channel 000');
   await sleep(400);
   check(
       'typing in EPG search filters guide (best match first)',
@@ -1072,7 +1104,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(
           () => document.activeElement !==
               document.getElementById('epgSearchInput')));
-  await page.click('#epgClearSearchBtn');
+  await click('#epgClearSearchBtn');
 
   // ---------- Dedicated media keys: Play/Pause/CH+/CH- ----------
   {
@@ -1877,7 +1909,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(
             () => document.activeElement ===
                 document.getElementById('vodSearchInput')));
-    await page.keyboard.type('Comedy Movie 1');
+    await typeText('Comedy Movie 1');
     await sleep(400);
     check(
         'typing filters all movies (prefix matches first)',
@@ -2801,12 +2833,63 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'Back opens Return-to-Home dialog',
       await page.evaluate(() => !confirmDialog.classList.contains('hidden')));
   await key('ArrowDown', 40);  // must NOT move guide focus while dialog is open
-  // Connection limit: a dead stream on a one-connection account that is busy
-  // elsewhere is explained as such
+  // Connection limit: the provider counts the last stream of the app for a
+  // short time. A full account that is free at the second check is not
+  // reported.
   await fetch(BASE + '/__cons?active=1&max=1');
   await page.evaluate(() => {
+    _consRecheckMs = 1500;
     window.__savedUrl6 = channels[6].url;
     channels[6].url = 'http://localhost:8765/busy-account/live.m3u8';
+    _consInfo = null;
+    _consCheckAt = 0;
+    document.getElementById('epgToastTitle').textContent = '';
+    selectChannel(6);
+  });
+  await page.waitForFunction(() => _consInfo !== null, {timeout: 10000})
+      .catch(() => {});
+  await fetch(BASE + '/__cons?active=0&max=1');
+  await sleep(2500);
+  const own = await page.evaluate(
+      () => ({
+        title: document.getElementById('epgToastTitle').textContent,
+        cons: _consInfo && [_consInfo.active, _consInfo.max].join('/'),
+        text: accountProblemText(_consInfo),
+        log: _diagLog.some(e => /Account: Another device/.test(e.msg))
+      }));
+  check(
+      'a full account that is free at the second check is not reported',
+      own.title !== 'Connection limit' && own.cons === '0/1' &&
+          own.text === '' && !own.log,
+      JSON.stringify(own));
+  // If the recheck gets no answer, the old full result is not confirmed
+  const stale = await page.evaluate(async () => {
+    const realFetch = window.fetch;
+    window.fetch = () => Promise.reject(new Error('offline'));
+    _consInfo = {active: 1, max: 1, status: 'Active', exp: 0, at: Date.now()};
+    _lastStreamOpenAt = 0;
+    document.getElementById('epgToastTitle').textContent = '';
+    recheckFullAccount();
+    await new Promise(r => setTimeout(r, 300));
+    window.fetch = realFetch;
+    const r = {
+      confirmed: _consInfo.confirmed,
+      text: accountProblemText(_consInfo),
+      title: document.getElementById('epgToastTitle').textContent
+    };
+    _consInfo = null;
+    return r;
+  });
+  check(
+      'a recheck with no answer does not confirm the old full result',
+      !stale.confirmed && stale.text === '' &&
+          stale.title !== 'Connection limit',
+      JSON.stringify(stale));
+  // A dead stream on a one-connection account that is busy elsewhere is
+  // explained as such
+  await fetch(BASE + '/__cons?active=1&max=1');
+  await page.evaluate(() => {
+    selectChannel(0);
     _consInfo = null;
     _consCheckAt = 0;
     document.getElementById('epgToastTitle').textContent = '';
@@ -2891,7 +2974,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           () => _xt === null && _epgQueue.length === 0 && epgData.size === 0));
 
   // ---------- M3U demo: standard view D-pad ----------
-  await page.click('#startDemoBtn');
+  await click('#startDemoBtn');
   await page
       .waitForFunction(
           () =>
@@ -3013,7 +3096,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         renderChannelList();
         return empty && renderedItems.size > 0;
       }));
-  await page.click('#settingsFooterBtn');
+  await click('#settingsFooterBtn');
   check(
       'settings opens from footer button',
       await page.evaluate(
@@ -3362,6 +3445,52 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'a "Cannot read" playlist reload keeps hls.js and its playlist',
       flap.same && flap.frags === 3 && flap.fatal === 0 && flap.restarts === 0,
       JSON.stringify(flap));
+  // An event that is finished: the provider sends only black.ts. The app
+  // tells why the picture is black.
+  await page.evaluate(() => {
+    document.getElementById('epgToastTitle').textContent = '';
+    channels[1].url = 'http://localhost:8765/hlsblack/index.m3u8';
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => document.getElementById('epgToastTitle').textContent ===
+              'No broadcast',
+          {timeout: 15000})
+      .catch(() => {});
+  const black = await page.evaluate(() => {
+    return {
+      title: document.getElementById('epgToastTitle').textContent,
+      placeholder: liveEngine.placeholder,
+      status: statusArea.innerText,
+      log: _diagLog.some(e => /placeholder \(black\.ts\)/.test(e.msg))
+    };
+  });
+  check(
+      'a playlist with only black.ts shows "No broadcast"',
+      black.title === 'No broadcast' && black.placeholder &&
+          /not on the air/.test(black.status) && black.log,
+      JSON.stringify(black));
+  // The watchdog does not reload a placeholder: a reload cannot start the
+  // event
+  const blackHls = await page.evaluate(() => {
+    window.__blackHls = liveEngine.hls;
+    return _reloadAttempts;
+  });
+  await sleep(14000);
+  const blackAfter = await page.evaluate(
+      () => ({
+        same: liveEngine.hls === window.__blackHls,
+        reloads: _reloadAttempts,
+        pattern: [
+          'black.ts', '/a/video/black.ts?x=1', 'notblack.ts', '/a/seg1.ts'
+        ].map(u => HLS_PLACEHOLDER_SEGMENT.test(u))
+      }));
+  check(
+      'the watchdog does not reload a black.ts placeholder; the pattern accepts a relative URI',
+      blackAfter.same && blackAfter.reloads === blackHls &&
+          blackAfter.pattern.join() === 'true,true,false,false',
+      JSON.stringify(blackAfter));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
@@ -3670,7 +3799,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'resumes last channel and focuses its row',
       al.name === 'Channel 01234' && al.focus === 1233 && al.rowOk,
       JSON.stringify(al));
-  await page.click('#epgSettingsBtn');
+  await click('#epgSettingsBtn');
   check(
       'settings opens from the guide button; per-playlist rows enabled',
       await page.evaluate(
