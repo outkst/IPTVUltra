@@ -441,10 +441,15 @@ function liveGoLive() {
 // A second device on a one-connection account makes every channel fail with a
 // plain network error. On a stream failure the auth call is repeated (cheap,
 // never a stream) and active_cons / max_connections tell.
-let _consInfo = null;  // { active, max, status, exp, at }
+// The provider counts the last stream of this app for approximately 15 s after
+// a channel change. Thus, a full account is reported only when a second check
+// _consRecheckMs later is also full and the channel still does not play
+// (`confirmed`). Before, the app told you that a different device streamed.
+let _consInfo = null;  // { active, max, status, exp, at, confirmed }
 let _consCheckAt = 0;
-async function xtreamCheckConnections() {
-  if (!_xt || Date.now() - _consCheckAt < 15000) return _consInfo;
+let _consRecheckMs = 20 * 1000;  // the e2e suite sets a shorter time
+async function xtreamCheckConnections(force = false) {
+  if (!_xt || (!force && Date.now() - _consCheckAt < 15000)) return _consInfo;
   _consCheckAt = Date.now();
   try {
     const r = await fetch(
@@ -459,7 +464,8 @@ async function xtreamCheckConnections() {
       max: isNaN(max) ? -1 : max,
       status: String(ui.status || ''),
       exp: parseInt(ui.exp_date) > 0 ? parseInt(ui.exp_date) * 1000 : 0,
-      at: Date.now()
+      at: Date.now(),
+      confirmed: false
     };
   } catch (_) { /* provider unreachable: nothing to say */
   }
@@ -471,24 +477,57 @@ function accountProblemText(ci) {
   if (!ci || Date.now() - ci.at > 60000) return '';
   if (/expired|disabled|banned/i.test(ci.status))
     return `Account ${ci.status.toLowerCase()}`;
-  if (ci.max > 0 && ci.active >= ci.max)
+  if (ci.confirmed && consFull(ci))
     return ci.max === 1 ?
         'Another device is streaming with this account (1 connection allowed)' :
         `All ${ci.max} connections of this account are in use`;
   return '';
 }
+/**
+ * Tells if all the connections of the account are in use.
+ * @param {?Object} ci The result of xtreamCheckConnections.
+ * @return {boolean} True when the account is full.
+ */
+function consFull(ci) {
+  return !!ci && ci.max > 0 && ci.active >= ci.max;
+}
 function noteStreamFailureForAccount(idx) {
   if (!_xt || currentPlaylistType !== 'xtream') return;
   xtreamCheckConnections().then(ci => {
-    const t = accountProblemText(ci);
-    if (!t || currentChannelIndex !== idx) return;
-    statusArea.innerText = `⚠️ ${t}`;
-    showEPGToast(
-        `${t}. Stop playback on the other device, then press Reload.`, 'error',
-        'Connection limit');
-    hideEPGToast(8000);
-    diagLog(`Account: ${t} (active ${ci.active} / max ${ci.max})`);
+    if (!ci || currentChannelIndex !== idx) return;
+    if (accountProblemText(ci)) {
+      reportAccountProblem(ci);
+    } else if (consFull(ci)) {
+      setTimeout(() => recheckFullAccount(idx), _consRecheckMs);
+    }
   });
+}
+/**
+ * Checks the account again after a first check found it full.
+ * @param {number} idx The channel that failed.
+ */
+function recheckFullAccount(idx) {
+  const playing = !videoPlayer.paused && videoPlayer.readyState >= 3;
+  if (currentChannelIndex !== idx || playing) return;
+  xtreamCheckConnections(true).then(ci => {
+    if (!consFull(ci) || currentChannelIndex !== idx) return;
+    ci.confirmed = true;
+    reportAccountProblem(ci);
+  });
+}
+/**
+ * Shows the account problem in the status line and a toast, and logs it.
+ * @param {!Object} ci The result of xtreamCheckConnections.
+ */
+function reportAccountProblem(ci) {
+  const t = accountProblemText(ci);
+  if (!t) return;
+  statusArea.innerText = `⚠️ ${t}`;
+  showEPGToast(
+      `${t}. Stop playback on the other device, then press Reload.`, 'error',
+      'Connection limit');
+  hideEPGToast(8000);
+  diagLog(`Account: ${t} (active ${ci.active} / max ${ci.max})`);
 }
 
 // ----- AV sync through Homebrew root exec (rooted TVs only) -----

@@ -2801,12 +2801,40 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'Back opens Return-to-Home dialog',
       await page.evaluate(() => !confirmDialog.classList.contains('hidden')));
   await key('ArrowDown', 40);  // must NOT move guide focus while dialog is open
-  // Connection limit: a dead stream on a one-connection account that is busy
-  // elsewhere is explained as such
+  // Connection limit: the provider counts the last stream of the app for a
+  // short time. A full account that is free at the second check is not
+  // reported.
   await fetch(BASE + '/__cons?active=1&max=1');
   await page.evaluate(() => {
+    _consRecheckMs = 1500;
     window.__savedUrl6 = channels[6].url;
     channels[6].url = 'http://localhost:8765/busy-account/live.m3u8';
+    _consInfo = null;
+    _consCheckAt = 0;
+    document.getElementById('epgToastTitle').textContent = '';
+    selectChannel(6);
+  });
+  await page.waitForFunction(() => _consInfo !== null, {timeout: 10000})
+      .catch(() => {});
+  await fetch(BASE + '/__cons?active=0&max=1');
+  await sleep(2500);
+  const own = await page.evaluate(
+      () => ({
+        title: document.getElementById('epgToastTitle').textContent,
+        cons: _consInfo && [_consInfo.active, _consInfo.max].join('/'),
+        text: accountProblemText(_consInfo),
+        log: _diagLog.some(e => /Account: Another device/.test(e.msg))
+      }));
+  check(
+      'a full account that is free at the second check is not reported',
+      own.title !== 'Connection limit' && own.cons === '0/1' &&
+          own.text === '' && !own.log,
+      JSON.stringify(own));
+  // A dead stream on a one-connection account that is busy elsewhere is
+  // explained as such
+  await fetch(BASE + '/__cons?active=1&max=1');
+  await page.evaluate(() => {
+    selectChannel(0);
     _consInfo = null;
     _consCheckAt = 0;
     document.getElementById('epgToastTitle').textContent = '';

@@ -472,10 +472,11 @@ function reloadStream(auto) {
   statusArea.innerText = isAuto ?
       `🔄 Reloading (${_reloadAttempts}/${MAX_AUTO_RELOADS}) …` :
       '🔄 Reloading ...';
-  setTimeout(
-      () => statusArea.innerText =
-          `▶️ ${channels[currentChannelIndex].name}`,
-      2000);
+  setTimeout(() => {
+    // The user can go to the start page in the 2 s
+    const ch = channels[currentChannelIndex];
+    if (ch) statusArea.innerText = `▶️ ${ch.name}`;
+  }, 2000);
   showTopControls();
 }
 
