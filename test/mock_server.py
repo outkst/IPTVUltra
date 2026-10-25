@@ -1,12 +1,13 @@
 """Mock Xtream Codes server + static host for the IPTV Ultra app.
 
-Serves the app from C:/repos/IPTVUltra/IPTVUltra at / and a fake
+Serves the app from ../IPTVUltra at / and a fake
 player_api.php at /player_api.php on the same origin (no CORS issues).
 Counts get_short_epg requests so lazy loading can be verified at /__stats.
 """
 import http.server, json, time, urllib.parse, os, sys, threading
 
-APP_DIR = r'C:\repos\IPTVUltra\IPTVUltra'
+APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..',
+                       'IPTVUltra')
 N_CHANNELS = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 PORT = 8765
 stats = {'epg_requests': 0, 'epg_stream_ids': [], 'live_streams': 0}
@@ -228,6 +229,25 @@ class H(http.server.SimpleHTTPRequestHandler):
                                                         0) + 1
                 stats['last_timeshift'] = u.path
             return self.send_clip()
+        if u.path == '/hlsrestart/index.m3u8':
+            # A provider relay that restarts: the first playlist has segment 0,
+            # each later playlist starts again at MEDIA-SEQUENCE 0 with a
+            # different segment. Each value of ?r= is a different relay.
+            with lock:
+                relays = stats.setdefault('relay_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            segs = ['seg0.ts'] if n == 1 else ['seg1.ts', 'seg2.ts']
+            body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                    '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                    ''.join('#EXTINF:2.000000,\n/hls50/%s\n' % s
+                            for s in segs)).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path.startswith(
                 '/hls50/'
         ):  # 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the provider's)
