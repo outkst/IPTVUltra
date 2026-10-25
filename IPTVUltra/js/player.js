@@ -504,18 +504,32 @@ function handleVodPlayerKey(e, up, down, left, right, enter) {
       e.preventDefault();
     return;  // Enter is handled by the shared keyup listener
   }
+  const osdVisible =
+      document.getElementById('vodOsd').classList.contains('visible');
+  // Up/Down with the OSD hidden only show the OSD. The auto-repeat of the same
+  // key is ignored until the key is released.
+  if ((up || down) && e.repeat && player.wakeKey === e.keyCode) {
+    e.preventDefault();
+    return;
+  }
+  player.wakeKey = 0;
+  if ((up || down) && !osdVisible) {
+    e.preventDefault();
+    player.wakeKey = e.keyCode;
+    player.focus = 'bar';
+    showVodOsd();
+    return;
+  }
   if (livePlayer.active && !vodPlay.active) {
-    // Red: previous channel. Up/Down with the banner hidden (or while already
-    // surfing): channel surfing
+    // Red: previous channel
     if (e.keyCode === 403 || e.key === 'ColorF0Red') {
       e.preventDefault();
       surfCancel();
       if (swapToPreviousChannel()) showVodOsd();
       return;
     }
-    const osdVisible =
-        document.getElementById('vodOsd').classList.contains('visible');
-    if ((up || down) && (surf.active || !osdVisible)) {
+    // Channel surfing: Down on the bar starts it, then Up/Down move the preview
+    if ((up || down) && (surf.active || (down && player.focus === 'bar'))) {
       e.preventDefault();
       surfStep(down ? 1 : -1);
       return;

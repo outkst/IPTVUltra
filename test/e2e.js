@@ -649,10 +649,52 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'Red again flips back',
       await page.evaluate(
           p => currentChannelIndex !== p && lastChannelIndex === p, prevIdx));
-  // Channel surfing: with the banner hidden, Down previews the next channel in
-  // the banner without tuning
+  // With the banner hidden, the first Up or Down only shows the banner
   await page.evaluate(() => hideVodOsd());
   const playingIdx = await page.evaluate(() => currentChannelIndex);
+  await key('ArrowDown', 40);
+  await sleep(100);
+  check(
+      'Down with the banner hidden only shows the banner',
+      await page.evaluate(
+          p =>
+              document.getElementById('vodOsd').classList.contains('visible') &&
+              !surf.active && player.focus === 'bar' &&
+              currentChannelIndex === p,
+          playingIdx));
+  await page.evaluate(() => hideVodOsd());
+  await key('ArrowUp', 38);
+  await sleep(100);
+  check(
+      'Up with the banner hidden only shows the banner',
+      await page.evaluate(
+          () =>
+              document.getElementById('vodOsd').classList.contains('visible') &&
+              !surf.active && player.focus === 'bar'));
+  // Hidden OSD: the pointer cannot click its buttons, and a click on the
+  // picture only shows the banner
+  await page.evaluate(() => hideVodOsd());
+  const hiddenClick = await page.evaluate(() => {
+    const btn = document.querySelector('#vodOsdBtns .vod-osd-btn');
+    const pe = btn ? getComputedStyle(btn).pointerEvents : '';
+    const paused = videoPlayer.paused;
+    document.getElementById('vodPlayer').click();
+    return {
+      pe,
+      osd: document.getElementById('vodOsd').classList.contains('visible'),
+      samePause: videoPlayer.paused === paused
+    };
+  });
+  check(
+      'Hidden OSD buttons take no pointer clicks; a click only shows the banner',
+      hiddenClick.pe === 'none' && hiddenClick.osd && hiddenClick.samePause,
+      JSON.stringify(hiddenClick));
+  // Channel surfing: with the banner up and the bar focused, Down previews the
+  // next channel in the banner without tuning
+  await page.evaluate(() => {
+    player.focus = 'bar';
+    showVodOsd();
+  });
   await key('ArrowDown', 40);
   await sleep(100);
   const sf = await page.evaluate(
@@ -669,7 +711,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         focus: player.focus
       }));
   check(
-      'Down with the banner hidden previews the next channel in the banner without tuning',
+      'Down on the bar previews the next channel in the banner without tuning',
       sf.active && sf.playing === playingIdx && sf.osd && sf.cls && sf.want &&
           sf.title.includes(sf.want) && /OK watch/.test(sf.hint) &&
           sf.focus === 'bar',
@@ -692,7 +734,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                   'visible') &&
               !document.getElementById('vodOsd').classList.contains('surf'),
           playingIdx));
-  await key('ArrowUp', 38);
+  await key('ArrowDown', 40);  // shows the banner
+  await key('ArrowDown', 40);  // starts the preview
   await sleep(100);
   const surfTarget = await page.evaluate(
       () => surf.active ? getChannelIndex(currentFilteredChannels[surf.idx]) :
