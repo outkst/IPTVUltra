@@ -607,8 +607,9 @@ let _nativeRate =
 const player = {
   focus: 'bar',
   btn: 0,
-  btns: []
-};  // OSD focus: 'bar' (default) or 'buttons'; btn = index into btns
+  btns: [],
+  wakeKey: 0  // key code of the Up/Down press that showed the hidden OSD
+};            // OSD focus: 'bar' (default) or 'buttons'; btn = index into btns
 const livePlayer = {
   active: false
 };  // live TV shown in the app-owned full-viewport player (same OSD as VOD)

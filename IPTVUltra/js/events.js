@@ -107,6 +107,11 @@ if (vodPlayerEl) {
     if (e.target.closest('.vod-next') || e.target.closest('.vod-osd-btn') ||
         e.target.closest('.vod-bar'))
       return;
+    // A click with the OSD hidden only shows the OSD
+    if (!document.getElementById('vodOsd').classList.contains('visible')) {
+      showVodOsd();
+      return;
+    }
     if (vodPlay.active)
       toggleVodPause();
     else

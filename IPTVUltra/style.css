@@ -2845,6 +2845,13 @@ video {
   opacity: 1;
 }
 
+/* A hidden OSD does not get clicks from the pointer of the Magic Remote. */
+.vod-osd:not(.visible) .vod-osd-btns,
+.vod-osd:not(.visible) .vod-osd-btn,
+.vod-osd:not(.visible) .vod-bar {
+  pointer-events: none;
+}
+
 .vod-osd-row {
   display: flex;
   align-items: center;
