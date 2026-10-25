@@ -51,7 +51,7 @@ function startStallWatchdog() {
           return;
         }
         _reloadAttempts++;
-        reloadStream(true);
+        reloadStream(true, 'watchdog');
       }
     } else {
       stallCount = 0;
@@ -199,6 +199,9 @@ function selectChannel(index) {
     _altTried = new Set([index]);
     noteRecentChannel(channels[index]);
   }
+  const cause = _selectingAlt       ? 'alternative source' :
+      currentChannelIndex === index ? 'same channel again' :
+                                      '';
   currentChannelIndex = index;
   _reloadAttempts = 0;
   if (_errRetryTimer) {
@@ -208,7 +211,7 @@ function selectChannel(index) {
   const ch = channels[index];
   videoPlayer.pause();
   umsNoteCurrentId();
-  if (loadLiveSource(ch.url)) {
+  if (loadLiveSource(ch.url, cause)) {
     umsRelease(liveUms);
     liveUms = null;
   } else
@@ -453,7 +456,13 @@ function toggleAudioPanel() {
   }
 }
 
-function reloadStream(auto) {
+/**
+ * Loads the current live channel again.
+ * @param {boolean|!Event=} auto True for an automatic reload. The Reload
+ *     button gives its click event.
+ * @param {string=} cause The cause, for the diagnostics log.
+ */
+function reloadStream(auto, cause) {
   if (currentChannelIndex < 0) return;
   if (vodPlay.active || vodMode !== 'live')
     return;  // live reloads pause while in Movies/Series
@@ -467,7 +476,10 @@ function reloadStream(auto) {
   const wasPlaying = !videoPlayer.paused;
   videoPlayer.pause();
   umsNoteCurrentId();
-  if (loadLiveSource(url)) {
+  const why = typeof cause === 'string' ? cause :
+      isAuto                            ? 'automatic reload' :
+                                          'Reload button';
+  if (loadLiveSource(url, why)) {
     umsRelease(liveUms);
     liveUms = null;
   } else
