@@ -8,16 +8,28 @@ function startStallWatchdog() {
   stallLastTime = -1;
   stallCount = 0;
   _stallGoodChecks = 0;
+  _stallBufEnd = 0;
+  _stallBufAt = 0;
   stallWatchdogTimer = setInterval(function() {
     if (videoPlayer.paused || currentChannelIndex < 0) {
       stallCount = 0;
       return;
     }
     const t = videoPlayer.currentTime;
+    const bufEnd = stallBufferedEnd();
+    if (bufEnd > _stallBufEnd + 0.5) {
+      _stallBufEnd = bufEnd;
+      _stallBufAt = Date.now();
+    } else if (bufEnd < _stallBufEnd - 0.5) {
+      _stallBufEnd = bufEnd;  // a new source or a seek
+    }
     if (t === stallLastTime && videoPlayer.readyState < 3) {
       stallCount++;
       _stallGoodChecks = 0;
-      if (stallCount >= STALL_THRESHOLD_CHECKS) {
+      if (stallCount >= STALL_THRESHOLD_CHECKS && bufEnd - t < 2 &&
+          Date.now() - _stallBufAt < STALL_ALIVE_MS) {
+        stallCount = STALL_THRESHOLD_CHECKS - 1;  // slow, not dead: wait
+      } else if (stallCount >= STALL_THRESHOLD_CHECKS) {
         stallCount = 0;
         stallLastTime = -1;
         noteStreamFail(
@@ -43,6 +55,18 @@ function startStallWatchdog() {
       if (++_stallGoodChecks >= 15) _reloadAttempts = 0;
     }
   }, STALL_CHECK_INTERVAL_MS);
+}
+
+/**
+ * Gives the end of the buffered range that contains the playhead.
+ * @return {number} The end in seconds, or 0 when there is no such range.
+ */
+function stallBufferedEnd() {
+  const b = videoPlayer.buffered, t = videoPlayer.currentTime;
+  for (let i = 0; i < b.length; i++) {
+    if (b.start(i) - 1 <= t && t <= b.end(i) + 1) return b.end(i);
+  }
+  return 0;
 }
 
 function stopStallWatchdog() {

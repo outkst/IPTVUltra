@@ -248,6 +248,28 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path == '/hlscold/index.m3u8':
+            # A provider relay that is not ready: the first 2 answers are a
+            # text, then the playlist comes. Each value of ?r= is a relay.
+            with lock:
+                relays = stats.setdefault('cold_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            if n <= 2:
+                body = b'Cannot read /home/nxt/storage/streams/1_.m3u8'
+                ctype = 'text/plain'
+            else:
+                body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                        '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                        ''.join('#EXTINF:2.000000,\n/hls50/seg%d.ts\n' % i
+                                for i in range(3))).encode()
+                ctype = 'application/vnd.apple.mpegurl'
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path.startswith(
                 '/hls50/'
         ):  # 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the provider's)

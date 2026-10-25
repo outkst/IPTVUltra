@@ -76,23 +76,32 @@ function livePlaylistLoader() {
 // A cold relay can also restart. Its next playlist then starts again at
 // MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
 // SPORTSNET PPV 13", 2026-10-25). hls.js cannot merge it ("media sequence
-// mismatch") and stops with a fatal level parsing error. A new hls.js on the
-// same URL reads the new playlist. HLS_RELAY_RESTARTS limits the restarts of 1
-// URL in HLS_RELAY_WINDOW_MS. Then the usual hand-over to the native player
-// occurs.
-const HLS_RELAY_RESTARTS = 3;
+// mismatch") and stops with a fatal level parsing error. Before the relay is
+// ready, the provider answers the playlist request with the text "Cannot read
+// /home/nxt/storage/streams/<id>_.m3u8" (seen on channels 13982 and 13983,
+// 2026-10-25). The <video> element cannot play that answer either. In the two
+// cases, a new hls.js on the same URL reads the next playlist.
+// HLS_RELAY_RESTARTS limits the restarts of 1 URL in HLS_RELAY_WINDOW_MS. Then
+// the usual hand-over to the native player occurs.
+const HLS_RELAY_RESTARTS = 5;
 const HLS_RELAY_WINDOW_MS = 120 * 1000;
+const HLS_RELAY_NOT_READY_DELAY_MS = 3000;
+const HLS_RELAY_NOT_READY = /^\s*Cannot read \S*\.m3u8/;
 const _hlsRelayRestart = {
   url: '',
   n: 0,
-  at: 0
+  at: 0,
+  timer: null
 };
 /**
- * Starts hls.js again on the playing live channel after its relay restarted.
+ * Starts hls.js again on the playing live channel after its relay restarted or
+ * was not ready.
  * @param {string} url The URL of the channel.
- * @return {boolean} True when hls.js started again.
+ * @param {string} why The cause, for the diagnostics log.
+ * @param {number=} delayMs The time to wait before the new start.
+ * @return {boolean} True when hls.js will start again.
  */
-function hlsRelayRestart(url) {
+function hlsRelayRestart(url, why, delayMs = 0) {
   if (!(vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
         channels[currentChannelIndex].url === url)) {
     return false;
@@ -105,13 +114,26 @@ function hlsRelayRestart(url) {
   }
   if (r.n >= HLS_RELAY_RESTARTS) return false;
   r.n++;
-  diagLog(
-      `hls.js restarted after a relay restart (${r.n}/${HLS_RELAY_RESTARTS})`);
-  loadLiveSource(url);
-  videoPlayer.play().catch(() => {});
+  diagLog(`hls.js restarted after ${why} (${r.n}/${HLS_RELAY_RESTARTS})`);
+  liveEngineDestroy();
+  const start = () => {
+    r.timer = null;
+    if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
+        channels[currentChannelIndex].url === url) {
+      loadLiveSource(url);
+      videoPlayer.play().catch(() => {});
+    }
+  };
+  if (delayMs > 0) {
+    r.timer = setTimeout(start, delayMs);
+  } else {
+    start();
+  }
   return true;
 }
 function liveEngineDestroy() {
+  clearTimeout(_hlsRelayRestart.timer);  // a new load replaces a restart
+  _hlsRelayRestart.timer = null;
   if (liveEngine.hls) {
     try {
       liveEngine.hls.destroy();
@@ -148,6 +170,15 @@ function loadLiveSource(url) {
     manifestLoadingMaxRetry: 2,
     fragLoadingMaxRetry: 4,
     pLoader: livePlaylistLoader(),  // a live playlist never ends
+    // The provider can keep a playlist request open for approximately 10 s
+    playlistLoadPolicy: {
+      default: {
+        maxTimeToFirstByteMs: 20000,
+        maxLoadTimeMs: 30000,
+        timeoutRetry: {maxNumRetry: 2, retryDelayMs: 0, maxRetryDelayMs: 0},
+        errorRetry: {maxNumRetry: 2, retryDelayMs: 1000, maxRetryDelayMs: 8000}
+      }
+    },
   });
   liveEngine.hls = hls;
   liveEngine.url = url;
@@ -193,8 +224,9 @@ function onHlsError(url, data) {
   const reply = isParse ?
       (body.replace(/\s+/g, ' ').trim().slice(0, 160) || '(empty)') :
       '';
-  const why = !isParse && data.reason ?
-      ` (${String(data.reason).replace(/\s+/g, ' ').slice(0, 120)})` :
+  const cause = data.reason || (data.error && data.error.message) || '';
+  const why = !isParse && cause ?
+      ` (${String(cause).replace(/\s+/g, ' ').slice(0, 120)})` :
       '';
   diagLog(
       `hls.js fatal ${data.type}/${data.details}${
@@ -216,7 +248,12 @@ function onHlsError(url, data) {
     return;
   }
   if (data.details === Hls.ErrorDetails.LEVEL_PARSING_ERROR &&
-      hlsRelayRestart(url)) {
+      hlsRelayRestart(url, 'a relay restart')) {
+    return;
+  }
+  if (notPlaylist && HLS_RELAY_NOT_READY.test(body) &&
+      hlsRelayRestart(
+          url, 'a relay that was not ready', HLS_RELAY_NOT_READY_DELAY_MS)) {
     return;
   }
   // A media error gets one in-place recovery (hls.js re-creates its
