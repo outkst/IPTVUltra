@@ -77,7 +77,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     headless: true,
     args: [
       '--window-size=1920,1080', '--autoplay-policy=no-user-gesture-required',
-      '--no-sandbox'
+      '--no-sandbox',
+      // Keep the page active when the screen of the PC locks
+      '--disable-features=CalculateNativeWinOcclusion',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding'
     ],
     defaultViewport: {width: 1920, height: 1080},
   });
@@ -106,6 +110,29 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     }
   }, k, kc);
   const back = () => key('GoBack', 461);
+  // Real mouse and keyboard input through CDP sometimes does not reach the
+  // page in headless Chrome on Windows (seen on 2026-10-24, probably when the
+  // screen of the PC locks). Thus, the suite uses script events. typeText()
+  // sends keydown to the focused element and adds the character only when no
+  // handler prevents it, as a browser does.
+  const typeText = text => page.evaluate(text => {
+    for (const ch of text) {
+      const el = document.activeElement || document.body;
+      const kc =
+          /[a-z]/i.test(ch) ? ch.toUpperCase().charCodeAt(0) : ch.charCodeAt(0);
+      const ev = new KeyboardEvent(
+          'keydown', {key: ch, bubbles: true, cancelable: true});
+      Object.defineProperty(ev, 'keyCode', {get: () => kc});
+      el.dispatchEvent(ev);
+      if (!ev.defaultPrevented && 'value' in el) {
+        el.value += ch;
+        el.dispatchEvent(new InputEvent(
+            'input', {bubbles: true, data: ch, inputType: 'insertText'}));
+      }
+      el.dispatchEvent(new KeyboardEvent('keyup', {key: ch, bubbles: true}));
+    }
+  }, text);
+  const click = sel => page.$eval(sel, el => el.click());
 
   await fetch(BASE + '/__reset');  // server may have been running across runs
   await page.goto(BASE + '/', {waitUntil: 'load'});
@@ -133,10 +160,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               LIVE_BUFFER_OPTIONS.some(o => o.v === 5)));
 
   // ---------- Xtream: add + load ----------
-  await page.type('#xtreamServer', BASE);
-  await page.type('#xtreamUsername', 'user');
-  await page.type('#xtreamPassword', 'pass');
-  await page.click('#saveXtreamBtn');
+  for (const [sel, text] of [
+           ['#xtreamServer', BASE], ['#xtreamUsername', 'user'],
+           ['#xtreamPassword', 'pass']]) {
+    await page.focus(sel);
+    await typeText(text);
+  }
+  await click('#saveXtreamBtn');
   await page.waitForSelector('.saved-item', {timeout: 5000});
   // Pre-seed two favorites so the prefetch path runs (tvgIds ch3.test,
   // ch4.test)
@@ -145,8 +175,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     favoriteIds.add('ch4.test');
     localStorage.setItem('iptv_favorites', JSON.stringify([...favoriteIds]));
   });
-  await page.click('.saved-item');
-  await page.click('#loadSelectedBtn');
+  await click('.saved-item');
+  await click('#loadSelectedBtn');
   await page.waitForFunction(
       () => document.getElementById('epgView').style.display === 'flex' &&
           epgRenderedRows.size > 0,
@@ -1050,7 +1080,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // Search typing in the EPG corner box must not be hijacked by guide
   // navigation
   await page.focus('#epgSearchInput');
-  await page.keyboard.type('Channel 000');
+  await typeText('Channel 000');
   await sleep(400);
   check(
       'typing in EPG search filters guide (best match first)',
@@ -1072,7 +1102,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(
           () => document.activeElement !==
               document.getElementById('epgSearchInput')));
-  await page.click('#epgClearSearchBtn');
+  await click('#epgClearSearchBtn');
 
   // ---------- Dedicated media keys: Play/Pause/CH+/CH- ----------
   {
@@ -1877,7 +1907,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         await page.evaluate(
             () => document.activeElement ===
                 document.getElementById('vodSearchInput')));
-    await page.keyboard.type('Comedy Movie 1');
+    await typeText('Comedy Movie 1');
     await sleep(400);
     check(
         'typing filters all movies (prefix matches first)',
@@ -2919,7 +2949,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           () => _xt === null && _epgQueue.length === 0 && epgData.size === 0));
 
   // ---------- M3U demo: standard view D-pad ----------
-  await page.click('#startDemoBtn');
+  await click('#startDemoBtn');
   await page
       .waitForFunction(
           () =>
@@ -3041,7 +3071,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         renderChannelList();
         return empty && renderedItems.size > 0;
       }));
-  await page.click('#settingsFooterBtn');
+  await click('#settingsFooterBtn');
   check(
       'settings opens from footer button',
       await page.evaluate(
@@ -3724,7 +3754,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'resumes last channel and focuses its row',
       al.name === 'Channel 01234' && al.focus === 1233 && al.rowOk,
       JSON.stringify(al));
-  await page.click('#epgSettingsBtn');
+  await click('#epgSettingsBtn');
   check(
       'settings opens from the guide button; per-playlist rows enabled',
       await page.evaluate(
