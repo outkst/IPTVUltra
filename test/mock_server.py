@@ -270,6 +270,24 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path.startswith('/hlsblack/'):
+            # An event that is finished: only a black placeholder segment
+            if u.path.endswith('.m3u8'):
+                body = (b'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                        b'#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.000000,\n'
+                        b'/hlsblack/video/black.ts\n#EXT-X-ENDLIST\n')
+                ctype = 'application/vnd.apple.mpegurl'
+            else:
+                body = open(
+                    os.path.join(os.path.dirname(CLIP), 'hls50', 'seg0.ts'),
+                    'rb').read()
+                ctype = 'video/mp2t'
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == '/hlsflap/index.m3u8':
             # A provider relay that answers "Cannot read" between 2 good
             # playlists. Each value of ?r= is a relay.

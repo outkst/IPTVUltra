@@ -3390,6 +3390,32 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'a "Cannot read" playlist reload keeps hls.js and its playlist',
       flap.same && flap.frags === 3 && flap.fatal === 0 && flap.restarts === 0,
       JSON.stringify(flap));
+  // An event that is finished: the provider sends only black.ts. The app
+  // tells why the picture is black.
+  await page.evaluate(() => {
+    document.getElementById('epgToastTitle').textContent = '';
+    channels[1].url = 'http://localhost:8765/hlsblack/index.m3u8';
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => document.getElementById('epgToastTitle').textContent ===
+              'No broadcast',
+          {timeout: 15000})
+      .catch(() => {});
+  const black = await page.evaluate(() => {
+    return {
+      title: document.getElementById('epgToastTitle').textContent,
+      placeholder: liveEngine.placeholder,
+      status: statusArea.innerText,
+      log: _diagLog.some(e => /placeholder \(black\.ts\)/.test(e.msg))
+    };
+  });
+  check(
+      'a playlist with only black.ts shows "No broadcast"',
+      black.title === 'No broadcast' && black.placeholder &&
+          /not on the air/.test(black.status) && black.log,
+      JSON.stringify(black));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;

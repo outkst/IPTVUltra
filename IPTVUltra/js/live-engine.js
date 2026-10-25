@@ -22,7 +22,8 @@ const liveEngine = {
   resumeUrl: '',
   fps: 0,
   fpsSamples: [],
-  relayWaits: 0
+  relayWaits: 0,
+  placeholder: false
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -102,6 +103,7 @@ function livePlaylistLoader() {
             response.data = text.replace(/^#EXT-X-ENDLIST[ \t]*\r?$/gm, '');
             if (/^\s*#EXTM3U/.test(text)) {
               _hlsLastPlaylist.set(context.url, response.data);
+              notePlaceholderPlaylist(text);
             }
           }
           this._relayWaitFrom = 0;
@@ -121,6 +123,30 @@ function livePlaylistLoader() {
     }
   };
   return _livePlaylistLoader;
+}
+// For an event that is finished or did not start, the provider sends a 15 s
+// black placeholder (".../video/black.ts") with #EXT-X-ENDLIST (seen on the
+// "ENDED" channels of "CA| SPORTSNET PPV", 2026-10-25). The app then tells why
+// the picture is black.
+const HLS_PLACEHOLDER_SEGMENT = /\/black\.ts(\?|#|$)/;
+/**
+ * Tells the user when a live playlist has only placeholder segments.
+ * @param {string} text The playlist text.
+ */
+function notePlaceholderPlaylist(text) {
+  const segs = text.split(/\r?\n/).filter(l => l && l[0] !== '#');
+  const placeholder =
+      segs.length > 0 && segs.every(l => HLS_PLACEHOLDER_SEGMENT.test(l));
+  if (placeholder === liveEngine.placeholder) return;
+  liveEngine.placeholder = placeholder;
+  if (!placeholder) return;
+  const t = 'The event of this channel is not on the air';
+  statusArea.innerText = `⚠️ ${t}`;
+  showEPGToast(
+      `${t}. The provider sends a black picture until the event starts.`,
+      'error', 'No broadcast');
+  hideEPGToast(8000);
+  diagLog('The provider sends a placeholder (black.ts) for this channel');
 }
 // A cold relay can also restart. Its next playlist then starts again at
 // MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
@@ -215,6 +241,7 @@ function loadLiveSource(url) {
   liveEngine.fps = 0;
   liveEngine.fpsSamples = [];
   liveEngine.relayWaits = 0;
+  liveEngine.placeholder = false;
   _hlsLastPlaylist.clear();  // a new start must not get an old playlist
   liveEngine.subManual = false;
   liveEngine.audioManual = false;
