@@ -50,6 +50,22 @@ function hlsAvailable() {
 function liveEngineActive() {
   return !!liveEngine.hls;
 }
+// The native pipeline plays HLS with the GStreamer element hlsdemux2. On the
+// "NFL | 4k" channel (EC-3 audio, which hls.js cannot play, 2026-10-25),
+// hlsdemux2 downloaded 2 segments again and again for 40 s, and the picture
+// stopped. The provider also sends each Xtream live channel as 1 continuous
+// MPEG-TS stream (.ts), which started in 1.3 s. Thus, a channel that hls.js
+// cannot play gets the .ts URL on the native pipeline.
+const XTREAM_LIVE_HLS = /(\/live\/[^/?#]+\/[^/?#]+\/\d+)\.m3u8$/;
+/**
+ * Gives the URL that the native pipeline plays for a live channel.
+ * @param {string} url The URL of the channel.
+ * @return {string} The .ts URL for an Xtream channel in `_hlsBroken`, else
+ *     the URL of the channel.
+ */
+function nativeLiveUrl(url) {
+  return _hlsBroken.has(url) ? url.replace(XTREAM_LIVE_HLS, '$1.ts') : url;
+}
 // The provider starts a relay when the first viewer connects. The first
 // playlist of a cold relay has 1 segment and #EXT-X-ENDLIST (seen on the
 // "CA| SPORTSNET PPV" channels, 2026-10-20). hls.js then plays the stream as a
@@ -211,7 +227,7 @@ function loadLiveSource(url, cause = '') {
   }
   liveEngineDestroy();
   if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
-    videoPlayer.src = url;
+    videoPlayer.src = nativeLiveUrl(url);
     videoPlayer.load();
     return false;
   }
@@ -317,8 +333,11 @@ function onHlsError(url, data) {
     return;
   }
   // A media error gets one in-place recovery (hls.js re-creates its
-  // SourceBuffers) before we give up on it
-  if (hls && data.type === Hls.ErrorTypes.MEDIA_ERROR &&
+  // SourceBuffers) before we give up on it. A codec that hls.js cannot demux
+  // ("Unsupported EC-3 in M2TS found") gets no recovery: the same segments
+  // fail again, and the provider refused the next playlist with HTTP 509.
+  const unsupported = /\bunsupported\b/i.test(cause);
+  if (hls && data.type === Hls.ErrorTypes.MEDIA_ERROR && !unsupported &&
       !liveEngine.recovered &&
       data.details !== Hls.ErrorDetails.BUFFER_INCOMPATIBLE_CODECS_ERROR) {
     liveEngine.recovered = true;
@@ -342,7 +361,7 @@ function onHlsError(url, data) {
   if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
       channels[currentChannelIndex].url === url) {
     umsNoteCurrentId();
-    videoPlayer.src = url;
+    videoPlayer.src = nativeLiveUrl(url);
     videoPlayer.load();
     liveUmsRefresh();
     videoPlayer.play().catch(() => {});

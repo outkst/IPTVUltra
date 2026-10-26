@@ -3918,6 +3918,40 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       diag.lastFail && diag.reply && diag.acct && diag.stored > 0 &&
           diag.after.mem === 0 && diag.after.stored === 0,
       JSON.stringify(diag));
+  // A codec that hls.js cannot demux gets no recovery. The native pipeline
+  // then plays an Xtream channel as 1 MPEG-TS stream, not with hlsdemux2.
+  const hlsTs = await page.evaluate(() => {
+    const u = 'http://xt.test/live/user/pass/1781953.m3u8';
+    let recovered = false;
+    liveEngine.hls = {
+      recoverMediaError() {
+        recovered = true;
+      },
+      destroy() {}
+    };
+    liveEngine.url = u;
+    liveEngine.recovered = false;
+    onHlsError(u, {
+      fatal: true,
+      type: Hls.ErrorTypes.MEDIA_ERROR,
+      details: Hls.ErrorDetails.FRAG_PARSING_ERROR,
+      reason: 'Unsupported EC-3 in M2TS found'
+    });
+    const other = 'http://hls.test/playlist.m3u8';
+    return {
+      recovered,
+      broken: _hlsBroken.has(u),
+      ts: nativeLiveUrl(u),
+      other: nativeLiveUrl(other) === other,
+      good: nativeLiveUrl('http://xt.test/live/user/pass/5.m3u8')
+    };
+  });
+  check(
+      'unsupported codec: no hls.js recovery; native plays the Xtream .ts URL',
+      !hlsTs.recovered && hlsTs.broken &&
+          hlsTs.ts === 'http://xt.test/live/user/pass/1781953.ts' &&
+          hlsTs.other && /\/5\.m3u8$/.test(hlsTs.good),
+      JSON.stringify(hlsTs));
   // ---------- Event (PPV) channels: times read from names fill the guide and
   // order the group ----------
   const ev = await page.evaluate(() => {
