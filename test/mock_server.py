@@ -335,11 +335,13 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if u.path.startswith(
-                '/hls50/'
-        ):  # 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the provider's)
-            name = os.path.basename(u.path)
-            path = os.path.join(os.path.dirname(CLIP), 'hls50', name)
+        parts = u.path.split('/')
+        # hls50: a 6 s HLS clip, 50 fps, no FRAME-RATE in the playlist (like the
+        # provider's). hls50noidr: the same clip with no IDR slice, thus the
+        # browser buffers no video frame from the transmuxed segments.
+        if len(parts) == 3 and parts[1] in ('hls50', 'hls50noidr'):
+            name = parts[2]
+            path = os.path.join(os.path.dirname(CLIP), parts[1], name)
             if not os.path.isfile(path):
                 self.send_response(404)
                 self.end_headers()

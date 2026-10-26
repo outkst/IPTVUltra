@@ -3665,6 +3665,37 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           srelay.log.some(
               m => /Player restarted after a relay restart/.test(m)),
       JSON.stringify(srelay));
+  // A channel whose transmuxed video the browser does not buffer (no IDR
+  // slice): after 3 video segments with an empty video buffer, the channel is
+  // incompatible, and the native pipeline plays it
+  await page.evaluate(() => {
+    channels[1].url = 'http://localhost:8765/hls50noidr/index.m3u8';
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsBroken.size >= 1 && !liveEngine.shaka &&
+              /hls50noidr/.test(videoPlayer.currentSrc || ''),
+          {timeout: 30000})
+      .catch(() => {});
+  const snovid = await page.evaluate(() => {
+    const r = {
+      broken: _hlsBroken.size,
+      shaka: !!liveEngine.shaka,
+      src: videoPlayer.currentSrc || '',
+      fail: _lastStreamFail && _lastStreamFail.what,
+      log: _diagLog.slice(-3).map(d => d.msg)
+    };
+    _hlsBroken.clear();
+    return r;
+  });
+  check(
+      'Shaka Player hands a channel with an empty video buffer to the native pipeline',
+      snovid.broken === 1 && !snovid.shaka &&
+          /\/hls50noidr\//.test(snovid.src) &&
+          /no video after 3 segments/.test(snovid.fail || '') &&
+          snovid.log.some(m => /video buffer is empty/.test(m)),
+      JSON.stringify(snovid));
   // A relay that restarts and whose first URL answers HTTP 509 on each
   // refresh: after 2 recoverable errors, Shaka Player starts again on the URL
   await page.evaluate(() => {

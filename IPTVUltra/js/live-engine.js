@@ -769,6 +769,11 @@ function shakaOnSegment(player, e) {
   }
   liveEngine.appendSpan += span;
   liveEngine.segments++;
+  if (liveEngine.segments >= SHAKA_NO_VIDEO_SEGMENTS &&
+      shakaVideoEmpty(player)) {
+    shakaNoVideo();
+    return;
+  }
   if (liveEngine.appendSpan >= 6 || liveEngine.segments >= 3) {
     const was = liveEngine.bitrate;
     liveEngine.bitrate =
@@ -778,6 +783,35 @@ function shakaOnSegment(player, e) {
     if (!was || Math.abs(liveEngine.bitrate - was) > was * 0.2)
       liveTechFromShaka();
   }
+}
+// Seen on the C4 (2026-10-26, one 4K channel with H.264 1920×1084 video and 3
+// E-AC-3 streams): Shaka Player appended the transmuxed video segments, but the
+// video SourceBuffer stayed empty, the element kept readyState 1, no frame was
+// decoded, and Shaka Player gave no error. The element did not start, thus the
+// watchdog saw a paused element. After SHAKA_NO_VIDEO_SEGMENTS video segments
+// with an empty video buffer, the channel is incompatible with the engine, and
+// the native pipeline plays it.
+const SHAKA_NO_VIDEO_SEGMENTS = 3;
+/**
+ * Tells if the video SourceBuffer of a Shaka Player is empty.
+ * @param {!Object} player The Shaka Player.
+ * @return {boolean} True when no video range is buffered.
+ */
+function shakaVideoEmpty(player) {
+  try {
+    return player.getBufferedInfo().video.length === 0;
+  } catch (_) {
+    return false;
+  }
+}
+function shakaNoVideo() {
+  const url = liveEngine.url, n = liveEngine.segments;
+  diagLog(`Shaka Player appended ${
+      n} video segments, but the video buffer is empty → native pipeline`);
+  noteStreamFail('Shaka Player', `no video after ${n} segments`, '');
+  _hlsBroken.add(url);
+  liveEngineDestroy();
+  liveHandToNative(url);
 }
 // The TV's SourceBuffer refuses appends at ~86 MB (see HLS_BUFFER_BYTES). The
 // buffer ahead and the buffer behind the playhead share that budget, thus
@@ -894,9 +928,9 @@ function liveTechFromShaka() {
         width: t.width,
         height: t.height,
         // Shaka Player estimates the rate from the first MPEG-TS segment, and
-        // the estimate is frequently a fraction of the real rate (6.25 for a
-        // 50 fps channel on the C4). The measured rate comes first.
-        frameRate: liveEngine.fps || t.frameRate
+        // the estimate is wrong on the C4 (6.25 or 37 for a 50 fps channel).
+        // The line shows only the measured rate.
+        frameRate: liveEngine.fps
       },
       liveEngine.bitrate || t.bandwidth || 0, liveEngine.reach);
 }
@@ -947,10 +981,11 @@ function liveTechSet(lvl, bitrate, reach) {
   const ac = String(lvl.audioCodec || '').toLowerCase();
   if (ac)
     bits.push(
-        /^mp4a\.40/.test(ac) ? 'AAC' :
-            /^ac-3/.test(ac) ? 'AC-3' :
-            /^ec-3/.test(ac) ? 'E-AC-3' :
-                               ac.toUpperCase());
+        /^mp4a\.(40\.34|6b|69)/.test(ac) ? 'MP3' :
+            /^mp4a\.40/.test(ac)         ? 'AAC' :
+            /^ac-3/.test(ac)             ? 'AC-3' :
+            /^ec-3/.test(ac)             ? 'E-AC-3' :
+                                           ac.toUpperCase());
   bits.push(`⏪ ${reach < settings.liveBuffer ? '~' : ''}${reach} min`);
   liveEngine.tech = bits.join(' · ');
   noteCurrentStreamTech();
