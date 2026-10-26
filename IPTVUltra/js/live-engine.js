@@ -50,8 +50,8 @@ function hlsAvailable() {
 function liveEngineActive() {
   return !!liveEngine.hls;
 }
-// The native pipeline plays HLS with the GStreamer element hlsdemux2. On the
-// "NFL | 4k" channel (EC-3 audio, which hls.js cannot play, 2026-10-25),
+// The native pipeline plays HLS with the GStreamer element hlsdemux2. On
+// one 4K channel (EC-3 audio, which hls.js cannot play, 2026-10-25),
 // hlsdemux2 downloaded 2 segments again and again for 40 s, and the picture
 // stopped. The provider also sends each Xtream live channel as 1 continuous
 // MPEG-TS stream (.ts), which started in 1.3 s. Thus, a channel that hls.js
@@ -67,8 +67,8 @@ function nativeLiveUrl(url) {
   return _hlsBroken.has(url) ? url.replace(XTREAM_LIVE_HLS, '$1.ts') : url;
 }
 // The provider starts a relay when the first viewer connects. The first
-// playlist of a cold relay has 1 segment and #EXT-X-ENDLIST (seen on the
-// "CA| SPORTSNET PPV" channels, 2026-10-20). hls.js then plays the stream as a
+// playlist of a cold relay has 1 segment and #EXT-X-ENDLIST (seen on
+// some event (PPV) channels, 2026-10-20). hls.js then plays the stream as a
 // finished VOD: approximately 11 s, then the state ENDED. Later playlists of
 // the same stream are usual live playlists. A live channel does not end, thus
 // this playlist loader removes the tag.
@@ -145,7 +145,7 @@ function livePlaylistLoader() {
 }
 // For an event that is finished or did not start, the provider sends a 15 s
 // black placeholder (".../video/black.ts") with #EXT-X-ENDLIST (seen on the
-// "ENDED" channels of "CA| SPORTSNET PPV", 2026-10-25). The app then tells why
+// "ENDED" event (PPV) channels, 2026-10-25). The app then tells why
 // the picture is black.
 const HLS_PLACEHOLDER_SEGMENT = /(^|\/)black\.ts(\?|#|$)/;
 /**
@@ -168,8 +168,8 @@ function notePlaceholderPlaylist(text) {
   diagLog('The provider sends a placeholder (black.ts) for this channel');
 }
 // A cold relay can also restart. Its next playlist then starts again at
-// MEDIA-SEQUENCE 0 with a different segment (seen on channel 13973, "CA:
-// SPORTSNET PPV 13", 2026-10-25). hls.js cannot merge it ("media sequence
+// MEDIA-SEQUENCE 0 with a different segment (seen on one
+// event (PPV) channel, 2026-10-25). hls.js cannot merge it ("media sequence
 // mismatch") and stops with a fatal level parsing error. A new hls.js on the
 // same URL reads the new playlist. HLS_RELAY_RESTARTS limits the restarts of 1
 // URL in HLS_RELAY_WINDOW_MS. Then the usual hand-over to the native player

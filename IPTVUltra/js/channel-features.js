@@ -48,18 +48,18 @@ function chDisplayNum(ch, idx) {
 // Event channels carry their schedule in the name instead of the EPG, in many
 // provider formats. Only formats whose time zone is known are read; the zones
 // were checked on the real provider 2026-10-15 against the same event listed in
-// two formats (ESPN+ "Oct 15 7:00AM ET (2026-10-15 07:00:00)"; MAX "@ Oct 15
-// 02:30 AM" = "Thu 15 Oct 02:30 EDT"; Sportsnet+ "@ Oct 15 9:00 AM" = "Thu 15
-// Oct 10:30 NDT"; PDC "start:… 11:00" = a Basel 13:00 session, i.e. UTC). Read
-// formats:
-//   "LIVE | SEATTLE @ TAMPA BAY | Thu 15 Oct 20:30 NDT (CA) | 8K EXCLUSIVE | …"
-//   (also "// UK Sat 10 Oct 12:30pm") "End | Leo Victor vs. Notch | … |
-//   2026-10-15 | 00:15 (GMT) | …"               (also 15-10-2026) "UFC 02 : UFC
-//   FIGHT NIGHT … start:2026-10-11 01:55:00 stop:2026-10-11 06:00:00"  (UTC)
-//   "US (ESPN+ 001) | Football: … (2026-10-15 08:00:00)" (US Eastern; "AU ("
-//   names Sydney) "Toronto FC vs Orlando City @ Oct 14 7:30 PM :MLS 04" (US
+// two formats ("Oct 15 7:00AM ET (2026-10-15 07:00:00)"; "@ Oct 15 02:30 AM" =
+// "Thu 15 Oct 02:30 EDT"; "@ Oct 15 9:00 AM" = "Thu 15 Oct 10:30 NDT";
+// "start:… 11:00" = a 13:00 session in Central Europe, that is, UTC). Read
+// formats (<event> is the text of the event):
+//   "LIVE | <event> | Thu 15 Oct 20:30 NDT (CA) | …"
+//   (also "// UK Sat 10 Oct 12:30pm") "End | <event> | … |
+//   2026-10-15 | 00:15 (GMT) | …"               (also 15-10-2026) "<event> …
+//   start:2026-10-11 01:55:00 stop:2026-10-11 06:00:00"  (UTC)
+//   "US (<group> 001) | <event> (2026-10-15 08:00:00)" (US Eastern; "AU ("
+//   names Sydney) "<event> @ Oct 14 7:30 PM :<league> 04" (US
 //   Eastern; US| and CA| groups only)
-// Times without a zone ("7pm Sabres at Maple Leafs", "Fri 18 Apr 22:05") and
+// Times without a zone ("7pm <event>", "Fri 18 Apr 22:05") and
 // the 2098 placeholder slots are skipped. A parsed event fills the guide for a
 // channel that has no EPG of its own (epgProgsOf) and orders its group.
 const EV_MON = {
