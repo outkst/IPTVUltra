@@ -38,7 +38,7 @@ function startStallWatchdog() {
         stallCount = 0;
         stallLastTime = -1;
         noteStreamFail(
-            liveEngineActive() ? 'hls.js' : 'native',
+            liveEngineName(),
             `No progress for ${STALL_THRESHOLD_CHECKS * 2} s (readyState ${
                 videoPlayer.readyState}, t=${t.toFixed(1)} s)`,
             '');
