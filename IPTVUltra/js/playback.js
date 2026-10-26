@@ -28,7 +28,11 @@ function startStallWatchdog() {
     } else if (bufEnd < _stallBufEnd - 0.5) {
       _stallBufEnd = bufEnd;  // a new source or a seek
     }
-    if (t === stallLastTime && videoPlayer.readyState < 3) {
+    // Shaka Player sets the playback rate to 0 while it waits for data, and
+    // the element then keeps readyState 4 (seen on the C4, 2026-10-26)
+    const waits = videoPlayer.readyState < 3 ||
+        (!!liveEngine.shaka && liveEngine.shaka.isBuffering());
+    if (t === stallLastTime && waits) {
       stallCount++;
       _stallGoodChecks = 0;
       if (stallCount >= STALL_THRESHOLD_CHECKS && bufEnd - t < 2 &&

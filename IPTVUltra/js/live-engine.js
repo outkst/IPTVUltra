@@ -37,7 +37,8 @@ const liveEngine = {
   segments: 0,
   pendingSamples: 0,
   videoTrackId: 0,
-  lastReply: ''
+  lastReply: '',
+  manifestFails: 0
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -284,6 +285,7 @@ function shakaResponseFilter(url, player) {
         text.replace(/^#EXT-X-(ENDLIST|PLAYLIST-TYPE:[A-Z]*)[ \t]*\r?$/gm, '');
     response.data = SU.toUTF8(clean);
     _hlsLastPlaylist.set(uri, clean);
+    liveEngine.manifestFails = 0;
     if (media) notePlaceholderPlaylist(text);
   };
 }
@@ -415,6 +417,7 @@ function loadLiveSource(url, cause = '') {
   liveEngine.pendingSamples = 0;
   liveEngine.videoTrackId = 0;
   liveEngine.lastReply = '';
+  liveEngine.manifestFails = 0;
   _hlsLastPlaylist.clear();  // a new start must not get an old playlist
   _shakaSeq.clear();
   liveEngine.subManual = false;
@@ -568,7 +571,12 @@ function onShakaError(url, err) {
   if (!err || liveEngine.url !== url || !liveEngine.shaka) return;
   const E = shaka.util.Error;
   const isShaka = err instanceof E;
-  if (isShaka && err.severity !== E.Severity.CRITICAL) return;
+  if (isShaka && err.severity !== E.Severity.CRITICAL) {
+    if (err.category === E.Category.NETWORK && Array.isArray(err.data) &&
+        err.data[4] === shaka.net.NetworkingEngine.RequestType.MANIFEST)
+      shakaManifestFailed(url, err);
+    return;
+  }
   // The app changed the source during a load (LOAD_INTERRUPTED,
   // OPERATION_ABORTED)
   if (isShaka && err.category === E.Category.PLAYER) return;
@@ -603,6 +611,31 @@ function onShakaError(url, err) {
       ((cat === E.Category.MEDIA && code !== E.Code.QUOTA_EXCEEDED_ERROR) ||
        (cat === E.Category.MANIFEST && !notPlaylist));
   if (incompatible) _hlsBroken.add(url);
+  liveEngineDestroy();
+  liveHandToNative(url);
+}
+// Seen on the C4 (2026-10-26, one 4K channel): the relay of the provider
+// restarted, and the redirect URL of the first playlist then answered HTTP 509
+// on each refresh. Shaka Player reports each failed refresh cycle as a
+// recoverable error and tries again without end, while the playhead waits at
+// the end of the buffer. hls.js stops with a fatal level load error in the
+// same case. After SHAKA_MANIFEST_FAILS cycles, the engine starts again on the
+// channel URL, which gives a new redirect. The restart limit of
+// hlsRelayRestart applies, then the native pipeline gets the channel.
+const SHAKA_MANIFEST_FAILS = 2;
+/**
+ * Counts a failed playlist refresh of Shaka Player (a recoverable error).
+ * @param {string} url The URL of the channel.
+ * @param {!shaka.util.Error} err The error.
+ */
+function shakaManifestFailed(url, err) {
+  if (++liveEngine.manifestFails < SHAKA_MANIFEST_FAILS) return;
+  liveEngine.manifestFails = 0;
+  const status = +err.data[1] || 0;
+  const what = `${shakaCodeName(err.code)}${status ? ` HTTP ${status}` : ''}`;
+  diagLog(`Shaka Player: the playlist refresh failed (${what})`);
+  if (hlsRelayRestart(url)) return;
+  noteStreamFail('Shaka Player', `playlist refresh: ${what}`, '');
   liveEngineDestroy();
   liveHandToNative(url);
 }
@@ -860,7 +893,10 @@ function liveTechFromShaka() {
         audioCodec: t.audioCodec,
         width: t.width,
         height: t.height,
-        frameRate: t.frameRate
+        // Shaka Player estimates the rate from the first MPEG-TS segment, and
+        // the estimate is frequently a fraction of the real rate (6.25 for a
+        // 50 fps channel on the C4). The measured rate comes first.
+        frameRate: liveEngine.fps || t.frameRate
       },
       liveEngine.bitrate || t.bandwidth || 0, liveEngine.reach);
 }

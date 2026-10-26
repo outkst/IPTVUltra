@@ -3665,6 +3665,36 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           srelay.log.some(
               m => /Player restarted after a relay restart/.test(m)),
       JSON.stringify(srelay));
+  // A relay that restarts and whose first URL answers HTTP 509 on each
+  // refresh: after 2 recoverable errors, Shaka Player starts again on the URL
+  await page.evaluate(() => {
+    _hlsRelayRestart.url = '';
+    _hlsRelayRestart.n = 0;
+    channels[1].url =
+        'http://localhost:8765/hlsdead/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsRelayRestart.n >= 1 && liveEngine.shaka &&
+              liveEngine.shaka.isLive() && liveEngine.segments >= 1,
+          {timeout: 40000})
+      .catch(() => {});
+  const sdead = await page.evaluate(() => ({
+                                      n: _hlsRelayRestart.n,
+                                      shaka: !!liveEngine.shaka,
+                                      broken: _hlsBroken.size,
+                                      url: liveEngine.url,
+                                      segments: liveEngine.segments,
+                                      log: _diagLog.slice(-4).map(d => d.msg)
+                                    }));
+  check(
+      'Shaka Player starts again when the playlist refresh answers HTTP 509',
+      sdead.n >= 1 && sdead.shaka && sdead.broken === 0 &&
+          sdead.segments >= 1 && /\/hlsdead\//.test(sdead.url) &&
+          sdead.log.some(
+              m => /refresh failed \(BAD_HTTP_STATUS HTTP 509\)/.test(m)),
+      JSON.stringify(sdead));
   // A relay that is not ready: the filter requests the playlist again each
   // 3 s, and Shaka Player gets no error
   await page.evaluate(() => {
