@@ -107,8 +107,12 @@ function startVodPlayback(p) {
   const techEl = document.getElementById('vodOsdTech');
   if (techEl) techEl.textContent = vodTech[key] || '';
   videoPlayer.pause();
-  videoPlayer.src = url;
-  videoPlayer.load();
+  // A Shaka Player live engine removes the src attribute at the end of its
+  // asynchronous destroy; the VOD source waits for it
+  afterLiveTeardown(() => {
+    videoPlayer.src = url;
+    videoPlayer.load();
+  });
   umsAttach();
   if (resumeAt > 0)
     videoPlayer.addEventListener('loadedmetadata', function seekOnce() {
@@ -763,6 +767,41 @@ function vodTracksOpen() {
 }
 function vodTracksItems() {
   const items = [];
+  // Live through Shaka Player: its audio tracks and text tracks
+  if (!vodPlay.active && liveEngine.shaka) {
+    const p = liveEngine.shaka;
+    let auds = [], subs = [];
+    try {
+      auds = p.getAudioTracks() || [];
+      subs = p.getTextTracks() || [];
+    } catch (_) { /* not loaded yet */
+    }
+    if (auds.length > 1) {
+      items.push({header: 'Audio'});
+      auds.forEach((t, i) => items.push({
+        kind: 'audio',
+        shaka: t,
+        label: engineTrackLabel(t.language, t.label, i),
+        on: !!t.active
+      }));
+    }
+    items.push({header: 'Subtitles'});
+    items.push({
+      kind: 'sub',
+      shaka: null,
+      label: 'Off',
+      on: !subs.some(t => t.active)
+    });
+    subs.forEach((t, i) => items.push({
+      kind: 'sub',
+      shaka: t,
+      label: engineTrackLabel(t.language, t.label, i),
+      on: !!t.active
+    }));
+    if (!subs.length)
+      items.push({note: 'This channel has no subtitle tracks.'});
+    return items;
+  }
   // Live through hls.js: its own alternate audio and subtitle renditions (the
   // media service does not see MSE playback)
   if (!vodPlay.active && liveEngineActive()) {
@@ -926,11 +965,55 @@ function moveVodTracksFocus(dir) {
   }
 }
 function hlsTrackLabel(t, i) {
-  const lang = t.lang ? resolveLanguage(t.lang) : '';
-  const name = (t.name || '').trim();
-  if (name && lang && name.toLowerCase() !== lang.toLowerCase())
-    return `${lang} · ${name}`;
-  return name || lang || ('Track ' + (i + 1));
+  return engineTrackLabel(t.lang, t.name, i);
+}
+/**
+ * Gives the label of an engine track for the tracks menu.
+ * @param {string|undefined} lang The language code of the track.
+ * @param {string|undefined} name The name of the track.
+ * @param {number} i The index of the track.
+ * @return {string} The label.
+ */
+function engineTrackLabel(lang, name, i) {
+  const language = lang ? resolveLanguage(lang) : '';
+  name = (name || '').trim();
+  if (name && language && name.toLowerCase() !== language.toLowerCase())
+    return `${language} · ${name}`;
+  return name || language || ('Track ' + (i + 1));
+}
+// Settings language preferences applied to the tracks of Shaka Player when a
+// channel announces them. A selection by the user stays.
+function applyShakaTrackPrefs() {
+  const p = liveEngine.shaka;
+  if (!p) return;
+  let subs = [], auds = [];
+  try {
+    subs = p.getTextTracks() || [];
+    auds = p.getAudioTracks() || [];
+    if (subs.length && !liveEngine.subManual) {
+      let pick = null;
+      if (settings.subAuto)
+        pick = settings.subLang === 'any' ?
+            subs[0] :
+            subs.find(
+                t => trackMatchesLang(
+                    {language: t.language || '', label: t.label || ''},
+                    settings.subLang)) ||
+                null;
+      const cur = subs.find(t => t.active) || null;
+      if ((pick && pick.id) !== (cur && cur.id)) p.selectTextTrack(pick);
+    }
+    if (auds.length > 1 && !liveEngine.audioManual &&
+        settings.audioLang !== 'default') {
+      const t = auds.find(
+          a => trackMatchesLang(
+              {language: a.language || '', label: a.label || ''},
+              settings.audioLang));
+      if (t && !t.active) p.selectAudioTrack(t);
+    }
+  } catch (_) { /* not loaded yet */
+  }
+  updateVodTracksHint();
 }
 // Settings language preferences applied to hls.js renditions when a channel
 // announces them
@@ -968,6 +1051,23 @@ function activateVodTrack() {
     showVodOsd();
     return;
   }  // OK resets the offset
+  if (it.shaka !== undefined && liveEngine.shaka) {
+    const p = liveEngine.shaka;
+    try {
+      if (it.kind === 'sub') {
+        p.selectTextTrack(it.shaka);
+        liveEngine.subManual = true;
+      } else {
+        p.selectAudioTrack(it.shaka);
+        liveEngine.audioManual = true;
+      }
+    } catch (_) { /* not loaded yet */
+    }
+    updateVodTracksHint();
+    renderVodTracks();
+    showVodOsd();
+    return;
+  }
   if (it.hls !== undefined && liveEngine.hls) {
     const h = liveEngine.hls;
     if (it.kind === 'sub') {

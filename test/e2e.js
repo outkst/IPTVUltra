@@ -87,7 +87,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   });
   const page = await browser.newPage();
   const errors = [];
-  page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+  page.on('pageerror', e => {
+    errors.push('pageerror: ' + e.message);
+    // The number of the last check tells where the error occurred
+    console.log(`PAGEERROR after check ${results.length}: ${e.message} ${
+        (e.stack || '').slice(0, 400)}`);
+  });
   page.on('console', m => {
     if (m.type() === 'error' &&
         !/net::|404|Failed to load resource|MEDIA|PalmServiceBridge/.test(
@@ -3527,6 +3532,361 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         return !liveEngineActive() &&
             (videoPlayer.getAttribute('src') || '') === channels[3].url;
       }));
+
+  // ---------- Shaka Player live engine: the setting "Live engine" selects it
+  // for HLS channels, with the same provider workarounds and the same native
+  // fallback ----------
+  check(
+      'Shaka Player loaded; the default live engine is hls.js',
+      await page.evaluate(
+          () => typeof shaka !== 'undefined' &&
+              shaka.Player.isBrowserSupported() &&
+              settings.liveEngine === 'hls' && liveMseEngine() === '' &&
+              LIVE_ENGINE_OPTIONS.some(o => o.v === 'shaka') &&
+              settingsRows().some(r => r.id === 'liveEngine')));
+  const shk = await page.evaluate(() => {
+    settings.liveEngine = 'shaka';
+    settings.liveBuffer = 5;
+    saveSettings();
+    channels[1].url = 'http://localhost:8765/hls50/index.m3u8';
+    selectChannel(1);
+    return {
+      engine: liveMseEngine(),
+      active: liveEngineActive(),
+      name: liveEngineName(),
+      shaka: !!liveEngine.shaka,
+      hls: !!liveEngine.hls,
+      url: liveEngine.url,
+      ums: liveUms === null,
+      row: settingsRows().find(r => r.id === 'liveEngine').get()
+    };
+  });
+  check(
+      'live engine Shaka Player: it owns the HLS channel (media service released)',
+      shk.engine === 'shaka' && shk.active && shk.shaka && !shk.hls &&
+          shk.name === 'Shaka Player' && /hls50/.test(shk.url) && shk.ums &&
+          shk.row === 'shaka',
+      JSON.stringify(shk));
+  await page
+      .waitForFunction(
+          () =>
+              liveEngine.shaka && liveEngine.fps > 0 && liveEngine.bitrate > 0,
+          {timeout: 20000})
+      .catch(() => {});
+  const sfps = await page.evaluate(
+      () => ({
+        fps: liveEngine.fps,
+        samples: liveEngine.fpsSamples.map(x => +x.toFixed(2)),
+        tech: liveEngine.tech,
+        bitrate: liveEngine.bitrate,
+        reach: liveEngine.reach,
+        // Shaka Player attaches its MediaSource with a <source> child
+        src: videoPlayer.currentSrc || '',
+        attr: videoPlayer.getAttribute('src') || '',
+        live: !!(liveEngine.shaka && liveEngine.shaka.isLive()),
+        rec: streamTechOf(channels[1], 1),
+        goal: liveEngine.shaka &&
+            liveEngine.shaka.getConfiguration().streaming.bufferingGoal,
+        trackId: liveEngine.videoTrackId,
+        log: _diagLog.slice(-3).map(d => d.msg)
+      }));
+  check(
+      'Shaka Player path: frame rate from the appended samples, bitrate, codec line',
+      sfps.fps === 50 && /H\.264 · .*50 fps · \d+ kbps/.test(sfps.tech) &&
+          sfps.bitrate > 0 && /^blob:/.test(sfps.src) && !sfps.attr &&
+          sfps.rec && sfps.rec.fps === 50 && sfps.goal > 0 && sfps.reach === 5,
+      JSON.stringify(sfps));
+  // The fixture ends with #EXT-X-ENDLIST and has PLAYLIST-TYPE:VOD, like the
+  // first playlist of a cold relay; the response filter removes both
+  check(
+      'Shaka Player live playlist with #EXT-X-ENDLIST stays live (cold relay)',
+      sfps.live, JSON.stringify(sfps));
+  // A dead playlist: a network error hands the channel to the native player
+  // without marking it incompatible
+  await page.evaluate(() => {
+    channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8';
+    selectChannel(2);
+  });
+  await page
+      .waitForFunction(
+          () => !liveEngineActive() &&
+              /no-such-stream/.test(videoPlayer.getAttribute('src') || ''),
+          {timeout: 40000})
+      .catch(() => {});
+  const sfb = await page.evaluate(() => ({
+                                    active: liveEngineActive(),
+                                    broken: [..._hlsBroken],
+                                    src: videoPlayer.getAttribute('src') || '',
+                                    url: channels[currentChannelIndex].url,
+                                    log: _diagLog.slice(-4).map(d => d.msg)
+                                  }));
+  // The native pipeline then fails on the same URL, and its own failure
+  // replaces `_lastStreamFail`; the log keeps the Shaka Player entry
+  check(
+      'fatal Shaka Player network error (dead playlist) hands the channel to native',
+      !sfb.active && sfb.broken.length === 0 && sfb.src === sfb.url &&
+          sfb.log.some(
+              m =>
+                  /Shaka Player fatal 1\/BAD_HTTP_STATUS HTTP 404 reply: /.test(
+                      m)),
+      JSON.stringify(sfb));
+  await page
+      .waitForFunction(
+          () => document.getElementById('epgToastTitle').textContent ===
+              'Stream Error',
+          {timeout: 25000})
+      .catch(() => {});
+  // A relay that restarts: the response filter sees MEDIA-SEQUENCE 0 again
+  // with a different segment, and Shaka Player starts again on the same URL
+  await page.evaluate(() => {
+    _hlsRelayRestart.url = '';
+    _hlsRelayRestart.n = 0;
+    channels[1].url =
+        'http://localhost:8765/hlsrestart/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsRelayRestart.n >= 1 && liveEngine.shaka &&
+              liveEngine.shaka.isLive(),
+          {timeout: 30000})
+      .catch(() => {});
+  const srelay = await page.evaluate(() => ({
+                                       n: _hlsRelayRestart.n,
+                                       shaka: !!liveEngine.shaka,
+                                       broken: _hlsBroken.size,
+                                       url: liveEngine.url,
+                                       log: _diagLog.slice(-3).map(d => d.msg)
+                                     }));
+  check(
+      'Shaka Player starts again on the same URL after a relay restart',
+      srelay.n >= 1 && srelay.shaka && srelay.broken === 0 &&
+          /\/hlsrestart\//.test(srelay.url) &&
+          srelay.log.some(
+              m => /Player restarted after a relay restart/.test(m)),
+      JSON.stringify(srelay));
+  // A relay that restarts and whose first URL answers HTTP 509 on each
+  // refresh: after 2 recoverable errors, Shaka Player starts again on the URL
+  await page.evaluate(() => {
+    _hlsRelayRestart.url = '';
+    _hlsRelayRestart.n = 0;
+    channels[1].url =
+        'http://localhost:8765/hlsdead/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => _hlsRelayRestart.n >= 1 && liveEngine.shaka &&
+              liveEngine.shaka.isLive() && liveEngine.segments >= 1,
+          {timeout: 40000})
+      .catch(() => {});
+  const sdead = await page.evaluate(() => ({
+                                      n: _hlsRelayRestart.n,
+                                      shaka: !!liveEngine.shaka,
+                                      broken: _hlsBroken.size,
+                                      url: liveEngine.url,
+                                      segments: liveEngine.segments,
+                                      log: _diagLog.slice(-4).map(d => d.msg)
+                                    }));
+  check(
+      'Shaka Player starts again when the playlist refresh answers HTTP 509',
+      sdead.n >= 1 && sdead.shaka && sdead.broken === 0 &&
+          sdead.segments >= 1 && /\/hlsdead\//.test(sdead.url) &&
+          sdead.log.some(
+              m => /refresh failed \(BAD_HTTP_STATUS HTTP 509\)/.test(m)),
+      JSON.stringify(sdead));
+  // A relay that is not ready: the filter requests the playlist again each
+  // 3 s, and Shaka Player gets no error
+  await page.evaluate(() => {
+    _hlsRelayRestart.url = '';
+    _hlsRelayRestart.n = 0;
+    channels[1].url =
+        'http://localhost:8765/hlscold/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.shaka && liveEngine.shaka.isLive(), {timeout: 30000})
+      .catch(() => {});
+  const scold = await page.evaluate(() => ({
+                                      waits: liveEngine.relayWaits,
+                                      restarts: _hlsRelayRestart.n,
+                                      shaka: !!liveEngine.shaka,
+                                      src: videoPlayer.currentSrc || '',
+                                      reloads: _reloadAttempts,
+                                      log: _diagLog.slice(-3).map(d => d.msg)
+                                    }));
+  check(
+      'Shaka Player waits for a relay that is not ready: no error, restart, or reload',
+      scold.waits === 1 && scold.restarts === 0 && scold.shaka &&
+          /^blob:/.test(scold.src) && scold.reloads === 0 &&
+          scold.log.some(m => /Shaka Player waits for the relay/.test(m)),
+      JSON.stringify(scold));
+  // "Cannot read" between 2 good playlists: the same player gets the last good
+  // playlist, then the next one
+  await page.evaluate(() => {
+    window.__flapErrors = 0;
+    channels[1].url =
+        'http://localhost:8765/hlsflap/index.m3u8?r=' + Date.now();
+    selectChannel(1);
+    window.__flapShaka = liveEngine.shaka;
+    liveEngine.shaka.addEventListener('error', () => window.__flapErrors++);
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.shaka === window.__flapShaka &&
+              [..._hlsLastPlaylist.values()].some(
+                  t => t.split('#EXTINF').length === 4),
+          {timeout: 30000})
+      .catch(() => {});
+  const sflap =
+      await page.evaluate(() => ({
+                            same: liveEngine.shaka === window.__flapShaka,
+                            three: [..._hlsLastPlaylist.values()].some(
+                                t => t.split('#EXTINF').length === 4),
+                            fatal: window.__flapErrors,
+                            restarts: _hlsRelayRestart.n,
+                            waits: liveEngine.relayWaits
+                          }));
+  check(
+      'a "Cannot read" playlist reload keeps Shaka Player and its playlist',
+      sflap.same && sflap.three && sflap.fatal === 0 && sflap.restarts === 0 &&
+          sflap.waits === 0,
+      JSON.stringify(sflap));
+  // A finished event: only black.ts. The app tells why, and the watchdog does
+  // not reload
+  await page.evaluate(() => {
+    document.getElementById('epgToastTitle').textContent = '';
+    channels[1].url = 'http://localhost:8765/hlsblack/index.m3u8';
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => document.getElementById('epgToastTitle').textContent ===
+              'No broadcast',
+          {timeout: 15000})
+      .catch(() => {});
+  const sblack = await page.evaluate(() => {
+    window.__blackShaka = liveEngine.shaka;
+    return {
+      title: document.getElementById('epgToastTitle').textContent,
+      placeholder: liveEngine.placeholder,
+      shaka: !!liveEngine.shaka,
+      reloads: _reloadAttempts
+    };
+  });
+  await sleep(14000);
+  const sblackAfter =
+      await page.evaluate(() => ({
+                            same: liveEngine.shaka === window.__blackShaka,
+                            reloads: _reloadAttempts
+                          }));
+  check(
+      'Shaka Player: a black.ts playlist shows "No broadcast" and gets no reload',
+      sblack.title === 'No broadcast' && sblack.placeholder && sblack.shaka &&
+          sblackAfter.same && sblackAfter.reloads === sblack.reloads,
+      JSON.stringify({sblack, sblackAfter}));
+  // Error classes (unit-level): the reply that is not a playlist is a network
+  // failure; unsupported content marks the channel; a recoverable error and an
+  // interrupted load are ignored
+  const serr = await page.evaluate(() => {
+    const E = shaka.util.Error;
+    const fake = () => ({
+      destroy() {
+        return Promise.resolve();
+      }
+    });
+    const out = {};
+    liveEngineDestroy();  // the real player of the previous check
+    let u = 'http://shaka.test/html.m3u8';
+    liveEngine.shaka = fake();
+    liveEngine.url = u;
+    liveEngine.lastReply = '<html><body>Max connections reached</body></html>';
+    onShakaError(
+        u,
+        new E(
+            E.Severity.CRITICAL, E.Category.MANIFEST,
+            E.Code.HLS_PLAYLIST_HEADER_MISSING, u));
+    out.html = _hlsBroken.has(u);
+    out.htmlGone = !liveEngine.shaka;
+    u = 'http://xt.test/live/user/pass/777.m3u8';
+    liveEngine.shaka = fake();
+    liveEngine.url = u;
+    onShakaError(
+        u,
+        new E(
+            E.Severity.CRITICAL, E.Category.MANIFEST,
+            E.Code.CONTENT_UNSUPPORTED_BY_BROWSER));
+    out.unsupported = _hlsBroken.has(u);
+    out.ts = nativeLiveUrl(u);
+    u = 'http://shaka.test/rec.m3u8';
+    liveEngine.shaka = fake();
+    liveEngine.url = u;
+    onShakaError(
+        u,
+        new E(
+            E.Severity.RECOVERABLE, E.Category.NETWORK, E.Code.HTTP_ERROR, u));
+    out.recoverableKept = !!liveEngine.shaka;
+    onShakaError(
+        u,
+        new E(E.Severity.CRITICAL, E.Category.PLAYER, E.Code.LOAD_INTERRUPTED));
+    out.interruptedKept = !!liveEngine.shaka;
+    liveEngineDestroy();
+    out.log = _diagLog.map(e => e.msg)
+                  .filter(m => /Shaka Player fatal/.test(m))
+                  .slice(-2);
+    out.names = [shakaCodeName(E.Code.BAD_HTTP_STATUS), shakaCodeName(-5)];
+    return out;
+  });
+  check(
+      'Shaka Player errors: HTML reply = network failure; unsupported content marks',
+      !serr.html && serr.htmlGone && serr.unsupported &&
+          serr.ts === 'http://xt.test/live/user/pass/777.ts' &&
+          serr.recoverableKept && serr.interruptedKept &&
+          /4\/HLS_PLAYLIST_HEADER_MISSING reply: <html>.*not a playlist/.test(
+              serr.log[0]) &&
+          /4\/CONTENT_UNSUPPORTED_BY_BROWSER/.test(serr.log[1]) &&
+          serr.names.join() === 'BAD_HTTP_STATUS,-5',
+      JSON.stringify(serr));
+  // The relay restart detector (unit-level)
+  const srst = await page.evaluate(() => {
+    _shakaSeq.clear();
+    const u = 'http://seq.test/a.m3u8';
+    const pl = (seq, segs) => `#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:${seq}\n` +
+        segs.map(s => `#EXTINF:2.0,\n${s}\n`).join('');
+    return [
+      playlistRestarted(u, pl(0, ['seg0.ts'])),
+      playlistRestarted(u, pl(0, ['seg0.ts'])),             // unchanged
+      playlistRestarted(u, pl(1, ['seg1.ts', 'seg2.ts'])),  // slides
+      playlistRestarted(u, pl(0, ['seg7.ts'])),             // restart
+      playlistRestarted(u, pl(0, ['seg9.ts'])),  // the same number, new segment
+      playlistRestarted(u, 'Cannot read'),
+    ];
+  });
+  check(
+      'the relay restart detector: a lower sequence or a new first segment',
+      srst.join() === 'false,false,false,true,true,false',
+      JSON.stringify(srst));
+  await page.evaluate(u => {
+    channels[1].url = u;
+    settings.liveBuffer = 0;
+    settings.liveEngine = 'hls';
+    saveSettings();
+    _hlsBroken.clear();
+    document.getElementById('epgToastTitle').textContent = '';
+    selectChannel(3);
+  }, fpsOrigUrl);
+  await page
+      .waitForFunction(
+          () => !liveEngineActive() &&
+              (videoPlayer.getAttribute('src') || '') === channels[3].url,
+          {timeout: 5000})
+      .catch(() => {});
+  check(
+      'live engine hls.js and buffer Off again: the next channel load is native',
+      await page.evaluate(
+          () => !liveEngineActive() && liveMseEngine() === '' &&
+              (videoPlayer.getAttribute('src') || '') === channels[3].url));
 
   // ---------- XMLTV name fallback (unit-level: the demo has no XMLTV feed)
   // ----------

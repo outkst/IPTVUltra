@@ -1,9 +1,9 @@
 /**
- * @fileoverview Live engine (native video or hls.js with a rewind buffer), the
- * provider connection limit, and AV sync on rooted TVs.
+ * @fileoverview Live engine (native video, or hls.js or Shaka Player with a
+ * rewind buffer), the provider connection limit, and AV sync on rooted TVs.
  */
 
-// ----- Live engine: native <video> or hls.js with a rewind buffer -----
+// ----- Live engine: native <video>, hls.js, or Shaka Player -----
 // HLS channels (.m3u8; Xtream live URLs are built that way) can be played
 // through hls.js, which feeds the <video> via Media Source Extensions so the
 // app owns the buffer: `settings.liveBuffer` minutes behind the playhead are
@@ -14,8 +14,13 @@
 // fatal hls.js error and the channel goes back to the native player for the
 // rest of the session (`_hlsBroken`). The webOS media service (liveUms) is not
 // used on the hls.js path; the codec line comes from the HLS level instead.
+// The setting "Live engine" (settings.liveEngine) selects hls.js or Shaka
+// Player for the MSE path. Shaka Player has its own MPEG-TS transmuxer, which
+// also reads E-AC-3 audio. Both engines share the state in `liveEngine`, the
+// relay workarounds, and the hand-over to the native pipeline.
 const liveEngine = {
   hls: null,
+  shaka: null,
   url: '',
   tech: '',
   recovered: false,
@@ -23,7 +28,17 @@ const liveEngine = {
   fps: 0,
   fpsSamples: [],
   relayWaits: 0,
-  placeholder: false
+  placeholder: false,
+  // Shaka Player: the measured bitrate and the buffer that fits in memory
+  bitrate: 0,
+  reach: 0,
+  appendBytes: 0,
+  appendSpan: 0,
+  segments: 0,
+  pendingSamples: 0,
+  videoTrackId: 0,
+  lastReply: '',
+  manifestFails: 0
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -48,7 +63,28 @@ function hlsAvailable() {
       Hls.isSupported();
 }
 function liveEngineActive() {
-  return !!liveEngine.hls;
+  return !!(liveEngine.hls || liveEngine.shaka);
+}
+/**
+ * Gives the name of the engine that plays the live channel.
+ * @return {string} 'hls.js', 'Shaka Player', or 'native'.
+ */
+function liveEngineName() {
+  return liveEngine.shaka ? 'Shaka Player' :
+      liveEngine.hls      ? 'hls.js' :
+                            'native';
+}
+function shakaAvailable() {
+  return settings.liveBuffer > 0 && typeof shaka !== 'undefined' &&
+      shaka.Player.isBrowserSupported();
+}
+/**
+ * Gives the MSE engine that the settings select for an HLS channel.
+ * @return {string} 'shaka', 'hls', or '' when the native pipeline plays.
+ */
+function liveMseEngine() {
+  if (settings.liveEngine === 'shaka' && shakaAvailable()) return 'shaka';
+  return hlsAvailable() ? 'hls' : '';
 }
 // The native pipeline plays HLS with the GStreamer element hlsdemux2. On
 // one 4K channel (EC-3 audio, which hls.js cannot play, 2026-10-25),
@@ -167,6 +203,92 @@ function notePlaceholderPlaylist(text) {
   hideEPGToast(8000);
   diagLog('The provider sends a placeholder (black.ts) for this channel');
 }
+// ── Shaka Player: playlist filter
+// A response filter does the work of livePlaylistLoader() for Shaka Player:
+// it removes #EXT-X-ENDLIST and #EXT-X-PLAYLIST-TYPE (a live channel does not
+// end), waits for a cold relay, gives the last good playlist on a reload, and
+// finds a relay restart. Shaka Player gives no error for a relay restart, thus
+// the filter compares the MEDIA-SEQUENCE and the first segment with the
+// previous playlist of the same URL.
+const _shakaSeq = new Map();  // playlist URL -> {seq, first}
+const _shakaRaw = new Map();  // playlist URL -> requests of the filter itself
+/**
+ * Tells if a media playlist starts again (a relay restart).
+ * @param {string} uri The playlist URL.
+ * @param {string} text The playlist text.
+ * @return {boolean} True when the sequence went back, or the same sequence
+ *     has a different first segment.
+ */
+function playlistRestarted(uri, text) {
+  const m = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(text);
+  const first = text.split(/\r?\n/).find(l => l && l[0] !== '#') || '';
+  if (!m || !first) return false;
+  const seq = +m[1], prev = _shakaSeq.get(uri);
+  _shakaSeq.set(uri, {seq, first});
+  return !!prev &&
+      (seq < prev.seq || (seq === prev.seq && first !== prev.first));
+}
+/**
+ * Makes the playlist response filter of a Shaka Player.
+ * @param {string} url The URL of the channel.
+ * @param {!Object} player The Shaka Player.
+ * @return {function(number, !Object): (Promise|undefined)} The filter.
+ */
+function shakaResponseFilter(url, player) {
+  const RT = shaka.net.NetworkingEngine.RequestType;
+  const SU = shaka.util.StringUtils;
+  return async (type, response) => {
+    if (type !== RT.MANIFEST || liveEngine.shaka !== player) return;
+    const uri = response.uri || url;
+    const raw = _shakaRaw.get(uri) || 0;
+    if (raw > 0) {  // a request of this filter: no second filter pass
+      _shakaRaw.set(uri, raw - 1);
+      return;
+    }
+    let text = SU.fromUTF8(response.data);
+    if (HLS_RELAY_NOT_READY.test(text)) {
+      const last = _hlsLastPlaylist.get(uri);
+      if (last) {
+        response.data = SU.toUTF8(last);
+        return;
+      }
+      liveEngine.relayWaits++;
+      diagLog('Shaka Player waits for the relay of the provider');
+      const from = Date.now();
+      while (Date.now() - from < HLS_RELAY_WAIT_MAX_MS) {
+        await new Promise(r => setTimeout(r, HLS_RELAY_WAIT_MS));
+        if (liveEngine.shaka !== player) return;
+        const req = shaka.net.NetworkingEngine.makeRequest(
+            [uri], player.getConfiguration().manifest.retryParameters);
+        _shakaRaw.set(uri, (_shakaRaw.get(uri) || 0) + 1);
+        try {
+          const r =
+              await player.getNetworkingEngine().request(type, req).promise;
+          text = SU.fromUTF8(r.data);
+          if (!HLS_RELAY_NOT_READY.test(text)) {
+            response.data = r.data;
+            break;
+          }
+        } catch (_) { /* the next try */
+        }
+      }
+      if (liveEngine.shaka !== player || HLS_RELAY_NOT_READY.test(text))
+        return;  // Shaka Player reports the text as a bad playlist
+    }
+    if (!/^\s*#EXTM3U/.test(text)) {
+      liveEngine.lastReply = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+      return;
+    }
+    const media = /^#EXTINF/m.test(text);
+    if (media && playlistRestarted(uri, text) && hlsRelayRestart(url)) return;
+    const clean =
+        text.replace(/^#EXT-X-(ENDLIST|PLAYLIST-TYPE:[A-Z]*)[ \t]*\r?$/gm, '');
+    response.data = SU.toUTF8(clean);
+    _hlsLastPlaylist.set(uri, clean);
+    liveEngine.manifestFails = 0;
+    if (media) notePlaceholderPlaylist(text);
+  };
+}
 // A cold relay can also restart. Its next playlist then starts again at
 // MEDIA-SEQUENCE 0 with a different segment (seen on one
 // event (PPV) channel, 2026-10-25). hls.js cannot merge it ("media sequence
@@ -199,12 +321,15 @@ function hlsRelayRestart(url) {
   }
   if (r.n >= HLS_RELAY_RESTARTS) return false;
   r.n++;
-  diagLog(
-      `hls.js restarted after a relay restart (${r.n}/${HLS_RELAY_RESTARTS})`);
+  diagLog(`${liveEngineName()} restarted after a relay restart (${r.n}/${
+      HLS_RELAY_RESTARTS})`);
   loadLiveSource(url);
   videoPlayer.play().catch(() => {});
   return true;
 }
+// Shaka Player destroys itself asynchronously, and at the end it removes the
+// src attribute of the <video>. Thus, the next source waits for the destroy.
+let _shakaTeardown = null;
 function liveEngineDestroy() {
   if (liveEngine.hls) {
     try {
@@ -213,12 +338,57 @@ function liveEngineDestroy() {
     }
     liveEngine.hls = null;
   }
+  if (liveEngine.shaka) {
+    const p = liveEngine.shaka;
+    liveEngine.shaka = null;
+    const t =
+        Promise.resolve().then(() => p.destroy()).catch(() => {}).then(() => {
+          if (_shakaTeardown === t) _shakaTeardown = null;
+        });
+    _shakaTeardown = t;
+  }
   liveEngine.url = '';
   liveEngine.tech = '';
 }
+/**
+ * Runs a function when no Shaka Player destroy is pending.
+ * @param {function()} fn The function.
+ */
+function afterLiveTeardown(fn) {
+  if (_shakaTeardown)
+    _shakaTeardown.then(fn);
+  else
+    fn();
+}
+/**
+ * Points the live <video> at a URL on the native pipeline.
+ * @param {string} url The URL.
+ */
+function setNativeSrc(url) {
+  afterLiveTeardown(() => {
+    if (liveEngineActive()) return;  // an engine took the element meanwhile
+    videoPlayer.src = url;
+    videoPlayer.load();
+  });
+}
+/**
+ * Gives the playing channel to the native pipeline after a fatal engine
+ * error. Its own error handler and reload budget take over from here.
+ * @param {string} url The URL of the channel.
+ */
+function liveHandToNative(url) {
+  if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
+      channels[currentChannelIndex].url === url) {
+    umsNoteCurrentId();
+    setNativeSrc(nativeLiveUrl(url));
+    liveUmsRefresh();
+    videoPlayer.play().catch(() => {});
+  }
+}
 // Point the live <video> at a channel URL through whichever engine fits.
-// Returns true when hls.js took it. A cause (for example 'watchdog') goes to
-// the diagnostics log, so that each unusual start tells why it occurred.
+// Returns true when an MSE engine took it. A cause (for example 'watchdog')
+// goes to the diagnostics log, so that each unusual start tells why it
+// occurred.
 function loadLiveSource(url, cause = '') {
   _lastStreamOpenAt = Date.now();
   if (cause) {
@@ -226,10 +396,36 @@ function loadLiveSource(url, cause = '') {
     diagLog(`Live start (${cause}): ${ch ? ch.name.slice(0, 60) : url}`);
   }
   liveEngineDestroy();
-  if (!(hlsAvailable() && isHlsUrl(url) && !_hlsBroken.has(url))) {
-    videoPlayer.src = nativeLiveUrl(url);
-    videoPlayer.load();
+  const engine = isHlsUrl(url) && !_hlsBroken.has(url) ? liveMseEngine() : '';
+  if (!engine) {
+    setNativeSrc(nativeLiveUrl(url));
     return false;
+  }
+  liveEngine.url = url;
+  liveEngine.tech = '';
+  liveEngine.recovered = false;
+  liveEngine.resumeUrl = '';
+  liveEngine.fps = 0;
+  liveEngine.fpsSamples = [];
+  liveEngine.relayWaits = 0;
+  liveEngine.placeholder = false;
+  liveEngine.bitrate = 0;
+  liveEngine.reach = settings.liveBuffer;
+  liveEngine.appendBytes = 0;
+  liveEngine.appendSpan = 0;
+  liveEngine.segments = 0;
+  liveEngine.pendingSamples = 0;
+  liveEngine.videoTrackId = 0;
+  liveEngine.lastReply = '';
+  liveEngine.manifestFails = 0;
+  _hlsLastPlaylist.clear();  // a new start must not get an old playlist
+  _shakaSeq.clear();
+  liveEngine.subManual = false;
+  liveEngine.audioManual = false;
+  videoPlayer.removeAttribute('src');  // the engine attaches its MediaSource
+  if (engine === 'shaka') {
+    loadShakaSource(url);
+    return true;
   }
   const secs = settings.liveBuffer * 60;
   const hls = new Hls({
@@ -259,19 +455,6 @@ function loadLiveSource(url, cause = '') {
     },
   });
   liveEngine.hls = hls;
-  liveEngine.url = url;
-  liveEngine.tech = '';
-  liveEngine.recovered = false;
-  liveEngine.resumeUrl = '';
-  liveEngine.fps = 0;
-  liveEngine.fpsSamples = [];
-  liveEngine.relayWaits = 0;
-  liveEngine.placeholder = false;
-  _hlsLastPlaylist.clear();  // a new start must not get an old playlist
-  liveEngine.subManual = false;
-  liveEngine.audioManual = false;
-  videoPlayer.removeAttribute(
-      'src');  // hls.js attaches its own MediaSource URL
   hls.on(Hls.Events.ERROR, (_, data) => onHlsError(url, data));
   hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, applyHlsTrackPrefs);
   hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, applyHlsTrackPrefs);
@@ -279,9 +462,336 @@ function loadLiveSource(url, cause = '') {
   hls.on(Hls.Events.LEVEL_SWITCHED, liveTechFromHls);
   hls.on(Hls.Events.AUDIO_TRACK_SWITCHED, liveTechFromHls);
   hls.on(Hls.Events.BUFFER_APPENDING, (_, d) => hlsFpsFromAppend(hls, d));
-  hls.loadSource(url);
-  hls.attachMedia(videoPlayer);
+  afterLiveTeardown(() => {
+    if (liveEngine.hls !== hls) return;
+    hls.loadSource(url);
+    hls.attachMedia(videoPlayer);
+  });
   return true;
+}
+// ── Shaka Player
+// The retry parameters of Shaka Player, in the same spirit as the hls.js
+// policies: the provider can keep a playlist request open for approximately
+// 10 s.
+const SHAKA_RETRY = {
+  timeout: 30000,
+  stallTimeout: 20000,
+  connectionTimeout: 20000,
+  maxAttempts: 3,
+  baseDelay: 1000,
+  backoffFactor: 2,
+  fuzzFactor: 0.5
+};
+/**
+ * Gives the configuration of a Shaka Player for a live channel.
+ * @param {number} secs The buffer ahead of and behind the playhead, in
+ *     seconds.
+ * @return {!Object} The configuration.
+ */
+function shakaConfig(secs) {
+  return {
+    streaming: {
+      bufferingGoal: secs,  // fetch this far ahead, so a pause can be resumed
+                            // from the buffer
+      bufferBehind: secs,   // keep this much behind the playhead for rewind
+      rebufferingGoal: 2,
+      retryParameters: Object.assign({}, SHAKA_RETRY, {maxAttempts: 4}),
+      lowLatencyMode: false,
+      segmentPrefetchLimit: 0
+    },
+    manifest: {
+      retryParameters: SHAKA_RETRY,
+      // The seek range of a live stream is the playlist window. The buffer
+      // behind the playhead must stay seekable, and the playhead must not go
+      // back to the live edge by itself.
+      availabilityWindowOverride: secs * 2,
+      hls: {liveSegmentsDelay: 3}
+    }
+  };
+}
+let _shakaPolyfilled = false;
+/**
+ * Starts a Shaka Player on a live channel. `loadLiveSource` has reset the
+ * state of `liveEngine` before the call.
+ * @param {string} url The URL of the channel.
+ */
+function loadShakaSource(url) {
+  if (!_shakaPolyfilled) {
+    _shakaPolyfilled = true;
+    try {
+      shaka.polyfill.installAll();
+    } catch (_) { /* the polyfills are optional */
+    }
+  }
+  const player = new shaka.Player();
+  liveEngine.shaka = player;
+  player.configure(shakaConfig(settings.liveBuffer * 60));
+  player.addEventListener('error', e => {
+    if (liveEngine.shaka === player) onShakaError(url, e.detail);
+  });
+  player.addEventListener('trackschanged', applyShakaTrackPrefs);
+  player.addEventListener('audiotrackschanged', applyShakaTrackPrefs);
+  player.addEventListener('loaded', liveTechFromShaka);
+  player.addEventListener('variantchanged', liveTechFromShaka);
+  player.addEventListener('adaptation', liveTechFromShaka);
+  player.addEventListener('bufferappending', e => shakaOnAppend(player, e));
+  player.addEventListener('segmentappended', e => shakaOnSegment(player, e));
+  afterLiveTeardown(() => {
+    if (liveEngine.shaka !== player) return;
+    player.attach(videoPlayer)
+        .then(() => {
+          if (liveEngine.shaka !== player) return;
+          player.getNetworkingEngine().registerResponseFilter(
+              shakaResponseFilter(url, player));
+          return player.load(url);
+        })
+        .catch(e => {
+          if (liveEngine.shaka === player) onShakaError(url, e);
+        });
+  });
+}
+/**
+ * Gives the name of a Shaka Player error code.
+ * @param {number} code The code.
+ * @return {string} The name, or the number as text.
+ */
+function shakaCodeName(code) {
+  const C = shaka.util.Error.Code;
+  for (const k in C)
+    if (C[k] === code) return k;
+  return String(code);
+}
+// A fatal Shaka Player error. The error categories follow the hls.js types:
+// a network error or a reply that is not a playlist is not held against the
+// channel. Content that Shaka Player cannot play (codecs, a bad playlist, a
+// media error) puts the channel in `_hlsBroken`, and the native pipeline takes
+// it. Shaka Player does its own media source recovery
+// (streaming.allowMediaSourceRecoveries) before a fatal error.
+function onShakaError(url, err) {
+  if (!err || liveEngine.url !== url || !liveEngine.shaka) return;
+  const E = shaka.util.Error;
+  const isShaka = err instanceof E;
+  if (isShaka && err.severity !== E.Severity.CRITICAL) {
+    if (err.category === E.Category.NETWORK && Array.isArray(err.data) &&
+        err.data[4] === shaka.net.NetworkingEngine.RequestType.MANIFEST)
+      shakaManifestFailed(url, err);
+    return;
+  }
+  // The app changed the source during a load (LOAD_INTERRUPTED,
+  // OPERATION_ABORTED)
+  if (isShaka && err.category === E.Category.PLAYER) return;
+  const code = isShaka ? err.code : 0, cat = isShaka ? err.category : 0;
+  const name = isShaka ? shakaCodeName(code) : (err.message || String(err));
+  const data = Array.isArray(err.data) ? err.data : [];
+  const badStatus = isShaka && code === E.Code.BAD_HTTP_STATUS;
+  const status = badStatus ? +data[1] || 0 : 0;
+  // A refused stream (one-connection account in use, expired, rate limited)
+  // is an HTML or text page, which Shaka Player reports as a playlist with no
+  // header
+  const notPlaylist = isShaka && code === E.Code.HLS_PLAYLIST_HEADER_MISSING;
+  const reply = notPlaylist ?
+      (liveEngine.lastReply || '(empty)') :
+      badStatus ?
+      String(data[2] || '').replace(/\s+/g, ' ').trim().slice(0, 160) :
+      '';
+  console.log('Shaka Player fatal error', cat, name);
+  diagLog(`Shaka Player fatal ${cat}/${name}${status ? ` HTTP ${status}` : ''}${
+      reply ? ` reply: ${reply}` : ''}${
+      notPlaylist ? ' → not a playlist, treated as a network failure' :
+                    ''}${document.hidden ? ' (app hidden)' : ''}`);
+  noteStreamFail(
+      'Shaka Player', `${cat}/${name}${status ? ` · HTTP ${status}` : ''}`,
+      reply);
+  if (document.hidden) {
+    liveEngine.resumeUrl = url;
+    liveEngineDestroy();
+    return;
+  }
+  const incompatible = isShaka &&
+      ((cat === E.Category.MEDIA && code !== E.Code.QUOTA_EXCEEDED_ERROR) ||
+       (cat === E.Category.MANIFEST && !notPlaylist));
+  if (incompatible) _hlsBroken.add(url);
+  liveEngineDestroy();
+  liveHandToNative(url);
+}
+// Seen on the C4 (2026-10-26, one 4K channel): the relay of the provider
+// restarted, and the redirect URL of the first playlist then answered HTTP 509
+// on each refresh. Shaka Player reports each failed refresh cycle as a
+// recoverable error and tries again without end, while the playhead waits at
+// the end of the buffer. hls.js stops with a fatal level load error in the
+// same case. After SHAKA_MANIFEST_FAILS cycles, the engine starts again on the
+// channel URL, which gives a new redirect. The restart limit of
+// hlsRelayRestart applies, then the native pipeline gets the channel.
+const SHAKA_MANIFEST_FAILS = 2;
+/**
+ * Counts a failed playlist refresh of Shaka Player (a recoverable error).
+ * @param {string} url The URL of the channel.
+ * @param {!shaka.util.Error} err The error.
+ */
+function shakaManifestFailed(url, err) {
+  if (++liveEngine.manifestFails < SHAKA_MANIFEST_FAILS) return;
+  liveEngine.manifestFails = 0;
+  const status = +err.data[1] || 0;
+  const what = `${shakaCodeName(err.code)}${status ? ` HTTP ${status}` : ''}`;
+  diagLog(`Shaka Player: the playlist refresh failed (${what})`);
+  if (hlsRelayRestart(url)) return;
+  noteStreamFail('Shaka Player', `playlist refresh: ${what}`, '');
+  liveEngineDestroy();
+  liveHandToNative(url);
+}
+/**
+ * Reads the boxes of an ISO BMFF (MP4) byte range.
+ * @param {!Uint8Array} b The data.
+ * @param {number} start The first byte of the range.
+ * @param {number} end The byte after the range.
+ * @return {!Array<{type: string, start: number, end: number}>} The boxes,
+ *     with `start` at the box header.
+ */
+function mp4Boxes(b, start, end) {
+  const out = [];
+  let i = start;
+  while (i + 8 <= end) {
+    let size =
+        ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    const type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
+    let hdr = 8;
+    if (size === 1) {  // largesize: the high 32 bits are 0 for a segment
+      size = ((b[i + 12] << 24) | (b[i + 13] << 16) | (b[i + 14] << 8) |
+              b[i + 15]) >>>
+          0;
+      hdr = 16;
+    } else if (size === 0)
+      size = end - i;
+    if (size < hdr) break;
+    out.push({type, start: i, end: Math.min(end, i + size), hdr});
+    i += size;
+  }
+  return out;
+}
+function mp4U32(b, i) {
+  return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+}
+/**
+ * Gives the track ID of the video track of an fMP4 init segment.
+ * @param {!Uint8Array} b The init segment.
+ * @return {number} The track ID, or 0.
+ */
+function mp4VideoTrackId(b) {
+  for (const moov of mp4Boxes(b, 0, b.length)) {
+    if (moov.type !== 'moov') continue;
+    for (const trak of mp4Boxes(b, moov.start + moov.hdr, moov.end)) {
+      if (trak.type !== 'trak') continue;
+      let id = 0, video = false;
+      for (const x of mp4Boxes(b, trak.start + trak.hdr, trak.end)) {
+        if (x.type === 'tkhd')
+          id =
+              mp4U32(b, x.start + x.hdr + (b[x.start + x.hdr] === 1 ? 20 : 12));
+        else if (x.type === 'mdia')
+          for (const y of mp4Boxes(b, x.start + x.hdr, x.end))
+            if (y.type === 'hdlr')
+              video =
+                  String.fromCharCode(...b.subarray(
+                      y.start + y.hdr + 8, y.start + y.hdr + 12)) === 'vide';
+      }
+      if (video && id) return id;
+    }
+  }
+  return 0;
+}
+/**
+ * Gives the number of samples of a track in an fMP4 media segment (the
+ * `trun` of its `traf`).
+ * @param {!Uint8Array} b The segment.
+ * @param {number} trackId The track ID, or 0 for the first track.
+ * @return {number} The sample count, or 0.
+ */
+function mp4SampleCount(b, trackId) {
+  for (const moof of mp4Boxes(b, 0, Math.min(b.length, 65536))) {
+    if (moof.type !== 'moof') continue;
+    for (const traf of mp4Boxes(b, moof.start + moof.hdr, moof.end)) {
+      if (traf.type !== 'traf') continue;
+      let id = 0, n = 0;
+      for (const x of mp4Boxes(b, traf.start + traf.hdr, traf.end)) {
+        if (x.type === 'tfhd')
+          id = mp4U32(b, x.start + x.hdr + 4);
+        else if (x.type === 'trun')
+          n = mp4U32(b, x.start + x.hdr + 4);
+      }
+      if (n && (!trackId || id === trackId)) return n;
+    }
+  }
+  return 0;
+}
+/**
+ * Notes a frame rate sample (video samples over the segment span).
+ * @param {number} n The number of video samples.
+ * @param {number} span The span of the segment, in seconds.
+ * @param {function()} show Shows the codec line when the rate is known.
+ */
+function noteFpsSample(n, span, show) {
+  if (!(n > 0 && span > 1) || liveEngine.fps) return;
+  const fs = liveEngine.fpsSamples;
+  fs.push(n / span);
+  if (span >= 6)
+    liveEngine.fps = fpsSnap(n / span);
+  else if (fs.length >= 3)
+    liveEngine.fps = fpsSnap(fs.slice().sort((a, b2) => a - b2)[1]);
+  else
+    return;
+  show();
+}
+// Shaka Player appends the transmuxed fMP4 of each segment: `bufferappending`
+// carries the data (video and audio can be in 1 moof), and `segmentappended`
+// then carries the time span. The sample count and the span give the frame
+// rate, the bytes and the span give the bitrate.
+function shakaOnAppend(player, e) {
+  if (liveEngine.shaka !== player || !e || !e.data) return;
+  const b = e.data instanceof Uint8Array ? e.data : new Uint8Array(e.data);
+  if (e.contentType !== 'video') {
+    if (!e.isInitData) liveEngine.appendBytes += b.length;
+    return;
+  }
+  if (e.isInitData) {
+    liveEngine.videoTrackId = mp4VideoTrackId(b) || liveEngine.videoTrackId;
+    return;
+  }
+  liveEngine.appendBytes += b.length;
+  if (!liveEngine.fps)
+    liveEngine.pendingSamples = mp4SampleCount(b, liveEngine.videoTrackId);
+}
+function shakaOnSegment(player, e) {
+  if (liveEngine.shaka !== player || !e || e.contentType !== 'video') return;
+  const span = e.end - e.start;
+  if (!(span > 0)) return;
+  if (liveEngine.pendingSamples) {
+    noteFpsSample(liveEngine.pendingSamples, span, liveTechFromShaka);
+    liveEngine.pendingSamples = 0;
+  }
+  liveEngine.appendSpan += span;
+  liveEngine.segments++;
+  if (liveEngine.appendSpan >= 6 || liveEngine.segments >= 3) {
+    const was = liveEngine.bitrate;
+    liveEngine.bitrate =
+        Math.round(liveEngine.appendBytes * 8 / liveEngine.appendSpan);
+    shakaFitBuffer(player);
+    // The codec line shows the first measurement, then a change of 20 %
+    if (!was || Math.abs(liveEngine.bitrate - was) > was * 0.2)
+      liveTechFromShaka();
+  }
+}
+// The TV's SourceBuffer refuses appends at ~86 MB (see HLS_BUFFER_BYTES). The
+// buffer ahead and the buffer behind the playhead share that budget, thus
+// each gets half of the seconds that fit at the measured bitrate.
+function shakaFitBuffer(player) {
+  const secs = settings.liveBuffer * 60;
+  const fit = liveEngine.bitrate > 0 ?
+      Math.max(10, Math.floor(HLS_BUFFER_BYTES * 8 / liveEngine.bitrate / 2)) :
+      secs;
+  const goal = Math.min(secs, fit);
+  const reach = Math.max(1, Math.floor(goal / 60));
+  const cur = player.getConfiguration().streaming.bufferingGoal;
+  if (Math.abs(cur - goal) > cur * 0.1) player.configure(shakaConfig(goal));
+  liveEngine.reach = reach;
 }
 // Body of the manifest response hls.js could not parse ('' when there was none)
 function hlsReplyBody(data) {
@@ -356,16 +866,7 @@ function onHlsError(url, data) {
       data.details === Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR;
   if (incompatible) _hlsBroken.add(url);
   liveEngineDestroy();
-  // Hand the channel to the native pipeline; its own error handler and reload
-  // budget take over from here
-  if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
-      channels[currentChannelIndex].url === url) {
-    umsNoteCurrentId();
-    videoPlayer.src = nativeLiveUrl(url);
-    videoPlayer.load();
-    liveUmsRefresh();
-    videoPlayer.play().catch(() => {});
-  }
+  liveHandToNative(url);
 }
 // Codec / resolution / bitrate line from the HLS level (the media service does
 // not describe MSE playback)
@@ -373,6 +874,62 @@ function liveTechFromHls() {
   const hls = liveEngine.hls;
   if (!hls || !hls.levels || !hls.levels.length) return;
   const lvl = hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
+  liveTechSet(lvl, lvl.bitrate, hlsReachMinutes(lvl.bitrate));
+}
+// The same line from the active variant track of Shaka Player. The provider's
+// playlists carry no BANDWIDTH, thus the measured bitrate comes first.
+function liveTechFromShaka() {
+  const p = liveEngine.shaka;
+  if (!p) return;
+  let t = null;
+  try {
+    t = p.getVariantTracks().find(x => x.active) || null;
+  } catch (_) { /* not loaded yet */
+  }
+  if (!t) return;
+  liveTechSet(
+      {
+        videoCodec: t.videoCodec,
+        audioCodec: t.audioCodec,
+        width: t.width,
+        height: t.height,
+        // Shaka Player estimates the rate from the first MPEG-TS segment, and
+        // the estimate is frequently a fraction of the real rate (6.25 for a
+        // 50 fps channel on the C4). The measured rate comes first.
+        frameRate: liveEngine.fps || t.frameRate
+      },
+      liveEngine.bitrate || t.bandwidth || 0, liveEngine.reach);
+}
+/**
+ * Gives the frame rate that the live engine knows (the playlist, else the
+ * measured rate).
+ * @return {number} The frame rate, or 0.
+ */
+function liveEngineFps() {
+  if (liveEngine.hls) {
+    const hls = liveEngine.hls,
+          lvl = hls.levels &&
+        hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
+    return (lvl && lvl.frameRate) || liveEngine.fps || 0;
+  }
+  if (liveEngine.shaka) {
+    try {
+      const t = liveEngine.shaka.getVariantTracks().find(x => x.active);
+      if (t && t.frameRate) return t.frameRate;
+    } catch (_) { /* not loaded yet */
+    }
+    return liveEngine.fps || 0;
+  }
+  return 0;
+}
+/**
+ * Writes the codec line of the live engine and shows it.
+ * @param {!Object} lvl The level or track: videoCodec, audioCodec, width,
+ *     height, frameRate.
+ * @param {number} bitrate The bitrate in bits per second, or 0.
+ * @param {number} reach The rewind reach in minutes.
+ */
+function liveTechSet(lvl, bitrate, reach) {
   const bits = [];
   const vc = String(lvl.videoCodec || '').toLowerCase();
   if (vc)
@@ -386,7 +943,7 @@ function liveTechFromHls() {
     bits.push(`${videoPlayer.videoWidth}×${videoPlayer.videoHeight}`);
   const fps = lvl.frameRate || liveEngine.fps;
   if (fps) bits.push(fmtFps(fps));
-  if (lvl.bitrate) bits.push(`${Math.round(lvl.bitrate / 1000)} kbps`);
+  if (bitrate) bits.push(`${Math.round(bitrate / 1000)} kbps`);
   const ac = String(lvl.audioCodec || '').toLowerCase();
   if (ac)
     bits.push(
@@ -394,7 +951,6 @@ function liveTechFromHls() {
             /^ac-3/.test(ac) ? 'AC-3' :
             /^ec-3/.test(ac) ? 'E-AC-3' :
                                ac.toUpperCase());
-  const reach = hlsReachMinutes(lvl.bitrate);
   bits.push(`⏪ ${reach < settings.liveBuffer ? '~' : ''}${reach} min`);
   liveEngine.tech = bits.join(' · ');
   noteCurrentStreamTech();
@@ -434,28 +990,9 @@ function hlsFpsFromAppend(hls, d) {
   const span = es && es.endPTS > es.startPTS ? es.endPTS - es.startPTS :
                                                (f && f.duration) || 0;
   if (!(span > 1)) return;
-  let n = 0;
-  for (let i = 4, end = Math.min(b.length - 12, 8192); i < end; i++) {
-    if (b[i] === 0x74 && b[i + 1] === 0x72 && b[i + 2] === 0x75 &&
-        b[i + 3] === 0x6e) {  // 'trun': version/flags, then sample_count
-      n = ((b[i + 8] << 24) | (b[i + 9] << 16) | (b[i + 10] << 8) |
-           b[i + 11]) >>>
-          0;
-      break;
-    }
-  }
-  if (!(n > 0)) return;
-  const fs = liveEngine.fpsSamples;
-  fs.push(n / span);
-  if (span >= 6)
-    liveEngine.fps = fpsSnap(n / span);
-  else if (fs.length >= 3)
-    liveEngine.fps = fpsSnap(fs.slice().sort((a, b2) => a - b2)[1]);
-  else
-    return;
-  liveTechFromHls();
+  noteFpsSample(mp4SampleCount(b, 0), span, liveTechFromHls);
 }
-// Where the live playhead may go on the hls.js path: the buffered range around
+// Where the live playhead may go on the MSE path: the buffered range around
 // it, up to the live edge
 function liveBufferRange() {
   const hls = liveEngine.hls;
@@ -472,19 +1009,26 @@ function liveBufferRange() {
     start = b.start(0);
     end = b.end(b.length - 1);
   }
-  const live = hls && typeof hls.liveSyncPosition === 'number' &&
-          hls.liveSyncPosition > 0 ?
-      hls.liveSyncPosition :
-      end;
+  let live = end;
+  if (hls && typeof hls.liveSyncPosition === 'number' &&
+      hls.liveSyncPosition > 0)
+    live = hls.liveSyncPosition;
+  else if (liveEngine.shaka) {
+    try {
+      const r = liveEngine.shaka.seekRange();
+      if (r && r.end > 0) live = r.end;
+    } catch (_) { /* not loaded yet */
+    }
+  }
   return {start, end: Math.max(end, live), live};
 }
 function liveBehindSecs() {
-  if (!liveEngine.hls) return 0;
+  if (!liveEngineActive()) return 0;
   const r = liveBufferRange();
   return Math.max(0, r.live - (videoPlayer.currentTime || 0));
 }
 function liveGoLive() {
-  if (!liveEngine.hls) return;
+  if (!liveEngineActive()) return;
   try {
     videoPlayer.currentTime = liveBufferRange().live;
   } catch (_) { /* not seekable yet */
@@ -762,6 +1306,15 @@ document.addEventListener('visibilitychange', () => {
         liveEngine.hls.startLoad(-1);
     } catch (_) { /* engine gone */
     }
+    return;
+  }
+  // Shaka Player has no stopLoad(). The app closes the engine while hidden
+  // (the provider connection also ends) and starts the channel again when
+  // the app is visible.
+  if (liveEngine.shaka && document.hidden) {
+    liveEngine.resumeUrl = liveEngine.url;
+    stopStallWatchdog();
+    liveEngineDestroy();
     return;
   }
   if (!document.hidden && liveEngine.resumeUrl && vodMode === 'live' &&

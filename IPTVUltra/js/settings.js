@@ -270,6 +270,24 @@ function settingsRows() {
       }
     },
     {
+      id: 'liveEngine',
+      type: 'choice',
+      label: 'Live engine',
+      sub:
+          'Plays HLS channels with the rewind buffer. Shaka Player also plays E-AC-3 audio in MPEG-TS segments, which hls.js cannot play',
+      options: LIVE_ENGINE_OPTIONS,
+      get: () => settings.liveEngine,
+      set: v => {
+        settings.liveEngine = v;
+        saveSettings();
+        _hlsBroken.clear();  // the other engine can play a channel that this
+                             // one could not
+        if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
+            settings.liveBuffer > 0)
+          reloadStream(false, 'Settings');
+      }
+    },
+    {
       id: 'ppvEvents',
       type: 'choice',
       label: 'Event channels (PPV)',
@@ -614,17 +632,17 @@ function diagLines() {
           0} · window ${EPG_WIN_HOURS} h · past ${epgPastHours()} h`);
   const ch = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
   const verr = videoPlayer.error ? ` · error ${videoPlayer.error.code}` : '';
-  L.push(`Stream: ${ch ? ch.name : 'none'} · ${
-      liveEngineActive() ? 'hls.js' :
-                           'native'} · ${liveEngine.tech || '-'} · t=${
-      (videoPlayer.currentTime ||
-       0).toFixed(1)} s · readyState ${videoPlayer.readyState}${
-      verr} · reloads ${_reloadAttempts}/${MAX_AUTO_RELOADS}${
+  L.push(`Stream: ${ch ? ch.name : 'none'} · ${liveEngineName()} · ${
+      liveEngine.tech ||
+      '-'} · t=${(videoPlayer.currentTime || 0).toFixed(1)} s · readyState ${
+      videoPlayer.readyState}${verr} · reloads ${_reloadAttempts}/${
+      MAX_AUTO_RELOADS}${
       _altTried.size > 1 ? ` · ${_altTried.size} sources tried` : ''}`);
-  L.push(`hls.js incompatible this session: ${
+  L.push(`Engine incompatible this session: ${
       _hlsBroken.size ? [..._hlsBroken].length + ' channel(s)' :
                         'none'} · live buffer ${
-      settings.liveBuffer ? settings.liveBuffer + ' min' : 'Off'}`);
+      settings.liveBuffer ? settings.liveBuffer + ' min' : 'Off'} · engine ${
+      settings.liveEngine === 'shaka' ? 'Shaka Player' : 'hls.js'}`);
   if (catchup) L.push(`Catch-up: ${catchup.prog && catchup.prog.title}`);
   const ago = t => {
     const s = Math.max(0, Math.round((Date.now() - t) / 1000));

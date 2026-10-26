@@ -84,6 +84,7 @@ const DEFAULT_SETTINGS = {
   subEdge: 'outline',
   subAuto: false,
   liveBuffer: 5,
+  liveEngine: 'hls',
   autoNext: true,
   ppvEvents: 'hide',
   schema: 4
@@ -100,6 +101,10 @@ const LIVE_BUFFER_OPTIONS = [
   {v: 0, label: 'Off'}, {v: 2, label: '2 minutes'}, {v: 5, label: '5 minutes'},
   {v: 10, label: '10 minutes'}
 ];
+// The MSE engine that plays HLS channels with the rewind buffer. Shaka Player
+// also reads E-AC-3 audio in MPEG-TS segments, which hls.js cannot read.
+const LIVE_ENGINE_OPTIONS =
+    [{v: 'hls', label: 'hls.js'}, {v: 'shaka', label: 'Shaka Player'}];
 // Groups of event channels (PPV) whose names carry the event time: sort by
 // start time, optionally hide finished ones
 const PPV_EVENT_OPTIONS = [
@@ -283,6 +288,8 @@ function loadSettings() {
   if (out.subLang === 'off') out.subLang = 'en';
   if (!LIVE_BUFFER_OPTIONS.some(o => o.v === out.liveBuffer))
     out.liveBuffer = DEFAULT_SETTINGS.liveBuffer;
+  if (!LIVE_ENGINE_OPTIONS.some(o => o.v === out.liveEngine))
+    out.liveEngine = DEFAULT_SETTINGS.liveEngine;
   out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
   out.avSync = Number.isInteger(st.avSync) && st.avSync >= AV_SYNC_MIN &&
           st.avSync <= AV_SYNC_MAX ?

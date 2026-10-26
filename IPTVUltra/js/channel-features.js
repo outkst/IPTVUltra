@@ -506,10 +506,7 @@ function noteCurrentStreamTech() {
     return;
   let w = videoPlayer.videoWidth, h = videoPlayer.videoHeight, fps = 0;
   if (liveEngineActive()) {
-    const hls = liveEngine.hls,
-          lvl = hls.levels &&
-        hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
-    fps = (lvl && lvl.frameRate) || liveEngine.fps || 0;
+    fps = liveEngineFps();
   } else if (liveUms && liveUms.video) {
     const vi = liveUms.videoInfo || {};
     fps = vi.frameRate || liveUms.video.frameRate || liveUms.measuredFps || 0;

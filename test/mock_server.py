@@ -248,6 +248,31 @@ class H(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if u.path == '/hlsdead/index.m3u8':
+            # A provider relay that restarts and whose first URL dies: the
+            # first playlist has segment 0, the next 6 answers are HTTP 509,
+            # then the playlist comes with new segments. Each value of ?r= is
+            # a different relay.
+            with lock:
+                relays = stats.setdefault('dead_playlists', {})
+                key = q.get('r', [''])[0]
+                n = relays[key] = relays.get(key, 0) + 1
+            if 2 <= n <= 7:
+                self.send_response(509)
+                self.send_header('Content-Length', '0')
+                self.end_headers()
+                return
+            segs = ['seg0.ts'] if n == 1 else ['seg1.ts', 'seg2.ts']
+            body = ('#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                    '#EXT-X-MEDIA-SEQUENCE:0\n' +
+                    ''.join('#EXTINF:2.000000,\n/hls50/%s\n' % s
+                            for s in segs)).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == '/hlscold/index.m3u8':
             # A provider relay that is not ready: the first 2 answers are a
             # text, then the playlist comes. Each value of ?r= is a relay.
