@@ -297,6 +297,11 @@
               <button class="mode-btn" data-mode="movies">🎬 Movies</button>
               <button class="mode-btn" data-mode="series">📺 Series</button>
             </div>
+            <div class="side-settings">
+              <button id="sideSettingsBtn" class="side-settings-btn">
+                ⚙️ Settings
+              </button>
+            </div>
             <div class="groups-header">
               <span>📁 Groups</span
               ><button id="toggleGroupsBtn" class="toggle-groups-btn">
@@ -334,9 +339,7 @@
               <div class="channels-footer">
                 <span id="statusArea" class="channels-status">✨ Ready</span>
                 <div class="footer-btns">
-                  <button id="settingsFooterBtn" class="home-btn" tabindex="0">
-                    ⚙️ Settings</button
-                  ><button id="homePageBtn" class="home-btn" tabindex="0">
+                  <button id="homePageBtn" class="home-btn" tabindex="0">
                     🏠 Home
                   </button>
                 </div>
@@ -416,7 +419,6 @@
                   placeholder="Search…"
                 />
               </div>
-              <button id="vodSettingsBtn" class="home-btn">⚙️ Settings</button>
             </div>
             <div id="vodContent" class="vod-content">
               <div id="vodHome" class="vod-home"></div>
@@ -466,13 +468,6 @@
                   data-fav-id=""
                 >
                   ☆
-                </button>
-                <button
-                  id="epgSettingsBtn"
-                  class="epg-info-settings-btn"
-                  title="Settings"
-                >
-                  ⚙️
                 </button>
                 <div
                   class="epg-info-now-playing-label"
