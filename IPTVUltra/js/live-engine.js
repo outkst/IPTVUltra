@@ -38,7 +38,8 @@ const liveEngine = {
   pendingSamples: 0,
   videoTrackId: 0,
   lastReply: '',
-  manifestFails: 0
+  manifestFails: 0,
+  hlsWait: ''  // the URL that waits for the load of hls.js
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -58,9 +59,52 @@ function isHlsUrl(url) {
   return /\.m3u8(\?|#|$)/i.test(url || '') ||
       /[?&](type|output)=m3u8/i.test(url || '');
 }
+// index.html does not load hls.js (620 KB). The browser compiled it at each
+// start of the app, also when Shaka Player was the engine. The app loads it
+// only when the setting "Live engine" selects hls.js, or when Shaka Player
+// is not available.
+const HLS_SCRIPT = 'hls.min.js';
+let _hlsScript = null;  // the promise of the load
+let _hlsScriptFailed = false;
+/**
+ * Loads hls.js one time.
+ * @return {!Promise<boolean>} True when the `Hls` global is available.
+ */
+function loadHlsScript() {
+  if (typeof Hls !== 'undefined') return Promise.resolve(true);
+  if (_hlsScript) return _hlsScript;
+  _hlsScript = new Promise(resolve => {
+                 const el = document.createElement('script');
+                 el.src = HLS_SCRIPT;
+                 el.onload = () => resolve(typeof Hls !== 'undefined');
+                 el.onerror = () => resolve(false);
+                 document.head.appendChild(el);
+               }).then(ok => {
+    if (!ok) {
+      _hlsScriptFailed = true;
+      diagLog(`hls.js did not load (${HLS_SCRIPT})`);
+    }
+    return ok;
+  });
+  return _hlsScript;
+}
+/**
+ * Tells if the settings can use hls.js. Before the load of hls.js, the
+ * answer is true. If the browser cannot use it, the load hands the channel
+ * to the native pipeline.
+ * @return {boolean} True when hls.js can play an HLS channel.
+ */
 function hlsAvailable() {
-  return settings.liveBuffer > 0 && typeof Hls !== 'undefined' &&
-      Hls.isSupported();
+  if (!(settings.liveBuffer > 0)) return false;
+  if (typeof Hls === 'undefined') return !_hlsScriptFailed;
+  return Hls.isSupported();
+}
+/**
+ * Starts the load of hls.js early when the settings select it, so that the
+ * first channel does not wait for it.
+ */
+function preloadHlsScript() {
+  if (liveMseEngine() === 'hls') loadHlsScript();
 }
 function liveEngineActive() {
   return !!(liveEngine.hls || liveEngine.shaka);
@@ -400,6 +444,7 @@ function liveEngineDestroy(keepShaka = false) {
   }
   _shakaLoad = null;
   shakaReleaseRequests();
+  liveEngine.hlsWait = '';
   liveEngine.url = '';
   liveEngine.tech = '';
   liveEngine.placeholder = false;
@@ -490,6 +535,29 @@ function loadLiveSource(url, cause = '') {
     loadShakaSource(url);
     return true;
   }
+  if (typeof Hls === 'undefined') {
+    // The first hls.js channel waits for the script. A different source
+    // clears liveEngine.hlsWait (liveEngineDestroy).
+    liveEngine.hlsWait = url;
+    loadHlsScript().then(ok => {
+      if (liveEngine.hlsWait !== url) return;
+      liveEngine.hlsWait = '';
+      if (ok && Hls.isSupported())
+        loadHlsSource(url);
+      else
+        liveHandToNative(url);
+    });
+    return true;
+  }
+  loadHlsSource(url);
+  return true;
+}
+/**
+ * Starts hls.js on a live URL. `Hls` must be loaded.
+ * @param {string} url The URL of the channel.
+ */
+function loadHlsSource(url) {
+  liveEngine.url = url;
   const secs = settings.liveBuffer * 60;
   const hls = new Hls({
     backBufferLength: secs,  // keep this much behind the playhead for rewind
@@ -530,7 +598,6 @@ function loadLiveSource(url, cause = '') {
     hls.loadSource(url);
     hls.attachMedia(videoPlayer);
   });
-  return true;
 }
 // ── Shaka Player
 // The retry parameters of Shaka Player. They have the same values as the

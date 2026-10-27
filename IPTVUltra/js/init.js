@@ -4,6 +4,8 @@
 
 // ----- Initialization -----
 
+preloadHlsScript();  // only when the settings select hls.js
+
 // Favorites are loaded per playlist when one is applied (favoritesLoad);
 // 'iptv_favorites' is only read to convert old ones
 loadSavedPlaylists();
