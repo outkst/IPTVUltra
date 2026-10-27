@@ -3955,11 +3955,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   await page
       .waitForFunction(() => window.__shakaReqs > 0, {timeout: 10000})
       .catch(() => {});
-  const sfree = await page.evaluate(() => window.__shakaReqs);
+  const sfree = await page.evaluate(
+      () => ({
+        reqs: window.__shakaReqs,
+        // 30 s or more in the background starts the channel again
+        away: [15000, 30000, 30001, 600000].map(ms => shakaAwayTooLong(ms))
+      }));
   check(
       'Shaka Player: held requests wait, the buffer stays, and a release continues',
       shold0 > 0 && sheld.reqs === 0 && sheld.buffered > 0 && sheld.same &&
-          sfree > 0,
+          sfree.reqs > 0 && sfree.away.join() === 'false,false,true,true',
       JSON.stringify({shold0, sheld, sfree}));
   // The buffer fit changes only the values that the goal sets
   const sfit = await page.evaluate(() => {
@@ -4025,6 +4030,31 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               'Closed captions (svc1),Closed captions (CC1)' &&
           sstat.sub === 'English',
       JSON.stringify(sstat));
+  // A caption cue of Shaka Player (the caption grid position, full width
+  // centered at 25 %) goes to the bottom center; a track with a different
+  // label does not get the listener (unit-level)
+  const scue = await page.evaluate(() => {
+    const cue = new VTTCue(0, 5, 'caption');
+    cue.snapToLines = false;
+    cue.line = 10;
+    cue.position = 25;
+    cue.size = 100;
+    fixCaptionCues({activeCues: [cue]});
+    return {
+      line: cue.line,
+      snap: cue.snapToLines,
+      position: cue.position,
+      size: cue.size,
+      align: cue.align,
+      labels: ['CC1', 'svc2', 'English', 'CC'].map(l => CAPTION_TRACK.test(l))
+    };
+  });
+  check(
+      'a caption cue of Shaka Player goes to the bottom center with the full width',
+      scue.line === 'auto' && scue.snap && scue.position === 'auto' &&
+          scue.size === 100 && scue.align === 'center' &&
+          scue.labels.join() === 'true,true,false,false',
+      JSON.stringify(scue));
   // A catch-up with Shaka Player as the engine: the archive as HLS, played
   // as a VOD playlist from its start position. With no HLS archive (HTTP 404),
   // the catch-up continues with the .ts URL on the native pipeline.
@@ -4044,8 +4074,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     ch.streamId = 50;
     ch.archive = 1;
     const now = Date.now();
+    document.getElementById('vodOsdTech').textContent = 'live line';
     startCatchup(1, {start: now - 3600000, stop: now - 1800000, title: 'P'}, 2);
-    return {url: catchup && catchup.url, shaka: !!liveEngine.shaka};
+    return {
+      url: catchup && catchup.url,
+      shaka: !!liveEngine.shaka,
+      osd: document.getElementById('vodOsdTech').textContent
+    };
   });
   await page
       .waitForFunction(
@@ -4057,13 +4092,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                                     live: liveEngine.shaka &&
                                         liveEngine.shaka.isLive(),
                                     t: videoPlayer.currentTime,
-                                    range: _seekRange()
+                                    range: _seekRange(),
+                                    tech: (liveTechFromShaka(), liveEngine.tech)
                                   }));
+  // The codec line of a catch-up has no live rewind reach (⏪)
   check(
       'catch-up with Shaka Player: the archive as HLS (VOD) from its position',
       /\/timeshift\/user\/pass\/30\/[\d:-]+\/50\.m3u8$/.test(scu0.url) &&
-          scu0.shaka && scu.live === false && scu.t >= 1.5 &&
-          scu.range.start === 0 && scu.range.end >= 5,
+          scu0.shaka && scu0.osd === '' && scu.live === false && scu.t >= 1.5 &&
+          scu.range.start === 0 && scu.range.end >= 5 &&
+          /^H\.264/.test(scu.tech) && !/⏪/.test(scu.tech),
       JSON.stringify({scu0, scu}));
   await page.evaluate(() => {
     channels[1].streamId = 404;
