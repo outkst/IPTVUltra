@@ -89,19 +89,20 @@ function loadHlsScript() {
   return _hlsScript;
 }
 /**
- * Tells if the settings can use hls.js. Before the load of hls.js, the
- * answer is true. If the browser cannot use it, the load hands the channel
- * to the native pipeline.
+ * Tells if the settings can use hls.js. Before the load of hls.js, this
+ * function examines only the MediaSource API. If hls.js cannot operate after
+ * the load, the channel goes to the native pipeline.
  * @return {boolean} True when hls.js can play an HLS channel.
  */
 function hlsAvailable() {
   if (!(settings.liveBuffer > 0)) return false;
-  if (typeof Hls === 'undefined') return !_hlsScriptFailed;
+  if (typeof Hls === 'undefined')
+    return !_hlsScriptFailed && typeof MediaSource !== 'undefined';
   return Hls.isSupported();
 }
 /**
- * Starts the load of hls.js early when the settings select it, so that the
- * first channel does not wait for it.
+ * Starts the load of hls.js before the first channel when the settings
+ * select it. Thus, the first channel does not wait for the script.
  */
 function preloadHlsScript() {
   if (liveMseEngine() === 'hls') loadHlsScript();
@@ -539,10 +540,16 @@ function loadLiveSource(url, cause = '') {
     // The first hls.js channel waits for the script. A different source
     // clears liveEngine.hlsWait (liveEngineDestroy).
     liveEngine.hlsWait = url;
+    // Stop the previous source immediately. The provider account has 1
+    // connection.
+    afterLiveTeardown(() => {
+      if (liveEngine.hlsWait === url) videoPlayer.load();
+    });
     loadHlsScript().then(ok => {
       if (liveEngine.hlsWait !== url) return;
       liveEngine.hlsWait = '';
-      if (ok && Hls.isSupported())
+      // The settings can change during the load (buffer Off)
+      if (ok && liveMseEngine() === 'hls')
         loadHlsSource(url);
       else
         liveHandToNative(url);
@@ -557,7 +564,6 @@ function loadLiveSource(url, cause = '') {
  * @param {string} url The URL of the channel.
  */
 function loadHlsSource(url) {
-  liveEngine.url = url;
   const secs = settings.liveBuffer * 60;
   const hls = new Hls({
     backBufferLength: secs,  // keep this much behind the playhead for rewind

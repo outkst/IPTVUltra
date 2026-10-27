@@ -264,6 +264,7 @@ function settingsRows() {
       set: v => {
         settings.liveBuffer = v;
         saveSettings();
+        preloadHlsScript();
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
             (liveEngineActive() || v > 0))
           reloadStream(false, 'Settings');
