@@ -3482,21 +3482,25 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   });
   await page
       .waitForFunction(
-          () => document.getElementById('epgToastTitle').textContent ===
-              'No broadcast',
+          () => !document.getElementById('liveNotice')
+                     .classList.contains('hidden'),
           {timeout: 15000})
       .catch(() => {});
   const black = await page.evaluate(() => {
+    const n = document.getElementById('liveNotice');
     return {
-      title: document.getElementById('epgToastTitle').textContent,
+      title: n.querySelector('.live-notice-title').textContent,
+      inFrame: n.parentNode === videoPlayer.parentNode,
+      toast: document.getElementById('epgToastTitle').textContent,
       placeholder: liveEngine.placeholder,
       status: statusArea.innerText,
       log: _diagLog.some(e => /placeholder \(black\.ts\)/.test(e.msg))
     };
   });
   check(
-      'a playlist with only black.ts shows "No broadcast"',
-      black.title === 'No broadcast' && black.placeholder &&
+      'a playlist with only black.ts shows "No broadcast" in the video frame',
+      black.title === 'No broadcast' && black.inFrame &&
+          black.toast !== 'No broadcast' && black.placeholder &&
           /not on the air/.test(black.status) && black.log,
       JSON.stringify(black));
   // The watchdog does not reload a placeholder: a reload cannot start the
@@ -3531,6 +3535,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(() => {
         selectChannel(3);
         return !liveEngineActive() &&
+            document.getElementById('liveNotice').classList.contains(
+                'hidden') &&
             (videoPlayer.getAttribute('src') || '') === channels[3].url;
       }));
 
@@ -3642,7 +3648,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     return out;
   });
   check(
-      'a movie after a Shaka Player channel keeps its source after the destroy',
+      'a movie after a Shaka Player channel keeps its source after the detach',
       svod.active && !svod.shaka &&
           /\/movie\/user\/pass\/1\.mp4$/.test(svod.src) && !svod.teardown,
       JSON.stringify(svod));
@@ -3867,14 +3873,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   });
   await page
       .waitForFunction(
-          () => document.getElementById('epgToastTitle').textContent ===
-              'No broadcast',
+          () => !document.getElementById('liveNotice')
+                     .classList.contains('hidden'),
           {timeout: 15000})
       .catch(() => {});
   const sblack = await page.evaluate(() => {
     window.__blackShaka = liveEngine.shaka;
+    const n = document.getElementById('liveNotice');
+    const slot = n.parentNode === videoPlayer.parentNode;
+    enterLivePlayer();
+    const inPlayer = n.parentNode === document.getElementById('vodPlayer');
+    exitLivePlayer();
     return {
-      title: document.getElementById('epgToastTitle').textContent,
+      title: n.querySelector('.live-notice-title').textContent,
+      frame: slot && inPlayer && n.parentNode === videoPlayer.parentNode,
       placeholder: liveEngine.placeholder,
       shaka: !!liveEngine.shaka,
       reloads: _reloadAttempts
@@ -3888,16 +3900,198 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                           }));
   check(
       'Shaka Player: a black.ts playlist shows "No broadcast" and gets no reload',
-      sblack.title === 'No broadcast' && sblack.placeholder && sblack.shaka &&
+      sblack.title === 'No broadcast' && sblack.frame && sblack.placeholder &&
+          sblack.shaka &&
           sblackAfter.same && sblackAfter.reloads === sblack.reloads,
       JSON.stringify({sblack, sblackAfter}));
+  // A channel change keeps the 1 Shaka Player of the app: no detach, no
+  // destroy, and a new load on the same player
+  const sre0 = await page.evaluate(() => {
+    window.__shakaApp = _shakaPlayer;
+    const n = _shakaLoads;
+    channels[1].url = 'http://localhost:8765/hls50/index.m3u8';
+    selectChannel(1);
+    return {
+      n,
+      teardown: !!_shakaTeardown,
+      same: liveEngine.shaka === _shakaPlayer
+    };
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.shaka && liveEngine.shaka.isLive() &&
+              liveEngine.segments >= 1,
+          {timeout: 20000})
+      .catch(() => {});
+  const sre = await page.evaluate(() => ({
+                                    same: _shakaPlayer === window.__shakaApp,
+                                    loads: _shakaLoads,
+                                    live: !!(liveEngine.shaka &&
+                                             liveEngine.shaka.isLive()),
+                                    src: videoPlayer.currentSrc || ''
+                                  }));
+  check(
+      'Shaka Player: a channel change loads on the same player, with no detach',
+      sre0.same && !sre0.teardown && sre.same && sre.loads === sre0.n + 1 &&
+          sre.live && /^blob:/.test(sre.src),
+      JSON.stringify({sre0, sre}));
+  // The background: the request filter holds the requests, and the player and
+  // its buffer stay. The release lets the requests continue.
+  const shold0 = await page.evaluate(() => {
+    window.__shakaReqs = 0;
+    liveEngine.shaka.getNetworkingEngine().registerRequestFilter(() => {
+      window.__shakaReqs++;
+    });
+    shakaHoldRequests();
+    return videoPlayer.buffered.length;
+  });
+  await sleep(5000);
+  const sheld = await page.evaluate(() => ({
+                                      reqs: window.__shakaReqs,
+                                      buffered: videoPlayer.buffered.length,
+                                      same: liveEngine.shaka === _shakaPlayer
+                                    }));
+  await page.evaluate(() => shakaReleaseRequests());
+  await page
+      .waitForFunction(() => window.__shakaReqs > 0, {timeout: 10000})
+      .catch(() => {});
+  const sfree = await page.evaluate(() => window.__shakaReqs);
+  check(
+      'Shaka Player: held requests wait, the buffer stays, and a release continues',
+      shold0 > 0 && sheld.reqs === 0 && sheld.buffered > 0 && sheld.same &&
+          sfree > 0,
+      JSON.stringify({shold0, sheld, sfree}));
+  // The buffer fit changes only the values that the goal sets
+  const sfit = await page.evaluate(() => {
+    const p = liveEngine.shaka, was = liveEngine.bitrate;
+    liveEngine.bitrate = 100e6;
+    shakaFitBuffer(p);
+    const c = p.getConfiguration();
+    const out = {
+      goal: c.streaming.bufferingGoal,
+      behind: c.streaming.bufferBehind,
+      window: c.manifest.availabilityWindowOverride,
+      retries: c.streaming.retryParameters.maxAttempts,
+      delay: c.manifest.hls.liveSegmentsDelay
+    };
+    liveEngine.bitrate = was;
+    shakaFitBuffer(p);
+    return out;
+  });
+  check(
+      'Shaka Player buffer fit: goal, behind, and window change; the rest stays',
+      sfit.goal === 10 && sfit.behind === 10 && sfit.window === 20 &&
+          sfit.retries === 4 && sfit.delay === 3,
+      JSON.stringify(sfit));
+  // Diagnostics shows the statistics of Shaka Player, "Go live" uses
+  // goToLive(), and a closed caption track has its own label
+  const sstat = await page.evaluate(() => {
+    const line = shakaStatsLine();
+    videoPlayer.currentTime = liveBufferRange().start;
+    const behind = liveBehindSecs();
+    liveGoLive();
+    return {
+      line,
+      diag: diagLines().includes(line),
+      behind,
+      after: liveBehindSecs(),
+      cc: shakaTextLabel(
+          {mimeType: 'application/cea-608', originalTextId: 'CC1'}, 0),
+      ccLang: shakaTextLabel(
+          {mimeType: 'application/cea-708', originalTextId: 'svc1',
+           language: 'en'},
+          0),
+      sub: shakaTextLabel({mimeType: 'text/vtt', language: 'en'}, 0)
+    };
+  });
+  check(
+      'Shaka Player: statistics in Diagnostics, goToLive, and closed caption labels',
+      /^Shaka Player: frames \d+ decoded, \d+ dropped/.test(sstat.line) &&
+          sstat.diag && sstat.behind > 1 && sstat.after < 1 &&
+          sstat.cc === 'Closed captions (CC1)' &&
+          sstat.ccLang === 'Closed captions (svc1) · English' &&
+          sstat.sub === 'English',
+      JSON.stringify(sstat));
+  // A catch-up with Shaka Player as the engine: the archive as HLS, played
+  // as a VOD playlist from its start position. With no HLS archive (HTTP 404),
+  // the catch-up continues with the .ts URL on the native pipeline.
+  const scu0 = await page.evaluate(() => {
+    window.__cuXt = _xt;
+    _xt = {
+      base: 'http://localhost:8765',
+      user: 'user',
+      pass: 'pass',
+      u: 'user',
+      pw: 'pass',
+      tz: 'UTC',
+      epgOffsetMin: 0
+    };
+    const ch = channels[1];
+    window.__cuCh = {streamId: ch.streamId, archive: ch.archive};
+    ch.streamId = 50;
+    ch.archive = 1;
+    const now = Date.now();
+    startCatchup(1, {start: now - 3600000, stop: now - 1800000, title: 'P'}, 2);
+    return {url: catchup && catchup.url, shaka: !!liveEngine.shaka};
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.shaka && liveEngine.shaka.getManifest() &&
+              videoPlayer.readyState >= 1,
+          {timeout: 20000})
+      .catch(() => {});
+  const scu = await page.evaluate(() => ({
+                                    live: liveEngine.shaka &&
+                                        liveEngine.shaka.isLive(),
+                                    t: videoPlayer.currentTime,
+                                    range: _seekRange()
+                                  }));
+  check(
+      'catch-up with Shaka Player: the archive as HLS (VOD) from its position',
+      /\/timeshift\/user\/pass\/30\/[\d:-]+\/50\.m3u8$/.test(scu0.url) &&
+          scu0.shaka && scu.live === false && scu.t >= 1.5 &&
+          scu.range.start === 0 && scu.range.end >= 5,
+      JSON.stringify({scu0, scu}));
+  await page.evaluate(() => {
+    channels[1].streamId = 404;
+    const now = Date.now();
+    startCatchup(1, {start: now - 3600000, stop: now - 1800000, title: 'P'});
+  });
+  await page
+      .waitForFunction(
+          () => !liveEngine.shaka &&
+              /\/404\.ts$/.test(videoPlayer.getAttribute('src') || ''),
+          {timeout: 20000})
+      .catch(() => {});
+  const scuf = await page.evaluate(() => {
+    const out = {
+      failed: _catchupHlsFailed,
+      url: catchup && catchup.url,
+      src: videoPlayer.getAttribute('src') || '',
+      next: catchupExt(),
+      log: _diagLog.slice(-3).map(d => d.msg)
+    };
+    _catchupHlsFailed = false;
+    channels[1].streamId = window.__cuCh.streamId;
+    channels[1].archive = window.__cuCh.archive;
+    catchupBackToLive();
+    exitLivePlayer();  // startCatchup opened the live player
+    _xt = window.__cuXt;
+    return out;
+  });
+  check(
+      'catch-up with no HLS archive continues with the .ts URL on the native pipeline',
+      scuf.failed && /\/404\.ts$/.test(scuf.url) && scuf.src === scuf.url &&
+          scuf.next === 'ts' &&
+          scuf.log.some(m => /cannot play the archive as HLS/.test(m)),
+      JSON.stringify(scuf));
   // Error classes (unit-level): the reply that is not a playlist is a network
   // failure; unsupported content marks the channel; a recoverable error and an
   // interrupted load are ignored
   const serr = await page.evaluate(() => {
     const E = shaka.util.Error;
     const fake = () => ({
-      destroy() {
+      detach() {
         return Promise.resolve();
       }
     });
@@ -3953,21 +4147,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /4\/CONTENT_UNSUPPORTED_BY_BROWSER/.test(serr.log[1]) &&
           serr.names.join() === 'BAD_HTTP_STATUS,-5',
       JSON.stringify(serr));
-  // The destroys of Shaka Player make a chain: a fast destroy of a player that
-  // was never attached cannot end before a slow destroy of the previous player,
-  // and the next source waits for the two (unit-level)
+  // The detaches of Shaka Player make a chain: a fast detach cannot end before
+  // a slow detach, and the next source waits for the two (unit-level)
   const stear = await page.evaluate(async () => {
     await (_shakaTeardown || Promise.resolve());
     const order = [];
     liveEngine.shaka = {
-      destroy: () => new Promise(r => setTimeout(() => {
+      detach: () => new Promise(r => setTimeout(() => {
                                    order.push('slow');
                                    r();
                                  }, 300))
     };
     liveEngineDestroy();
     liveEngine.shaka = {
-      destroy: () => {
+      detach: () => {
         order.push('fast');
         return Promise.resolve();
       }
@@ -3980,7 +4173,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     return {order, pending: !!_shakaTeardown};
   });
   check(
-      'Shaka destroys make a chain: the next source waits for the slow one',
+      'Shaka detaches make a chain: the next source waits for the slow one',
       stear.order.join() === 'slow,fast,next' && !stear.pending,
       JSON.stringify(stear));
   // The request type of a recoverable network error is at a different index
@@ -3990,7 +4183,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const E = shaka.util.Error, RT = shaka.net.NetworkingEngine.RequestType;
     const u = 'http://shaka.test/refresh.m3u8';
     const fake = () => ({
-      destroy() {
+      detach() {
         return Promise.resolve();
       }
     });

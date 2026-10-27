@@ -1934,6 +1934,50 @@ video {
   letter-spacing: 0.05em;
 }
 
+/* A message about the playing channel, in the video frame (for example an
+   event channel that sends a black placeholder) */
+.live-notice {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 80%;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  padding: 0.8rem 1.4rem;
+  border-radius: 14px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 19;
+}
+
+.live-notice.hidden {
+  display: none;
+}
+
+.live-notice-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.live-notice-text {
+  margin-top: 0.3rem;
+  font-size: 0.85rem;
+  color: #ccc;
+}
+
+#vodPlayer .live-notice {
+  z-index: 4;
+}
+
+#vodPlayer .live-notice-title {
+  font-size: 2rem;
+}
+
+#vodPlayer .live-notice-text {
+  font-size: 1.1rem;
+}
+
 .loading-overlay {
   position: fixed;
   top: 0;

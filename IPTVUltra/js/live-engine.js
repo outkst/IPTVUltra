@@ -194,14 +194,44 @@ function notePlaceholderPlaylist(text) {
       segs.length > 0 && segs.every(l => HLS_PLACEHOLDER_SEGMENT.test(l));
   if (placeholder === liveEngine.placeholder) return;
   liveEngine.placeholder = placeholder;
-  if (!placeholder) return;
+  if (!placeholder) {
+    hideLiveNotice();
+    return;
+  }
   const t = 'The event of this channel is not on the air';
   statusArea.innerText = `⚠️ ${t}`;
-  showEPGToast(
-      `${t}. The provider sends a black picture until the event starts.`,
-      'error', 'No broadcast');
-  hideEPGToast(8000);
+  showLiveNotice(
+      'No broadcast',
+      'The provider sends a black picture until the event starts.');
   diagLog('The provider sends a placeholder (black.ts) for this channel');
+}
+// A message in the video frame about the playing channel. It stays until the
+// source changes: liveEngineDestroy() removes it.
+/**
+ * Shows a message in the video frame.
+ * @param {string} title The title.
+ * @param {string} text The text below the title.
+ */
+function showLiveNotice(title, text) {
+  const el = document.getElementById('liveNotice');
+  if (!el) return;
+  el.querySelector('.live-notice-title').textContent = title;
+  el.querySelector('.live-notice-text').textContent = text;
+  placeLiveNotice();
+  el.classList.remove('hidden');
+}
+function hideLiveNotice() {
+  const el = document.getElementById('liveNotice');
+  if (el) el.classList.add('hidden');
+}
+// Puts the message on the element that shows the video: the live player, or
+// the slot of the <video> (the channel list or the guide).
+function placeLiveNotice() {
+  const el = document.getElementById('liveNotice');
+  if (!el) return;
+  const host = livePlayer.active ? document.getElementById('vodPlayer') :
+                                   videoPlayer.parentNode;
+  if (host && el.parentNode !== host) host.appendChild(el);
 }
 // ── Shaka Player: playlist filter
 // A response filter does the work of livePlaylistLoader() for Shaka Player:
@@ -229,16 +259,19 @@ function playlistRestarted(uri, text) {
       (seq < prev.seq || (seq === prev.seq && first !== prev.first));
 }
 /**
- * Makes the playlist response filter of a Shaka Player.
- * @param {string} url The URL of the channel.
+ * Makes the playlist response filter of the Shaka Player. The player stays the
+ * same for each channel, thus the filter reads the URL from the load that
+ * plays (`_shakaLoad`), and it stops when a different load starts.
  * @param {!Object} player The Shaka Player.
  * @return {function(number, !Object): (Promise|undefined)} The filter.
  */
-function shakaResponseFilter(url, player) {
+function shakaResponseFilter(player) {
   const RT = shaka.net.NetworkingEngine.RequestType;
   const SU = shaka.util.StringUtils;
   return async (type, response) => {
-    if (type !== RT.MANIFEST || liveEngine.shaka !== player) return;
+    const load = _shakaLoad;
+    if (type !== RT.MANIFEST || !load || liveEngine.shaka !== player) return;
+    const url = load.url;
     const uri = response.uri || url;
     const raw = _shakaRaw.get(uri) || 0;
     if (raw > 0) {  // a request of this filter: no second filter pass
@@ -257,7 +290,7 @@ function shakaResponseFilter(url, player) {
       const from = Date.now();
       while (Date.now() - from < HLS_RELAY_WAIT_MAX_MS) {
         await new Promise(r => setTimeout(r, HLS_RELAY_WAIT_MS));
-        if (liveEngine.shaka !== player) return;
+        if (_shakaLoad !== load) return;
         const req = shaka.net.NetworkingEngine.makeRequest(
             [uri], player.getConfiguration().manifest.retryParameters);
         _shakaRaw.set(uri, (_shakaRaw.get(uri) || 0) + 1);
@@ -275,7 +308,7 @@ function shakaResponseFilter(url, player) {
           break;
         }
       }
-      if (liveEngine.shaka !== player || HLS_RELAY_NOT_READY.test(text))
+      if (_shakaLoad !== load || HLS_RELAY_NOT_READY.test(text))
         return;  // Shaka Player reports the text as a bad playlist
     }
     if (!/^\s*#EXTM3U/.test(text)) {
@@ -283,8 +316,13 @@ function shakaResponseFilter(url, player) {
       return;
     }
     const media = /^#EXTINF/m.test(text);
-    if (media && playlistRestarted(uri, text) && hlsRelayRestart(url)) return;
-    const clean =
+    // The playlist of a catch-up (the provider archive) has an end
+    const archive = !!catchup && catchup.url === url;
+    if (media && !archive && playlistRestarted(uri, text) &&
+        hlsRelayRestart(url))
+      return;
+    const clean = archive ?
+        text :
         text.replace(/^#EXT-X-(ENDLIST|PLAYLIST-TYPE:[A-Z]*)[ \t]*\r?$/gm, '');
     response.data = SU.toUTF8(clean);
     _hlsLastPlaylist.set(uri, clean);
@@ -330,13 +368,18 @@ function hlsRelayRestart(url) {
   videoPlayer.play().catch(() => {});
   return true;
 }
-// Shaka Player destroys itself asynchronously, and at the end it removes the
-// src attribute of the <video>. Thus, the next source waits for the destroy.
-// The destroys make a chain: a slow destroy of an attached player can end
-// after the fast destroy of a player that was never attached, and then it
-// would remove the source of the next channel.
+// Shaka Player detaches itself asynchronously, and at the end it removes the
+// src attribute of the <video>. Thus, the next source waits for the detach.
+// The detaches make a chain: a slow detach can end after a fast one, and then
+// it would remove the source of the next channel.
 let _shakaTeardown = null;
-function liveEngineDestroy() {
+/**
+ * Stops the live engine.
+ * @param {boolean=} keepShaka True when the next source is a Shaka Player
+ *     load: the player stays attached, and its next load replaces the
+ *     channel.
+ */
+function liveEngineDestroy(keepShaka = false) {
   if (liveEngine.hls) {
     try {
       liveEngine.hls.destroy();
@@ -347,14 +390,20 @@ function liveEngineDestroy() {
   if (liveEngine.shaka) {
     const p = liveEngine.shaka;
     liveEngine.shaka = null;
-    const prev = _shakaTeardown || Promise.resolve();
-    const t = prev.then(() => p.destroy()).catch(() => {}).then(() => {
-      if (_shakaTeardown === t) _shakaTeardown = null;
-    });
-    _shakaTeardown = t;
+    if (!keepShaka) {
+      const prev = _shakaTeardown || Promise.resolve();
+      const t = prev.then(() => p.detach()).catch(() => {}).then(() => {
+        if (_shakaTeardown === t) _shakaTeardown = null;
+      });
+      _shakaTeardown = t;
+    }
   }
+  _shakaLoad = null;
+  shakaReleaseRequests();
   liveEngine.url = '';
   liveEngine.tech = '';
+  liveEngine.placeholder = false;
+  hideLiveNotice();
 }
 /**
  * Runs a function when no Shaka Player destroy is pending.
@@ -383,6 +432,10 @@ function setNativeSrc(url) {
  * @param {string} url The URL of the channel.
  */
 function liveHandToNative(url) {
+  if (catchup && catchup.url === url) {
+    catchupHlsFailed(url);
+    return;
+  }
   if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
       channels[currentChannelIndex].url === url) {
     umsNoteCurrentId();
@@ -401,8 +454,11 @@ function loadLiveSource(url, cause = '') {
     const ch = channels[currentChannelIndex];
     diagLog(`Live start (${cause}): ${ch ? ch.name.slice(0, 60) : url}`);
   }
-  liveEngineDestroy();
   const engine = isHlsUrl(url) && !_hlsBroken.has(url) ? liveMseEngine() : '';
+  // An attached Shaka Player keeps its MediaSource for the next load
+  const reuse = engine === 'shaka' && !!_shakaPlayer && !_shakaTeardown &&
+      _shakaPlayer.getMediaElement() === videoPlayer;
+  liveEngineDestroy(engine === 'shaka');
   if (!engine) {
     setNativeSrc(nativeLiveUrl(url));
     return false;
@@ -428,7 +484,8 @@ function loadLiveSource(url, cause = '') {
   _shakaSeq.clear();
   liveEngine.subManual = false;
   liveEngine.audioManual = false;
-  videoPlayer.removeAttribute('src');  // the engine attaches its MediaSource
+  // The engine attaches its MediaSource
+  if (!reuse) videoPlayer.removeAttribute('src');
   if (engine === 'shaka') {
     loadShakaSource(url);
     return true;
@@ -516,12 +573,21 @@ function shakaConfig(secs) {
   };
 }
 let _shakaPolyfilled = false;
+// The app has 1 Shaka Player. A channel change calls load() again on the same
+// player: the player keeps its MediaSource, and the change does not wait for a
+// destroy. The player is detached when a different source takes the <video>
+// (the native pipeline, hls.js, or VOD).
+let _shakaPlayer = null;
+// The load that plays ({url, n}). The response filter compares it after each
+// wait, because the player is the same for each channel.
+let _shakaLoad = null;
+let _shakaLoads = 0;
 /**
- * Starts a Shaka Player on a live channel. `loadLiveSource` has reset the
- * state of `liveEngine` before the call.
- * @param {string} url The URL of the channel.
+ * Gives the Shaka Player of the app, and makes it the first time.
+ * @return {!Object} The Shaka Player.
  */
-function loadShakaSource(url) {
+function shakaPlayer() {
+  if (_shakaPlayer) return _shakaPlayer;
   if (!_shakaPolyfilled) {
     _shakaPolyfilled = true;
     try {
@@ -530,10 +596,8 @@ function loadShakaSource(url) {
     }
   }
   const player = new shaka.Player();
-  liveEngine.shaka = player;
-  player.configure(shakaConfig(settings.liveBuffer * 60));
   player.addEventListener('error', e => {
-    if (liveEngine.shaka === player) onShakaError(url, e.detail);
+    if (liveEngine.shaka === player) onShakaError(liveEngine.url, e.detail);
   });
   player.addEventListener('trackschanged', applyShakaTrackPrefs);
   player.addEventListener('audiotrackschanged', applyShakaTrackPrefs);
@@ -542,19 +606,61 @@ function loadShakaSource(url) {
   player.addEventListener('adaptation', liveTechFromShaka);
   player.addEventListener('bufferappending', e => shakaOnAppend(player, e));
   player.addEventListener('segmentappended', e => shakaOnSegment(player, e));
+  const net = player.getNetworkingEngine();
+  net.registerRequestFilter(shakaRequestFilter);
+  net.registerResponseFilter(shakaResponseFilter(player));
+  _shakaPlayer = player;
+  return player;
+}
+/**
+ * Starts the Shaka Player on a live channel or on a catch-up. `loadLiveSource`
+ * has reset the state of `liveEngine` before the call.
+ * @param {string} url The URL of the channel.
+ */
+function loadShakaSource(url) {
+  const player = shakaPlayer();
+  const load = {url, n: ++_shakaLoads};
+  liveEngine.shaka = player;
+  _shakaLoad = load;
+  player.configure(shakaConfig(settings.liveBuffer * 60));
+  // A catch-up starts at its position in the programme
+  const start =
+      catchup && catchup.url === url && catchup.seekTo ? catchup.seekTo : null;
   afterLiveTeardown(() => {
-    if (liveEngine.shaka !== player) return;
-    player.attach(videoPlayer)
-        .then(() => {
-          if (liveEngine.shaka !== player) return;
-          player.getNetworkingEngine().registerResponseFilter(
-              shakaResponseFilter(url, player));
-          return player.load(url);
-        })
+    if (_shakaLoad !== load) return;
+    const ready = player.getMediaElement() === videoPlayer ?
+        Promise.resolve() :
+        player.attach(videoPlayer);
+    ready.then(() => _shakaLoad === load ? player.load(url, start) : null)
         .catch(e => {
-          if (liveEngine.shaka === player) onShakaError(url, e);
+          if (_shakaLoad === load) onShakaError(url, e);
         });
   });
+}
+// webOS freezes the timers and the network of a hidden app (see the
+// visibilitychange listener). Shaka Player has no stopLoad(), thus a request
+// filter holds each request while the app is hidden. The buffer stays, and the
+// requests continue when the app is in the front again.
+let _shakaHold = null;  // {promise, release} while the requests wait
+let _shakaHiddenAt = 0;
+function shakaHoldRequests() {
+  if (_shakaHold) return;
+  let release = null;
+  const promise = new Promise(r => release = r);
+  _shakaHold = {promise, release};
+}
+function shakaReleaseRequests() {
+  const h = _shakaHold;
+  _shakaHold = null;
+  if (h) h.release();
+}
+/**
+ * The request filter of the Shaka Player.
+ * @return {Promise|undefined} A promise that waits while the requests are
+ *     held.
+ */
+function shakaRequestFilter() {
+  if (_shakaHold) return _shakaHold.promise;
 }
 /**
  * Gives the name of a Shaka Player error code.
@@ -851,8 +957,41 @@ function shakaFitBuffer(player) {
   const goal = Math.min(secs, fit);
   const reach = Math.max(1, Math.floor(goal / 60));
   const cur = player.getConfiguration().streaming.bufferingGoal;
-  if (Math.abs(cur - goal) > cur * 0.1) player.configure(shakaConfig(goal));
+  // Only the values that the goal sets
+  if (Math.abs(cur - goal) > cur * 0.1)
+    player.configure({
+      streaming: {bufferingGoal: goal, bufferBehind: goal},
+      manifest: {availabilityWindowOverride: goal * 2}
+    });
   liveEngine.reach = reach;
+}
+/**
+ * Gives the playback statistics of the Shaka Player for Diagnostics.
+ * @return {string} The line, or '' when Shaka Player does not play.
+ */
+function shakaStatsLine() {
+  const p = liveEngine.shaka;
+  let s = null;
+  try {
+    s = p && p.getStats();
+  } catch (_) { /* not loaded yet */
+  }
+  if (!s) return '';
+  const num = v => typeof v === 'number' && isFinite(v) ? v : 0;
+  const decoded = num(s.decodedFrames), dropped = num(s.droppedFrames);
+  const parts = [`frames ${decoded} decoded, ${dropped} dropped${
+      decoded ? ` (${(dropped / decoded * 100).toFixed(1)} %)` : ''}`];
+  if (num(s.corruptedFrames)) parts.push(`${s.corruptedFrames} corrupted`);
+  parts.push(`buffering ${num(s.bufferingTime).toFixed(1)} s`);
+  parts.push(`stalls ${num(s.stallsDetected)}`);
+  parts.push(`gaps jumped ${num(s.gapsJumped)}`);
+  if (num(s.estimatedBandwidth))
+    parts.push(
+        `bandwidth ${(s.estimatedBandwidth / 1e6).toFixed(1)} Mbps (estimate)`);
+  if (num(s.loadLatency)) parts.push(`load ${s.loadLatency.toFixed(1)} s`);
+  if (num(s.bytesDownloaded))
+    parts.push(`${Math.round(s.bytesDownloaded / 1e6)} MB downloaded`);
+  return `Shaka Player: ${parts.join(' · ')}`;
 }
 // Body of the manifest response hls.js could not parse ('' when there was none)
 function hlsReplyBody(data) {
@@ -1086,7 +1225,10 @@ function liveBehindSecs() {
 function liveGoLive() {
   if (!liveEngineActive()) return;
   try {
-    videoPlayer.currentTime = liveBufferRange().live;
+    if (liveEngine.shaka)
+      liveEngine.shaka.goToLive();
+    else
+      videoPlayer.currentTime = liveBufferRange().live;
   } catch (_) { /* not seekable yet */
   }
   videoPlayer.play().catch(() => {});
@@ -1364,13 +1506,21 @@ document.addEventListener('visibilitychange', () => {
     }
     return;
   }
-  // Shaka Player has no stopLoad(). The app closes the engine while hidden
-  // (the provider connection also ends) and starts the channel again when
-  // the app is visible.
-  if (liveEngine.shaka && document.hidden) {
-    liveEngine.resumeUrl = liveEngine.url;
-    stopStallWatchdog();
-    liveEngineDestroy();
+  // Shaka Player has no stopLoad(). Its request filter holds the requests
+  // while the app is hidden, and the buffer stays.
+  if (liveEngine.shaka) {
+    if (document.hidden) {
+      _shakaHiddenAt = Date.now();
+      shakaHoldRequests();
+      return;
+    }
+    const away = _shakaHiddenAt ? Date.now() - _shakaHiddenAt : 0;
+    _shakaHiddenAt = 0;
+    shakaReleaseRequests();
+    // After more time than the buffer holds, the playhead is out of the
+    // playlist window: the channel starts again at the live edge
+    if (!catchup && away > settings.liveBuffer * 60000)
+      reloadStream(false, 'return from background');
     return;
   }
   if (!document.hidden && liveEngine.resumeUrl && vodMode === 'live' &&
@@ -1416,7 +1566,9 @@ const _VOD_SCRUB_RAMP = [
 let _scrubPos = null;  // virtual position during a VOD scrub, null otherwise
 
 function _seekRange() {
-  if (liveEngineActive() && !vodPlay.active) {
+  // A catch-up through Shaka Player is a VOD playlist: the full programme is
+  // seekable
+  if (liveEngineActive() && !vodPlay.active && !catchup) {
     const r = liveBufferRange();
     return {start: r.start, end: r.end};
   }

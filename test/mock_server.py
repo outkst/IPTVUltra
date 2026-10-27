@@ -228,6 +228,23 @@ class H(http.server.SimpleHTTPRequestHandler):
                 stats['timeshift_requests'] = stats.get('timeshift_requests',
                                                         0) + 1
                 stats['last_timeshift'] = u.path
+            if u.path.endswith('.m3u8'):
+                # The archive as HLS: a VOD playlist of the hls50 segments.
+                # The stream ID 404 has no HLS archive.
+                if u.path.endswith('/404.m3u8'):
+                    self.send_error(404)
+                    return
+                body = (b'#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n'
+                        b'#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n' +
+                        b''.join(b'#EXTINF:2.000000,\n/hls50/seg%d.ts\n' % i
+                                 for i in range(3)) + b'#EXT-X-ENDLIST\n')
+                self.send_response(200)
+                self.send_header('Content-Type',
+                                 'application/vnd.apple.mpegurl')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             return self.send_clip()
         if u.path == '/hlsrestart/index.m3u8':
             # A provider relay that restarts: the first playlist has segment 0,
