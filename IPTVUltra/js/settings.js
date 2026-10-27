@@ -347,7 +347,7 @@ function settingsRows() {
       id: 'subSize',
       type: 'choice',
       label: 'Subtitle size',
-      sub: 'Movies and Series',
+      sub: 'Movies, Series, and live captions',
       options: SUB_SIZE_OPTIONS,
       get: () => settings.subSize,
       set: v => {
@@ -360,7 +360,7 @@ function settingsRows() {
       id: 'subColor',
       type: 'choice',
       label: 'Subtitle color',
-      sub: 'Movies and Series',
+      sub: 'Movies, Series, and live captions',
       options: SUB_COLOR_OPTIONS,
       get: () => settings.subColor,
       set: v => {
@@ -386,7 +386,7 @@ function settingsRows() {
       id: 'subBg',
       type: 'choice',
       label: 'Subtitle background',
-      sub: 'Movies and Series',
+      sub: 'Movies, Series, and live captions',
       options: SUB_BG_OPTIONS,
       get: () => settings.subBg,
       set: v => {
@@ -399,7 +399,7 @@ function settingsRows() {
       id: 'subEdge',
       type: 'choice',
       label: 'Subtitle edge',
-      sub: 'Movies and Series',
+      sub: 'Movies, Series, and live captions',
       options: SUB_EDGE_OPTIONS,
       get: () => settings.subEdge,
       set: v => {

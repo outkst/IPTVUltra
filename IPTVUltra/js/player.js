@@ -1471,9 +1471,57 @@ function showFeedStats(text) {
   if (_feedStatsTimer) clearTimeout(_feedStatsTimer);
   _feedStatsTimer = setTimeout(() => chip.classList.remove('visible'), 4000);
 }
+// Chromium shows the cues of a <track> (closed captions of Shaka Player, and
+// the subtitles of hls.js). The ::cue rule gives them the subtitle settings.
+const CAPTION_COLORS = {
+  white: '255,255,255',
+  yellow: '255,255,0',
+  cyan: '0,255,255',
+  green: '0,255,0'
+};
+const CAPTION_SIZES = {
+  small: 80,
+  medium: 100,
+  large: 125,
+  extraLarge: 150
+};
+const CAPTION_BGS = {
+  none: 'transparent',
+  translucent: 'rgba(0,0,0,0.5)',
+  solid: '#000'
+};
+const CAPTION_EDGES = {
+  none: 'none',
+  outline: '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000',
+  shadow: '3px 3px 4px #000',
+  raised: '-1px -1px 0 rgba(255,255,255,0.6), 2px 2px 0 #000'
+};
+/**
+ * Gives the CSS rule for the cues of a <track> from the subtitle settings.
+ * @return {string} The rule.
+ */
+function captionCss() {
+  const rgb = CAPTION_COLORS[settings.subColor] || CAPTION_COLORS.white;
+  return `video::cue {` +
+      ` color: rgba(${rgb},${settings.subOpacity / 100});` +
+      ` background-color: ${CAPTION_BGS[settings.subBg] || CAPTION_BGS.none};` +
+      ` font-size: ${CAPTION_SIZES[settings.subSize] || 100}%;` +
+      ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
+}
+function applyCaptionStyle() {
+  let el = document.getElementById('captionStyle');
+  if (!el) {
+    el = document.createElement('style');
+    el.id = 'captionStyle';
+    document.head.appendChild(el);
+  }
+  el.textContent = captionCss();
+}
+applyCaptionStyle();
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the
-// pipeline
+// pipeline and to the cues of a <track>
 async function umsApplySubtitleStyle(u) {
+  applyCaptionStyle();
   u = u || activeUms();
   if (!u || !u.mediaId) return;
   const id = u.mediaId;

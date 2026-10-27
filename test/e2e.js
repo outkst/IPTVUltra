@@ -4049,6 +4049,35 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       labels: ['CC1', 'svc2', 'English', 'CC'].map(l => CAPTION_TRACK.test(l))
     };
   });
+  // The subtitle settings apply to the cues of a <track> (::cue rule)
+  const scss = await page.evaluate(async () => {
+    const was = {...settings};
+    const row = id => settingsRows().find(r => r.id === id);
+    const before = document.getElementById('captionStyle').textContent;
+    row('subSize').set('large');
+    row('subColor').set('yellow');
+    row('subOpacity').set(70);
+    row('subBg').set('solid');
+    row('subEdge').set('shadow');
+    await new Promise(r => setTimeout(r, 50));
+    const after = document.getElementById('captionStyle').textContent;
+    for (const k of ['subSize', 'subColor', 'subOpacity', 'subBg', 'subEdge'])
+      row(k).set(was[k]);
+    await new Promise(r => setTimeout(r, 50));
+    return {
+      before,
+      after,
+      back: document.getElementById('captionStyle').textContent === before
+    };
+  });
+  check(
+      'the subtitle settings apply to the cues of a track (::cue rule)',
+      /^video::cue \{/.test(scss.before) &&
+          /color: rgba\(255,255,0,0\.7\)/.test(scss.after) &&
+          /background-color: #000/.test(scss.after) &&
+          /font-size: 125%/.test(scss.after) &&
+          /text-shadow: 3px 3px 4px #000/.test(scss.after) && scss.back,
+      JSON.stringify(scss));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
       scue.line === 'auto' && scue.snap && scue.position === 'auto' &&
