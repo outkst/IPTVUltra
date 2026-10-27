@@ -294,6 +294,7 @@ class H(http.server.SimpleHTTPRequestHandler):
             # A provider relay that is not ready: the first 2 answers are a
             # text, then the playlist comes. Each value of ?r= is a relay.
             # With ?fail=1, the second answer is HTTP 509 (a rejected request).
+            # With ?never=1, each answer is the text (the relay does not start).
             with lock:
                 relays = stats.setdefault('cold_playlists', {})
                 key = q.get('r', [''])[0]
@@ -303,7 +304,7 @@ class H(http.server.SimpleHTTPRequestHandler):
                 self.send_header('Content-Length', '0')
                 self.end_headers()
                 return
-            if n <= 2:
+            if n <= 2 or q.get('never', [''])[0] == '1':
                 body = b'Cannot read /home/nxt/storage/streams/1_.m3u8'
                 ctype = 'text/plain'
             else:

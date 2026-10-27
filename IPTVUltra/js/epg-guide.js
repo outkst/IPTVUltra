@@ -419,6 +419,9 @@ function rewindIntoArchive(targetMs) {
 // before the start of the buffer, and the archive starts.
 function liveLeftIntoArchive(stepSec) {
   if (catchup || vodPlay.active || !livePlayer.active) return false;
+  // During the load of hls.js, no engine is active, but the channel does not
+  // use the native pipeline
+  if (liveEngine.hlsWait) return false;
   if (!liveEngineActive())
     return rewindIntoArchive(Date.now() - ARCHIVE_NATIVE_BEHIND_MS);
   const t = videoPlayer.currentTime || 0;
