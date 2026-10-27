@@ -645,6 +645,8 @@ function diagLines() {
       (LIVE_ENGINE_OPTIONS.find(o => o.v === settings.liveEngine) ||
        {}).label ||
       settings.liveEngine}`);
+  const stats = shakaStatsLine();
+  if (stats) L.push(stats);
   if (catchup) L.push(`Catch-up: ${catchup.prog && catchup.prog.title}`);
   const ago = t => {
     const s = Math.max(0, Math.round((Date.now() - t) / 1000));

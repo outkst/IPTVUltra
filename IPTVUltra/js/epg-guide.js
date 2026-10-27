@@ -185,7 +185,44 @@ function catchupUrl(ch, prog) {
   return `${_xt.base}/timeshift/${_xt.user}/${_xt.pass}/${mins}/${
       fmtTimeshiftStart(
           epgUnshiftTime(prog.start),
-          _xt.tz)}/${ch.streamId}.ts`;  // archive is indexed by provider time
+          _xt.tz)}/${ch.streamId}.${
+      catchupExt()}`;  // archive is indexed by provider time
+}
+// When Shaka Player is the live engine, a catch-up first uses the archive as
+// HLS (.m3u8): Shaka Player then plays E-AC-3 audio and gives the tracks
+// menu. If the provider does not send the archive as HLS, the catch-up
+// continues with the .ts URL on the native pipeline, and the next catch-ups
+// of the session use the .ts URL immediately.
+let _catchupHlsFailed = false;
+function catchupExt() {
+  return liveMseEngine() === 'shaka' && !_catchupHlsFailed ? 'm3u8' : 'ts';
+}
+/**
+ * Plays the catch-up from its .ts URL on the native pipeline after Shaka
+ * Player could not play the .m3u8 URL.
+ * @param {string} url The .m3u8 URL of the catch-up.
+ */
+function catchupHlsFailed(url) {
+  _catchupHlsFailed = true;
+  const c = catchup;
+  c.url = url.replace(/\.m3u8$/, '.ts');
+  diagLog('Catch-up: Shaka Player cannot play the archive as HLS → .ts URL');
+  umsNoteCurrentId();
+  setNativeSrc(c.url);
+  liveUmsRefresh();
+  catchupSeekOnLoad(c);
+  videoPlayer.play().catch(() => {});
+}
+// Goes to the start position of a catch-up when its stream has metadata
+function catchupSeekOnLoad(c) {
+  if (!c.seekTo) return;
+  videoPlayer.addEventListener('loadedmetadata', () => {
+    if (catchup !== c) return;
+    try {
+      videoPlayer.currentTime = c.seekTo;
+    } catch (_) { /* not seekable: plays from the programme start */
+    }
+  }, {once: true});
 }
 // Server timezone is needed for timeshift start times; cached loads skip the
 // auth call, so fetch it lazily
@@ -272,9 +309,9 @@ async function fetchXtreamEpgFull(tvgId) {
     }
   }
 }
-// Play a past programme from the provider archive in the live slot (native
-// pipeline). `startAt` is the position in the program (in s) where the
-// stream starts.
+// Play a past programme from the provider archive in the live slot (Shaka
+// Player or the native pipeline, see `catchupExt`). `startAt` is the position
+// in the program (in s) where the stream starts.
 function startCatchup(chIdx, prog, startAt) {
   const ch = channels[chIdx];
   if (!ch || !channelHasCatchup(ch)) return;
@@ -302,16 +339,8 @@ function startCatchup(chIdx, prog, startAt) {
     liveUms = null;
   } else
     liveUmsRefresh();
-  if (catchup.seekTo) {
-    const c = catchup;
-    videoPlayer.addEventListener('loadedmetadata', () => {
-      if (catchup !== c) return;
-      try {
-        videoPlayer.currentTime = c.seekTo;
-      } catch (_) { /* not seekable: plays from the programme start */
-      }
-    }, {once: true});
-  }
+  // Shaka Player gets the position with its load
+  if (!liveEngine.shaka) catchupSeekOnLoad(catchup);
   videoPlayer.play().catch(() => {});
   startStallWatchdog();
   channelInfoTag.innerText = `⏪ ${ch.name} · ${prog.title}`;
@@ -409,6 +438,7 @@ function enterEPGMode() {
   if (wrap) {
     if (videoPlayer.parentNode !== wrap) wrap.appendChild(videoPlayer);
   }
+  placeLiveNotice();
   // Start focus cursor at the currently playing channel
   if (currentChannelIndex >= 0) {
     const idx = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
@@ -435,6 +465,7 @@ function exitEPGMode() {
   if (ev) ev.style.display = 'none';
   if (videoPlayer.parentNode !== videoArea)
     videoArea.insertBefore(videoPlayer, videoArea.firstChild);
+  placeLiveNotice();
 }
 
 function refreshCurrentView() {

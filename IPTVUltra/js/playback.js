@@ -130,6 +130,7 @@ function enterLivePlayer() {
   playerEl.classList.add('live');
   const badge = document.getElementById('pbTrickBadge');
   if (badge && badge.parentNode !== playerEl) playerEl.appendChild(badge);
+  placeLiveNotice();
   playerEl.classList.remove('hidden');
   document.getElementById('vodPaused')
       .classList.toggle('hidden', !videoPlayer.paused);

@@ -29,6 +29,7 @@ function restoreLiveVideoSlot() {
   }
   const badge = document.getElementById('pbTrickBadge');
   if (badge && badge.parentNode !== videoArea) videoArea.appendChild(badge);
+  placeLiveNotice();
 }
 function startVodPlayback(p) {
   if (!_xt) return;
@@ -108,7 +109,7 @@ function startVodPlayback(p) {
   if (techEl) techEl.textContent = vodTech[key] || '';
   videoPlayer.pause();
   // A Shaka Player live engine removes the src attribute at the end of its
-  // asynchronous destroy; the VOD source waits for it. The media service
+  // asynchronous detach; the VOD source waits for it. The media service
   // attach and the play also wait: the pipeline of the movie does not exist
   // before the source.
   afterLiveTeardown(() => {
@@ -798,7 +799,7 @@ function vodTracksItems() {
     subs.forEach((t, i) => items.push({
       kind: 'sub',
       shaka: t,
-      label: engineTrackLabel(t.language, t.label, i),
+      label: shakaTextLabel(t, i),
       on: !!t.active
     }));
     if (!subs.length)
@@ -983,6 +984,23 @@ function engineTrackLabel(lang, name, i) {
   if (name && language && name.toLowerCase() !== language.toLowerCase())
     return `${language} · ${name}`;
   return name || language || ('Track ' + (i + 1));
+}
+/**
+ * Gives the menu label of a Shaka Player text track. Shaka Player finds
+ * closed captions (CEA-608 or CEA-708) in the video of MPEG-TS segments, and
+ * gives them the service name (for example CC1) and no label.
+ * @param {!Object} t The text track.
+ * @param {number} i The index of the track.
+ * @return {string} The label.
+ */
+function shakaTextLabel(t, i) {
+  if (!/cea-(608|708)/i.test(t.mimeType || ''))
+    return engineTrackLabel(t.language, t.label, i);
+  const lang = t.language && t.language !== 'und' ?
+      ` · ${resolveLanguage(t.language)}` :
+      '';
+  return `Closed captions${t.originalTextId ? ` (${t.originalTextId})` : ''}${
+      lang}`;
 }
 // Settings language preferences applied to the tracks of Shaka Player when a
 // channel announces them. A selection by the user stays.
