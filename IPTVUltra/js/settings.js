@@ -264,6 +264,7 @@ function settingsRows() {
       set: v => {
         settings.liveBuffer = v;
         saveSettings();
+        preloadHlsScript();
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
             (liveEngineActive() || v > 0))
           reloadStream(false, 'Settings');
@@ -280,6 +281,7 @@ function settingsRows() {
       set: v => {
         settings.liveEngine = v;
         saveSettings();
+        preloadHlsScript();
         _hlsBroken.clear();  // the other engine can play a channel that this
                              // one could not
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&

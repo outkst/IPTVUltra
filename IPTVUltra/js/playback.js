@@ -14,7 +14,8 @@ function startStallWatchdog() {
     // hls.js with no media yet waits for a relay (see livePlaylistLoader). Its
     // own timeouts stop a dead server. A placeholder (black.ts) stops at its
     // end, and a reload cannot make the event start.
-    if (videoPlayer.paused || currentChannelIndex < 0 ||
+    // A channel that waits for the load of hls.js has no source.
+    if (videoPlayer.paused || currentChannelIndex < 0 || liveEngine.hlsWait ||
         (liveEngineActive() &&
          (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;

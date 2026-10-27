@@ -157,10 +157,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(
           () => typeof webOS !== 'undefined' && !!webOS.platformBack));
   check(
-      'hls.js loaded; live engine stays native while the rewind buffer is Off',
+      'hls.js not loaded at start; live engine stays native with the buffer Off',
       await page.evaluate(
-          () => typeof Hls !== 'undefined' && Hls.isSupported() &&
-              settings.liveBuffer === 0 && !hlsAvailable() &&
+          () => typeof Hls === 'undefined' && settings.liveBuffer === 0 &&
+              !hlsAvailable() && liveMseEngine() === '' &&
               isHlsUrl('http://x/live/u/p/1.m3u8') &&
               isHlsUrl('http://x/get.php?type=m3u8') &&
               !isHlsUrl('http://x/live/u/p/1.ts') &&
@@ -3298,13 +3298,25 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // loaded here; its channels are .m3u8 URLs) State is captured in the same
   // evaluate as the selection: the dead manifest makes hls.js hand over to
   // native within milliseconds
-  const eng = await page.evaluate(() => {
+  // index.html does not load hls.js: the first hls.js channel waits for the
+  // script (liveEngine.hlsWait), and then hls.js takes it
+  const eng = await page.evaluate(async () => {
+    const tags = () =>
+        document.querySelectorAll(`script[src="${HLS_SCRIPT}"]`).length;
+    const before = typeof Hls === 'undefined' && tags() === 0;
     settings.liveBuffer = 5;
     settings.liveEngine = 'hls';  // the default is Shaka Player since 3.14.1
     saveSettings();
     channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8';
     selectChannel(2);
+    const wait = liveEngine.hlsWait === channels[2].url &&
+        !videoPlayer.getAttribute('src');
+    const ok = await loadHlsScript();
     return {
+      before,
+      wait,
+      ok,
+      tags: tags(),
       hls: liveEngineActive(),
       url: liveEngine.url,
       src: videoPlayer.getAttribute('src') || '',
@@ -3317,6 +3329,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       eng.hls && /\.m3u8$/.test(eng.url) && /^blob:/.test(eng.src) && eng.ums &&
           eng.row === 5,
       JSON.stringify(eng));
+  check(
+      'hls.js loads only when selected; the first channel waits for the script',
+      eng.before && eng.wait && eng.ok && eng.tags === 1, JSON.stringify(eng));
   await page
       .waitForFunction(
           () => !liveEngineActive() &&
@@ -4673,7 +4688,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
 
   // ---------- hls.js: a refused stream (HTML instead of a playlist) is not
   // held against the channel ----------
-  const hlsCls = await page.evaluate(() => {
+  const hlsCls = await page.evaluate(async () => {
+    await loadHlsScript();  // the page reloaded after the hls.js tests
     const out = {};
     for (const [k, body] of [
              ['html', '<html><body>Max connections reached</body></html>'],
@@ -4732,7 +4748,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       JSON.stringify(diag));
   // A codec that hls.js cannot demux gets no recovery. The native pipeline
   // then plays an Xtream channel as 1 MPEG-TS stream, not with hlsdemux2.
-  const hlsTs = await page.evaluate(() => {
+  const hlsTs = await page.evaluate(async () => {
+    await loadHlsScript();
     const u = 'http://xt.test/live/user/pass/1781953.m3u8';
     let recovered = false;
     liveEngine.hls = {
