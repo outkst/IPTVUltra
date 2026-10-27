@@ -3300,6 +3300,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // native within milliseconds
   const eng = await page.evaluate(() => {
     settings.liveBuffer = 5;
+    settings.liveEngine = 'hls';  // the default is Shaka Player since 3.14.1
     saveSettings();
     channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8';
     selectChannel(2);
@@ -3537,13 +3538,37 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // for HLS channels, with the same provider workarounds and the same native
   // fallback ----------
   check(
-      'Shaka Player loaded; the default live engine is hls.js',
+      'Shaka Player loaded; it is the default live engine (settings schema 5)',
       await page.evaluate(
           () => typeof shaka !== 'undefined' &&
               shaka.Player.isBrowserSupported() &&
-              settings.liveEngine === 'hls' && liveMseEngine() === '' &&
-              LIVE_ENGINE_OPTIONS.some(o => o.v === 'shaka') &&
+              DEFAULT_SETTINGS.liveEngine === 'shaka' &&
+              DEFAULT_SETTINGS.schema === 5 &&
+              LIVE_ENGINE_OPTIONS[0].v === 'shaka' &&
               settingsRows().some(r => r.id === 'liveEngine')));
+  // The migration: an app with the previous default (hls, schema 4) gets
+  // Shaka Player 1 time; a selection with schema 5 stays
+  const smig = await page.evaluate(() => {
+    const key = 'iptv_settings';
+    const saved = localStorage.getItem(key);
+    const out = {};
+    localStorage.setItem(key, JSON.stringify({liveEngine: 'hls', schema: 4}));
+    let s = loadSettings();
+    out.migrated = s.liveEngine === 'shaka' && s.schema === 5;
+    localStorage.setItem(key, JSON.stringify({liveEngine: 'hls', schema: 5}));
+    s = loadSettings();
+    out.kept = s.liveEngine === 'hls';
+    localStorage.setItem(key, '{}');
+    out.fresh = loadSettings().liveEngine === 'shaka';
+    if (saved === null)
+      localStorage.removeItem(key);
+    else
+      localStorage.setItem(key, saved);
+    return out;
+  });
+  check(
+      'settings schema 5: the previous default hls becomes Shaka Player 1 time',
+      smig.migrated && smig.kept && smig.fresh, JSON.stringify(smig));
   const shk = await page.evaluate(() => {
     settings.liveEngine = 'shaka';
     settings.liveBuffer = 5;
@@ -3588,14 +3613,39 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         goal: liveEngine.shaka &&
             liveEngine.shaka.getConfiguration().streaming.bufferingGoal,
         trackId: liveEngine.videoTrackId,
+        // The measured rate, never the estimate of the variant track
+        fpsFn: liveEngineFps(),
         log: _diagLog.slice(-3).map(d => d.msg)
       }));
   check(
       'Shaka Player path: frame rate from the appended samples, bitrate, codec line',
       sfps.fps === 50 && /H\.264 · .*50 fps · \d+ kbps/.test(sfps.tech) &&
           sfps.bitrate > 0 && /^blob:/.test(sfps.src) && !sfps.attr &&
-          sfps.rec && sfps.rec.fps === 50 && sfps.goal > 0 && sfps.reach === 5,
+          sfps.rec && sfps.rec.fps === 50 && sfps.goal > 0 &&
+          sfps.reach === 5 && sfps.fpsFn === 50,
       JSON.stringify(sfps));
+  // A movie after a Shaka Player channel: the VOD source, the media service
+  // attach, and the play wait for the asynchronous destroy (the demo playlist
+  // is M3U, thus the Xtream state is set for the call)
+  const svod = await page.evaluate(async () => {
+    const xt = _xt;
+    _xt = xt || {base: 'http://localhost:8765', user: 'user', pass: 'pass'};
+    startVodPlayback({kind: 'movie', item: {id: 1, name: 'Movie', ext: 'mp4'}});
+    const out = {active: vodPlay.active, shaka: !!liveEngine.shaka};
+    out.srcBefore = videoPlayer.getAttribute('src') || '';
+    await new Promise(r => setTimeout(r, 1500));
+    out.src = videoPlayer.getAttribute('src') || '';
+    out.teardown = !!_shakaTeardown;
+    out.paused = videoPlayer.paused;
+    stopVodPlayback(false);
+    _xt = xt;
+    return out;
+  });
+  check(
+      'a movie after a Shaka Player channel keeps its source after the destroy',
+      svod.active && !svod.shaka &&
+          /\/movie\/user\/pass\/1\.mp4$/.test(svod.src) && !svod.teardown,
+      JSON.stringify(svod));
   // The fixture ends with #EXT-X-ENDLIST and has PLAYLIST-TYPE:VOD, like the
   // first playlist of a cold relay; the response filter removes both
   check(
@@ -3753,6 +3803,30 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /^blob:/.test(scold.src) && scold.reloads === 0 &&
           scold.log.some(m => /Shaka Player waits for the relay/.test(m)),
       JSON.stringify(scold));
+  // A poll of the filter that is rejected (HTTP 509): the count of the raw
+  // requests goes back, and the next playlist of Shaka Player gets the filter
+  await page.evaluate(() => {
+    channels[1].url =
+        'http://localhost:8765/hlscold/index.m3u8?fail=1&r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(
+          () => liveEngine.shaka && liveEngine.shaka.isLive(), {timeout: 30000})
+      .catch(() => {});
+  const sfail = await page.evaluate(() => ({
+                                      shaka: !!liveEngine.shaka,
+                                      live: !!(liveEngine.shaka &&
+                                               liveEngine.shaka.isLive()),
+                                      raw: [..._shakaRaw.values()],
+                                      waits: liveEngine.relayWaits,
+                                      restarts: _hlsRelayRestart.n
+                                    }));
+  check(
+      'a rejected poll of the filter keeps no raw request count',
+      sfail.shaka && sfail.live && sfail.raw.every(v => v === 0) &&
+          sfail.waits === 1 && sfail.restarts === 0,
+      JSON.stringify(sfail));
   // "Cannot read" between 2 good playlists: the same player gets the last good
   // playlist, then the next one
   await page.evaluate(() => {
@@ -3879,6 +3953,80 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /4\/CONTENT_UNSUPPORTED_BY_BROWSER/.test(serr.log[1]) &&
           serr.names.join() === 'BAD_HTTP_STATUS,-5',
       JSON.stringify(serr));
+  // The destroys of Shaka Player make a chain: a fast destroy of a player that
+  // was never attached cannot end before a slow destroy of the previous player,
+  // and the next source waits for the two (unit-level)
+  const stear = await page.evaluate(async () => {
+    await (_shakaTeardown || Promise.resolve());
+    const order = [];
+    liveEngine.shaka = {
+      destroy: () => new Promise(r => setTimeout(() => {
+                                   order.push('slow');
+                                   r();
+                                 }, 300))
+    };
+    liveEngineDestroy();
+    liveEngine.shaka = {
+      destroy: () => {
+        order.push('fast');
+        return Promise.resolve();
+      }
+    };
+    liveEngineDestroy();
+    await new Promise(r => afterLiveTeardown(() => {
+      order.push('next');
+      r();
+    }));
+    return {order, pending: !!_shakaTeardown};
+  });
+  check(
+      'Shaka destroys make a chain: the next source waits for the slow one',
+      stear.order.join() === 'slow,fast,next' && !stear.pending,
+      JSON.stringify(stear));
+  // The request type of a recoverable network error is at a different index
+  // of `data` for each code; only a MANIFEST request counts as a failed
+  // playlist refresh (unit-level)
+  const sreq = await page.evaluate(() => {
+    const E = shaka.util.Error, RT = shaka.net.NetworkingEngine.RequestType;
+    const u = 'http://shaka.test/refresh.m3u8';
+    const fake = () => ({
+      destroy() {
+        return Promise.resolve();
+      }
+    });
+    const err = (code, ...data) =>
+        new E(E.Severity.RECOVERABLE, E.Category.NETWORK, code, ...data);
+    const fails = e => {
+      liveEngine.shaka = fake();
+      liveEngine.url = u;
+      liveEngine.manifestFails = 0;
+      onShakaError(u, e);
+      return liveEngine.manifestFails;
+    };
+    const out = {
+      timeout: fails(err(E.Code.TIMEOUT, u, RT.MANIFEST)),
+      httpErr: fails(err(E.Code.HTTP_ERROR, u, {}, RT.MANIFEST)),
+      badStatus:
+          fails(err(E.Code.BAD_HTTP_STATUS, u, 509, '', {}, RT.MANIFEST)),
+      segment: fails(err(E.Code.TIMEOUT, u, RT.SEGMENT)),
+      segmentErr: fails(err(E.Code.HTTP_ERROR, u, {}, RT.SEGMENT)),
+      other: fails(err(E.Code.MALFORMED_DATA_URI, u)),
+      types: [
+        shakaRequestType(err(E.Code.TIMEOUT, u, RT.SEGMENT)),
+        shakaRequestType(err(E.Code.HTTP_ERROR, u, {}, RT.SEGMENT)),
+        shakaRequestType(err(E.Code.BAD_HTTP_STATUS, u, 1, '', {}, RT.SEGMENT)),
+        shakaRequestType(err(E.Code.MALFORMED_DATA_URI, u))
+      ]
+    };
+    liveEngineDestroy();
+    return out;
+  });
+  check(
+      'TIMEOUT, HTTP_ERROR, and BAD_HTTP_STATUS of a playlist refresh count',
+      sreq.timeout === 1 && sreq.httpErr === 1 && sreq.badStatus === 1 &&
+          sreq.segment === 0 && sreq.segmentErr === 0 && sreq.other === 0 &&
+          sreq.types.join() === '1,1,1,',
+      JSON.stringify(sreq));
   // The relay restart detector (unit-level)
   const srst = await page.evaluate(() => {
     _shakaSeq.clear();
@@ -3901,7 +4049,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
-    settings.liveEngine = 'hls';
+    settings.liveEngine = 'shaka';  // the default again
     saveSettings();
     _hlsBroken.clear();
     document.getElementById('epgToastTitle').textContent = '';

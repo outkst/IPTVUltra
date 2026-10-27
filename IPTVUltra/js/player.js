@@ -108,26 +108,29 @@ function startVodPlayback(p) {
   if (techEl) techEl.textContent = vodTech[key] || '';
   videoPlayer.pause();
   // A Shaka Player live engine removes the src attribute at the end of its
-  // asynchronous destroy; the VOD source waits for it
+  // asynchronous destroy; the VOD source waits for it. The media service
+  // attach and the play also wait: the pipeline of the movie does not exist
+  // before the source.
   afterLiveTeardown(() => {
+    if (!vodPlay.active) return;  // the player closed during the teardown
     videoPlayer.src = url;
     videoPlayer.load();
-  });
-  umsAttach();
-  if (resumeAt > 0)
-    videoPlayer.addEventListener('loadedmetadata', function seekOnce() {
-      try {
-        videoPlayer.currentTime = resumeAt;
-      } catch (_) { /* not seekable yet */
-      }
+    umsAttach();
+    if (resumeAt > 0)
+      videoPlayer.addEventListener('loadedmetadata', function seekOnce() {
+        try {
+          videoPlayer.currentTime = resumeAt;
+        } catch (_) { /* not seekable yet */
+        }
+      }, {once: true});
+    videoPlayer.addEventListener('loadedmetadata', function tracksOnce() {
+      applyVodTrackPrefs();
     }, {once: true});
-  videoPlayer.addEventListener('loadedmetadata', function tracksOnce() {
-    applyVodTrackPrefs();
-  }, {once: true});
-  setTimeout(() => {
-    if (vodPlay.active) applyVodTrackPrefs();
-  }, 4000);  // some files announce tracks late
-  videoPlayer.play().catch(() => {});
+    setTimeout(() => {
+      if (vodPlay.active) applyVodTrackPrefs();
+    }, 4000);  // some files announce tracks late
+    videoPlayer.play().catch(() => {});
+  });
   statusArea.innerText = `▶️ ${vodPlay.title}`;
   updateVodOsd();
   showVodOsd();
