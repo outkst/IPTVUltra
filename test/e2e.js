@@ -4001,6 +4001,17 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           {mimeType: 'application/cea-708', originalTextId: 'svc1',
            language: 'en'},
           0),
+      // Shaka Player puts the service name in `language` (seen on the C4)
+      ccSvc: [
+        shakaTextLabel(
+            {mimeType: 'application/cea-708', originalTextId: 'svc1',
+             language: 'svc1'},
+            0),
+        shakaTextLabel(
+            {mimeType: 'application/cea-608', originalTextId: 'CC1',
+             language: 'CC1'},
+            0)
+      ],
       sub: shakaTextLabel({mimeType: 'text/vtt', language: 'en'}, 0)
     };
   });
@@ -4010,6 +4021,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           sstat.diag && sstat.behind > 1 && sstat.after < 1 &&
           sstat.cc === 'Closed captions (CC1)' &&
           sstat.ccLang === 'Closed captions (svc1) · English' &&
+          sstat.ccSvc.join() ===
+              'Closed captions (svc1),Closed captions (CC1)' &&
           sstat.sub === 'English',
       JSON.stringify(sstat));
   // A catch-up with Shaka Player as the engine: the archive as HLS, played
