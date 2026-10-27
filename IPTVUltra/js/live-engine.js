@@ -643,6 +643,20 @@ function loadShakaSource(url) {
 // requests continue when the app is in the front again.
 let _shakaHold = null;  // {promise, release} while the requests wait
 let _shakaHiddenAt = 0;
+// Measured on the C4 with the provider (2026-10-27): after 15 s and 30 s in
+// the background, the playback continued from the buffer. After 60 s, the
+// provider answered the playlist refresh with HTTP 509, and only after 2
+// refreshes did shakaManifestFailed start the channel again.
+const SHAKA_BACKGROUND_MAX_MS = 30 * 1000;
+/**
+ * Tells if the channel must start again after a time in the background.
+ * @param {number} away The time in the background, in ms.
+ * @return {boolean} True after more than SHAKA_BACKGROUND_MAX_MS, or after
+ *     more time than the buffer holds.
+ */
+function shakaAwayTooLong(away) {
+  return away > Math.min(SHAKA_BACKGROUND_MAX_MS, settings.liveBuffer * 60000);
+}
 function shakaHoldRequests() {
   if (_shakaHold) return;
   let release = null;
@@ -1146,7 +1160,9 @@ function liveTechSet(lvl, bitrate, reach) {
             /^ac-3/.test(ac)             ? 'AC-3' :
             /^ec-3/.test(ac)             ? 'E-AC-3' :
                                            ac.toUpperCase());
-  bits.push(`⏪ ${reach < settings.liveBuffer ? '~' : ''}${reach} min`);
+  // The rewind reach is for live playback. A catch-up has the full programme.
+  if (!catchup)
+    bits.push(`⏪ ${reach < settings.liveBuffer ? '~' : ''}${reach} min`);
   liveEngine.tech = bits.join(' · ');
   noteCurrentStreamTech();
   if (livePlayer.active) {
@@ -1517,9 +1533,10 @@ document.addEventListener('visibilitychange', () => {
     const away = _shakaHiddenAt ? Date.now() - _shakaHiddenAt : 0;
     _shakaHiddenAt = 0;
     shakaReleaseRequests();
-    // After more time than the buffer holds, the playhead is out of the
-    // playlist window: the channel starts again at the live edge
-    if (!catchup && away > settings.liveBuffer * 60000)
+    // After a long time, the playlist of the relay is not available, or the
+    // playhead is out of the playlist window: the channel starts again at
+    // the live edge
+    if (!catchup && shakaAwayTooLong(away))
       reloadStream(false, 'return from background');
     return;
   }

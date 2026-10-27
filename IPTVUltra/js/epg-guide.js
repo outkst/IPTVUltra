@@ -343,6 +343,10 @@ function startCatchup(chIdx, prog, startAt) {
   if (!liveEngine.shaka) catchupSeekOnLoad(catchup);
   videoPlayer.play().catch(() => {});
   startStallWatchdog();
+  // The banner does not keep the codec line of the live channel (with its
+  // rewind reach): the catch-up writes its own line when it plays
+  const techEl = document.getElementById('vodOsdTech');
+  if (techEl) techEl.textContent = '';
   channelInfoTag.innerText = `⏪ ${ch.name} · ${prog.title}`;
   channelInfoTag.style.visibility = '';
   statusArea.innerText = `⏪ ${prog.title}`;

@@ -1006,6 +1006,33 @@ function shakaTextLabel(t, i) {
   return `Closed captions${t.originalTextId ? ` (${t.originalTextId})` : ''}${
       lang}`;
 }
+// Shaka Player shows closed captions in a <track> of the <video>, with the
+// service name as the label. Its cues have the position of the caption grid
+// as a percent and the full width (size 100), centered at that position. On
+// the C4 (2026-10-27), the box started out of the frame at the left, and the
+// line was at the top. Thus, each caption cue gets the full width, centered,
+// at the bottom of the frame.
+const CAPTION_TRACK = /^(CC\d|svc\d+)$/;
+/**
+ * Moves the active cues of a caption track to the bottom center.
+ * @param {!TextTrack} track The caption track.
+ */
+function fixCaptionCues(track) {
+  for (const c of Array.from(track.activeCues || [])) {
+    if (c.iptvFixed || typeof c.snapToLines !== 'boolean') continue;
+    c.iptvFixed = true;
+    c.snapToLines = true;
+    c.line = 'auto';
+    c.position = 'auto';
+    c.size = 100;
+    c.align = 'center';
+  }
+}
+videoPlayer.textTracks.addEventListener('addtrack', e => {
+  const track = e.track;
+  if (!track || !CAPTION_TRACK.test(track.label || '')) return;
+  track.addEventListener('cuechange', () => fixCaptionCues(track));
+});
 // Settings language preferences applied to the tracks of Shaka Player when a
 // channel announces them. A selection by the user stays.
 function applyShakaTrackPrefs() {
