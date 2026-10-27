@@ -179,11 +179,10 @@ videoPlayer.addEventListener('play', function() {
     renderPlayerButtons();
   }
 });
-['settingsBtn', 'settingsFooterBtn', 'epgSettingsBtn', 'vodSettingsBtn']
-    .forEach(id => {
-      const b = document.getElementById(id);
-      if (b) b.addEventListener('click', openSettings);
-    });
+['settingsBtn', 'sideSettingsBtn'].forEach(id => {
+  const b = document.getElementById(id);
+  if (b) b.addEventListener('click', openSettings);
+});
 const settingsCloseBtn = document.getElementById('settingsCloseBtn');
 if (settingsCloseBtn) settingsCloseBtn.addEventListener('click', closeSettings);
 const settingsOverlayEl = document.getElementById('settingsOverlay');

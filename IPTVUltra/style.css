@@ -2297,34 +2297,38 @@ video {
   white-space: nowrap;
 }
 
-.epg-info-settings-btn {
-  position: absolute;
-  top: 14px;
-  right: calc(14px + 3.6rem);
-  background: none;
-  border: 1px solid #4a4e5c;
-  color: #aab;
-  font-size: 1.1rem;
-  cursor: pointer;
-  padding: 5px 10px;
-  border-radius: 6px;
-  line-height: 1;
-  z-index: 2;
-}
-
-.epg-info-settings-btn:hover,
-.epg-info-settings-btn:focus {
-  border-color: #6c8eff;
-  color: #fff;
-}
-
 /* ----- VOD: mode switch ----- */
 .mode-switch {
   display: flex;
   gap: 6px;
-  padding: 10px 10px 8px;
+  padding: 10px 10px 0;
+  background: #0c0e12;
+}
+
+/* The Settings button of all views, below the mode switch */
+.side-settings {
+  padding: 8px 10px;
   border-bottom: 1px solid #262a33;
   background: #0c0e12;
+}
+
+.side-settings-btn {
+  width: 100%;
+  padding: 8px 2px;
+  border-radius: 8px;
+  background: #1a1d26;
+  color: #9aa;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid #262a33;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.side-settings-btn:hover,
+.side-settings-btn:focus {
+  border-color: #6c8eff;
+  color: #fff;
 }
 
 .mode-btn {

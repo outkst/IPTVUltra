@@ -3123,9 +3123,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         renderChannelList();
         return empty && renderedItems.size > 0;
       }));
-  await click('#settingsFooterBtn');
+  await click('#sideSettingsBtn');
   check(
-      'settings opens from footer button',
+      'settings opens from the Settings button below the mode switch',
       await page.evaluate(
           () => settingsOpen &&
               !document.getElementById('settingsOverlay')
@@ -4640,9 +4640,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'resumes last channel and focuses its row',
       al.name === 'Channel 01234' && al.focus === 1233 && al.rowOk,
       JSON.stringify(al));
-  await click('#epgSettingsBtn');
+  await click('#sideSettingsBtn');
   check(
-      'settings opens from the guide button; per-playlist rows enabled',
+      'settings opens from the side button in the guide; per-playlist rows enabled',
       await page.evaluate(
           () => settingsOpen &&
               !document.querySelector('.settings-row[data-id="startGroup"]')
