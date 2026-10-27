@@ -222,7 +222,8 @@ IPTVUltra/
 ├── js/                # App code, in load order (see index.html)
 ├── style.css          # Dark TV theme
 ├── appinfo.json       # webOS app metadata
-├── hls.min.js         # hls.js, for the live rewind buffer
+├── hls.min.js         # hls.js, the second live engine
+├── shaka-player.compiled.js  # Shaka Player, the default live engine
 └── webOSTVjs-1.2.13/  # webOS SDK library
 test/                  # End-to-end tests and a mock provider
 ```

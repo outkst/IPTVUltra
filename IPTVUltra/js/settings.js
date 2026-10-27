@@ -642,7 +642,9 @@ function diagLines() {
       _hlsBroken.size ? [..._hlsBroken].length + ' channel(s)' :
                         'none'} · live buffer ${
       settings.liveBuffer ? settings.liveBuffer + ' min' : 'Off'} · engine ${
-      settings.liveEngine === 'shaka' ? 'Shaka Player' : 'hls.js'}`);
+      (LIVE_ENGINE_OPTIONS.find(o => o.v === settings.liveEngine) ||
+       {}).label ||
+      settings.liveEngine}`);
   if (catchup) L.push(`Catch-up: ${catchup.prog && catchup.prog.title}`);
   const ago = t => {
     const s = Math.max(0, Math.round((Date.now() - t) / 1000));

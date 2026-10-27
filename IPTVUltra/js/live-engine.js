@@ -261,15 +261,18 @@ function shakaResponseFilter(url, player) {
         const req = shaka.net.NetworkingEngine.makeRequest(
             [uri], player.getConfiguration().manifest.retryParameters);
         _shakaRaw.set(uri, (_shakaRaw.get(uri) || 0) + 1);
+        let r = null;
         try {
-          const r =
-              await player.getNetworkingEngine().request(type, req).promise;
-          text = SU.fromUTF8(r.data);
-          if (!HLS_RELAY_NOT_READY.test(text)) {
-            response.data = r.data;
-            break;
-          }
-        } catch (_) { /* the next try */
+          r = await player.getNetworkingEngine().request(type, req).promise;
+        } catch (_) {
+          // No response, thus the filter did not run: the count goes back
+          _shakaRaw.set(uri, Math.max(0, (_shakaRaw.get(uri) || 0) - 1));
+          continue;
+        }
+        text = SU.fromUTF8(r.data);
+        if (!HLS_RELAY_NOT_READY.test(text)) {
+          response.data = r.data;
+          break;
         }
       }
       if (liveEngine.shaka !== player || HLS_RELAY_NOT_READY.test(text))
@@ -329,6 +332,9 @@ function hlsRelayRestart(url) {
 }
 // Shaka Player destroys itself asynchronously, and at the end it removes the
 // src attribute of the <video>. Thus, the next source waits for the destroy.
+// The destroys make a chain: a slow destroy of an attached player can end
+// after the fast destroy of a player that was never attached, and then it
+// would remove the source of the next channel.
 let _shakaTeardown = null;
 function liveEngineDestroy() {
   if (liveEngine.hls) {
@@ -341,10 +347,10 @@ function liveEngineDestroy() {
   if (liveEngine.shaka) {
     const p = liveEngine.shaka;
     liveEngine.shaka = null;
-    const t =
-        Promise.resolve().then(() => p.destroy()).catch(() => {}).then(() => {
-          if (_shakaTeardown === t) _shakaTeardown = null;
-        });
+    const prev = _shakaTeardown || Promise.resolve();
+    const t = prev.then(() => p.destroy()).catch(() => {}).then(() => {
+      if (_shakaTeardown === t) _shakaTeardown = null;
+    });
     _shakaTeardown = t;
   }
   liveEngine.url = '';
@@ -470,9 +476,9 @@ function loadLiveSource(url, cause = '') {
   return true;
 }
 // ── Shaka Player
-// The retry parameters of Shaka Player, in the same spirit as the hls.js
-// policies: the provider can keep a playlist request open for approximately
-// 10 s.
+// The retry parameters of Shaka Player. They have the same values as the
+// hls.js policies: the provider can keep a playlist request open for
+// approximately 10 s.
 const SHAKA_RETRY = {
   timeout: 30000,
   stallTimeout: 20000,
@@ -572,8 +578,9 @@ function onShakaError(url, err) {
   const E = shaka.util.Error;
   const isShaka = err instanceof E;
   if (isShaka && err.severity !== E.Severity.CRITICAL) {
-    if (err.category === E.Category.NETWORK && Array.isArray(err.data) &&
-        err.data[4] === shaka.net.NetworkingEngine.RequestType.MANIFEST)
+    if (err.category === E.Category.NETWORK &&
+        shakaRequestType(err) ===
+            shaka.net.NetworkingEngine.RequestType.MANIFEST)
       shakaManifestFailed(url, err);
     return;
   }
@@ -624,6 +631,21 @@ function onShakaError(url, err) {
 // hlsRelayRestart applies, then the native pipeline gets the channel.
 const SHAKA_MANIFEST_FAILS = 2;
 /**
+ * Gives the request type of a Shaka Player network error. The index of the
+ * type in `data` depends on the code: BAD_HTTP_STATUS has
+ * [uri, status, text, headers, type], HTTP_ERROR has [uri, error, type], and
+ * TIMEOUT has [uri, type].
+ * @param {!shaka.util.Error} err The error.
+ * @return {number|undefined} The `shaka.net.NetworkingEngine.RequestType`.
+ */
+function shakaRequestType(err) {
+  const C = shaka.util.Error.Code, d = Array.isArray(err.data) ? err.data : [];
+  return err.code === C.BAD_HTTP_STATUS ? d[4] :
+      err.code === C.HTTP_ERROR         ? d[2] :
+      err.code === C.TIMEOUT            ? d[1] :
+                                          undefined;
+}
+/**
  * Counts a failed playlist refresh of Shaka Player (a recoverable error).
  * @param {string} url The URL of the channel.
  * @param {!shaka.util.Error} err The error.
@@ -631,13 +653,24 @@ const SHAKA_MANIFEST_FAILS = 2;
 function shakaManifestFailed(url, err) {
   if (++liveEngine.manifestFails < SHAKA_MANIFEST_FAILS) return;
   liveEngine.manifestFails = 0;
-  const status = +err.data[1] || 0;
+  const status = err.code === shaka.util.Error.Code.BAD_HTTP_STATUS ?
+      +err.data[1] || 0 :
+      0;
   const what = `${shakaCodeName(err.code)}${status ? ` HTTP ${status}` : ''}`;
   diagLog(`Shaka Player: the playlist refresh failed (${what})`);
   if (hlsRelayRestart(url)) return;
   noteStreamFail('Shaka Player', `playlist refresh: ${what}`, '');
   liveEngineDestroy();
   liveHandToNative(url);
+}
+/**
+ * Reads a big-endian 32-bit unsigned integer.
+ * @param {!Uint8Array} b The data.
+ * @param {number} i The index of the first byte.
+ * @return {number} The value.
+ */
+function mp4U32(b, i) {
+  return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
 /**
  * Reads the boxes of an ISO BMFF (MP4) byte range.
@@ -651,14 +684,11 @@ function mp4Boxes(b, start, end) {
   const out = [];
   let i = start;
   while (i + 8 <= end) {
-    let size =
-        ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+    let size = mp4U32(b, i);
     const type = String.fromCharCode(b[i + 4], b[i + 5], b[i + 6], b[i + 7]);
     let hdr = 8;
     if (size === 1) {  // largesize: the high 32 bits are 0 for a segment
-      size = ((b[i + 12] << 24) | (b[i + 13] << 16) | (b[i + 14] << 8) |
-              b[i + 15]) >>>
-          0;
+      size = mp4U32(b, i + 12);
       hdr = 16;
     } else if (size === 0)
       size = end - i;
@@ -667,9 +697,6 @@ function mp4Boxes(b, start, end) {
     i += size;
   }
   return out;
-}
-function mp4U32(b, i) {
-  return ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 }
 /**
  * Gives the track ID of the video track of an fMP4 init segment.
@@ -935,8 +962,9 @@ function liveTechFromShaka() {
       liveEngine.bitrate || t.bandwidth || 0, liveEngine.reach);
 }
 /**
- * Gives the frame rate that the live engine knows (the playlist, else the
- * measured rate).
+ * Gives the frame rate that the live engine knows (the playlist of hls.js,
+ * else the measured rate). The estimate of Shaka Player in its variant track
+ * is not used: it is incorrect on the C4 (see `liveTechFromShaka`).
  * @return {number} The frame rate, or 0.
  */
 function liveEngineFps() {
@@ -946,14 +974,7 @@ function liveEngineFps() {
         hls.levels[hls.currentLevel >= 0 ? hls.currentLevel : 0];
     return (lvl && lvl.frameRate) || liveEngine.fps || 0;
   }
-  if (liveEngine.shaka) {
-    try {
-      const t = liveEngine.shaka.getVariantTracks().find(x => x.active);
-      if (t && t.frameRate) return t.frameRate;
-    } catch (_) { /* not loaded yet */
-    }
-    return liveEngine.fps || 0;
-  }
+  if (liveEngine.shaka) return liveEngine.fps || 0;
   return 0;
 }
 /**

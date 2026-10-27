@@ -84,10 +84,10 @@ const DEFAULT_SETTINGS = {
   subEdge: 'outline',
   subAuto: false,
   liveBuffer: 5,
-  liveEngine: 'hls',
+  liveEngine: 'shaka',
   autoNext: true,
   ppvEvents: 'hide',
-  schema: 4
+  schema: 5
 };
 // Subtitle text opacity (%), sent as charOpacity; the C4 honours it (verified
 // with the old Grey = white at 85)
@@ -104,7 +104,7 @@ const LIVE_BUFFER_OPTIONS = [
 // The MSE engine that plays HLS channels with the rewind buffer. Shaka Player
 // also reads E-AC-3 audio in MPEG-TS segments, which hls.js cannot read.
 const LIVE_ENGINE_OPTIONS =
-    [{v: 'hls', label: 'hls.js'}, {v: 'shaka', label: 'Shaka Player'}];
+    [{v: 'shaka', label: 'Shaka Player'}, {v: 'hls', label: 'hls.js'}];
 // Groups of event channels (PPV) whose names carry the event time: sort by
 // start time, optionally hide finished ones
 const PPV_EVENT_OPTIONS = [
@@ -290,6 +290,12 @@ function loadSettings() {
     out.liveBuffer = DEFAULT_SETTINGS.liveBuffer;
   if (!LIVE_ENGINE_OPTIONS.some(o => o.v === out.liveEngine))
     out.liveEngine = DEFAULT_SETTINGS.liveEngine;
+  // v3.14.1: Shaka Player is the default live engine. An app with the previous
+  // default (hls) gets it 1 time. A subsequent manual selection stays.
+  if (!(st.schema >= 5)) {
+    out.liveEngine = 'shaka';
+    out.schema = 5;
+  }
   out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
   out.avSync = Number.isInteger(st.avSync) && st.avSync >= AV_SYNC_MIN &&
           st.avSync <= AV_SYNC_MAX ?
