@@ -353,8 +353,12 @@ function shakaResponseFilter(player) {
           break;
         }
       }
-      if (_shakaLoad !== load || HLS_RELAY_NOT_READY.test(text))
-        return;  // Shaka Player reports the text as a bad playlist
+      if (_shakaLoad !== load) return;
+      if (HLS_RELAY_NOT_READY.test(text)) {
+        // Shaka Player reports the text as a bad playlist
+        liveEngine.lastReply = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+        return;
+      }
     }
     if (!/^\s*#EXTM3U/.test(text)) {
       liveEngine.lastReply = text.replace(/\s+/g, ' ').trim().slice(0, 160);
@@ -811,8 +815,20 @@ function onShakaError(url, err) {
       ((cat === E.Category.MEDIA && code !== E.Code.QUOTA_EXCEEDED_ERROR) ||
        (cat === E.Category.MANIFEST && !notPlaylist));
   if (incompatible) _hlsBroken.add(url);
+  // The relay did not start in HLS_RELAY_WAIT_MAX_MS (seen on an event
+  // channel after the end of the event, 2026-10-27). The native pipeline then
+  // shows a black picture, thus the app tells why.
+  const relayDown = notPlaylist && HLS_RELAY_NOT_READY.test(reply);
   liveEngineDestroy();
   liveHandToNative(url);
+  if (relayDown && !catchup && vodMode === 'live' && !vodPlay.active &&
+      currentChannelIndex >= 0 && channels[currentChannelIndex].url === url) {
+    statusArea.innerText = '⚠️ The provider did not start this channel';
+    showLiveNotice(
+        'No broadcast',
+        `The provider did not start this channel in ${
+            HLS_RELAY_WAIT_MAX_MS / 1000} s.`);
+  }
 }
 // Seen on the C4 (2026-10-26, one 4K channel): the relay of the provider
 // restarted, and the redirect URL of the first playlist then answered HTTP 509

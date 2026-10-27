@@ -68,6 +68,20 @@ async function rewindIntoArchiveTests(page) {
       isArchive(ra2), JSON.stringify(ra2));
   await page.evaluate(() => catchupBackToLive());
   await sleep(300);
+  // During the load of hls.js, no engine is active, but Left does not start
+  // the archive
+  await page.evaluate(() => {
+    liveEngine.hlsWait = channels[currentChannelIndex].url;
+  });
+  await leftKey(50);
+  await sleep(100);
+  const ra3 = await archiveCall();
+  await page.evaluate(() => {
+    liveEngine.hlsWait = '';
+  });
+  check(
+      'Left during the load of hls.js does not start the archive',
+      ra3 === null, JSON.stringify(ra3));
 }
 const stats = async () => (await fetch(BASE + '/__stats')).json();
 
@@ -3848,6 +3862,45 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       sfail.shaka && sfail.live && sfail.raw.every(v => v === 0) &&
           sfail.waits === 1 && sfail.restarts === 0,
       JSON.stringify(sfail));
+  // A relay that does not start: after the wait, the native pipeline gets the
+  // channel, and the app tells why. Date.now() goes past the wait.
+  await page.evaluate(() => {
+    channels[1].url =
+        'http://localhost:8765/hlscold/index.m3u8?never=1&r=' + Date.now();
+    selectChannel(1);
+  });
+  await page
+      .waitForFunction(() => liveEngine.relayWaits === 1, {timeout: 15000})
+      .catch(() => {});
+  await page.evaluate(() => {
+    window.__realNow = Date.now;
+    const shift = HLS_RELAY_WAIT_MAX_MS + 1000;
+    Date.now = () => window.__realNow() + shift;
+  });
+  await page
+      .waitForFunction(
+          () => !liveEngine.shaka &&
+              !document.getElementById('liveNotice')
+                   .classList.contains('hidden'),
+          {timeout: 15000})
+      .catch(() => {});
+  const snever = await page.evaluate(() => {
+    Date.now = window.__realNow;
+    const n = document.getElementById('liveNotice');
+    return {
+      shaka: !!liveEngine.shaka,
+      notice: n.classList.contains('hidden') ?
+          '' :
+          n.querySelector('.live-notice-title').textContent,
+      broken: _hlsBroken.has(channels[1].url),
+      log: _diagLog.slice(-3).map(d => d.msg)
+    };
+  });
+  check(
+      'a relay that does not start: native pipeline, "No broadcast"',
+      !snever.shaka && snever.notice === 'No broadcast' && !snever.broken &&
+          snever.log.some(m => /reply: Cannot read /.test(m)),
+      JSON.stringify(snever));
   // "Cannot read" between 2 good playlists: the same player gets the last good
   // playlist, then the next one
   await page.evaluate(() => {
