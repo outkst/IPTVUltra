@@ -996,8 +996,12 @@ function engineTrackLabel(lang, name, i) {
 function shakaTextLabel(t, i) {
   if (!/cea-(608|708)/i.test(t.mimeType || ''))
     return engineTrackLabel(t.language, t.label, i);
-  const lang = t.language && t.language !== 'und' ?
-      ` · ${resolveLanguage(t.language)}` :
+  // With no language in the playlist, Shaka Player puts the service name in
+  // `language` (seen on the C4: CC1 and svc1, which reads as Swedish)
+  const code = t.language || '';
+  const lang = code && code !== 'und' && code !== t.originalTextId &&
+          !/^(cc\d|svc\d+)$/i.test(code) ?
+      ` · ${resolveLanguage(code)}` :
       '';
   return `Closed captions${t.originalTextId ? ` (${t.originalTextId})` : ''}${
       lang}`;
