@@ -4,13 +4,24 @@
  */
 
 // ----- Xtream API -----
-function addXtreamPlaylist(serverUrl, username, password, name) {
+/**
+ * Saves an Xtream playlist, or updates the saved playlist with the same server
+ * and user name.
+ * @param {string} serverUrl
+ * @param {string} username
+ * @param {string} password
+ * @param {string} name Empty for the default name.
+ * @param {string=} epgUrl Optional XMLTV address. Empty removes it, and
+ *     `undefined` keeps the saved address.
+ */
+function addXtreamPlaylist(serverUrl, username, password, name, epgUrl) {
   const existing = savedPlaylists.find(
       p => p.type === 'xtream' && p.url === serverUrl &&
           p.username === username);
   if (existing) {
     existing.name = name || existing.name;
     existing.password = password;
+    if (epgUrl !== undefined) existing.epgUrl = epgUrl;
     savePlaylistsToStorage();
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
@@ -28,7 +39,8 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
       name: displayName,
       url: serverUrl,
       username,
-      password
+      password,
+      epgUrl: epgUrl || ''
     });
     savePlaylistsToStorage();
     updateStartStatus('Xtream playlist saved!', false, true, false, 0);
@@ -37,6 +49,7 @@ function addXtreamPlaylist(serverUrl, username, password, name) {
   xtreamServer.value = '';
   xtreamUsername.value = '';
   xtreamPassword.value = '';
+  xtreamEpgUrl.value = '';
   xtreamName.value = '';
   updateFocusableElements();
   focusElement(0);

@@ -80,6 +80,7 @@ function renderSavedPlaylists() {
         xtreamServer.value = p.url;
         xtreamUsername.value = p.username || '';
         xtreamPassword.value = p.password || '';
+        xtreamEpgUrl.value = p.epgUrl || '';
         xtreamName.value = p.name || '';
       } else {
         switchTab('m3u');
@@ -97,10 +98,11 @@ function renderSavedPlaylists() {
       }
     } else {
       displayUrl = p.url.substring(0, 54) + (p.url.length > 54 ? '…' : '');
-      if (p.epgUrl)
-        subLine = `<div class="saved-epg">📅 ${p.epgUrl.substring(0, 50)}${
-            p.epgUrl.length > 50 ? '…' : ''}</div>`;
     }
+    if (p.epgUrl)
+      subLine =
+          `<div class="saved-epg">📅 ${escapeHtml(p.epgUrl.substring(0, 50))}${
+              p.epgUrl.length > 50 ? '…' : ''}</div>`;
     div.innerHTML = `<div class="saved-info"><div class="saved-name">${
         escapeHtml(p.name)}</div><div class="saved-url">${
         escapeHtml(displayUrl)}</div>${subLine}</div>
@@ -134,6 +136,7 @@ function updateFocusableElements() {
       if (xtreamServer) focusableElements.push(xtreamServer);
       if (xtreamUsername) focusableElements.push(xtreamUsername);
       if (xtreamPassword) focusableElements.push(xtreamPassword);
+      if (xtreamEpgUrl) focusableElements.push(xtreamEpgUrl);
       if (xtreamName) focusableElements.push(xtreamName);
       if (saveXtreamBtn) focusableElements.push(saveXtreamBtn);
     }
