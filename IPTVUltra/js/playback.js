@@ -589,6 +589,7 @@ function goToHomeScreen() {
   epgLoading = false;
   _epgLoadedAt = 0;
   currentEpgUrl = '';
+  xmltvSetSource('');
   renderedItems.clear();
   _stdRenderVisible = null;
   _stdItemH = 0;

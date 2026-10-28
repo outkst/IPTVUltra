@@ -24,6 +24,11 @@ let currentPlaylistType = null;  // 'xtream' | 'm3u'
 let epgData = new Map();  // channelId -> [{start, stop, title, desc}]
 let epgIdMap =
     new Map();  // lowercase string -> actual channelId key in epgData
+// XMLTV of an Xtream playlist (see "XMLTV for an Xtream playlist"): lower-case
+// XMLTV id -> programs in UTC, and lower-case tvgId -> XMLTV id for the
+// channels that the parser found by name
+let xmltvData = new Map();
+let _xmltvAlias = new Map();
 let epgLoading = false;
 let currentEpgUrl = '';
 let epgRefreshTimer = null;
@@ -193,6 +198,18 @@ function perfMark(label) {
   _perfMarks.push({label, t: Math.round(performance.now())});
 }
 perfMark('script-start');
+
+/**
+ * Gives a copy of a string that has no reference to a larger string. In V8, a
+ * substring of 13 characters or more can keep its full source string in
+ * memory. A parser of a large download must use this function for each string
+ * that it keeps.
+ * @param {string} s
+ * @return {string}
+ */
+function copyStr(s) {
+  return s ? JSON.parse(JSON.stringify(s)) : s;
+}
 // No Grey: the TV's caption pipeline has no grey colour (a 'gray' request
 // renders as white); dimmer text is Subtitle opacity
 const SUB_COLOR_OPTIONS = [
@@ -683,6 +700,8 @@ const _RE_CHAN_ATTR = /channel="([^"]*)"/;
 const _RE_START_ATTR = /start="([^"]*)"/;
 const _RE_STOP_ATTR = /stop="([^"]*)"/;
 const _RE_TITLE_TAG = /<title[^>]*>([^<]*)<\/title>/;
+const _RE_DESC_TAG = /<desc[^>]*>([^<]*)<\/desc>/;
+const _RE_DISP_NAMES = /<display-name[^>]*>([^<]+)<\/display-name>/g;
 const _RE_B64 = /^[A-Za-z0-9+/]+=*$/;
 const _RE_B64_ALPHA = /[a-zA-Z]/;
 const _RE_TS_INJECT =

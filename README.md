@@ -141,8 +141,15 @@ Xtream guide, with the test data of `test/mock_server.py`:
 4. Select **Save Playlist**.
 
 The app gets the program data from the provider. Thus, an EPG URL is not
-necessary. The app saves the XMLTV URL with the playlist, but it does not load
-the file for an Xtream playlist at this time.
+necessary. If you type an XMLTV URL, the app also downloads that file each
+12 hours. It keeps the programs of the channels in the playlist for the next
+24 hours. It finds a channel by its EPG ID, or by a channel name that is the
+same in the file. For these channels, the guide uses the XMLTV data. The URL
+can give an `.xml` file or a `.gz` file.
+
+In Settings, **Provider XMLTV** also downloads the XMLTV file of the provider
+each 12 hours. This file adds only the channels that the EPG URL does not
+have. You can use it with no EPG URL.
 
 ### M3U playlist
 

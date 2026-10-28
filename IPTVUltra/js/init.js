@@ -32,7 +32,7 @@ if (settings.autoLoad) {
     updateStartStatus(`Auto-loading "${p.name}" …`, false, false, true, 0);
     setTimeout(() => {
       if (p.type === 'xtream')
-        loadXtreamPlaylist(p.url, p.username, p.password);
+        loadXtreamPlaylist(p.url, p.username, p.password, p.epgUrl || '');
       else
         loadM3UFromUrl(p.url, p.epgUrl || '');
     }, 100);

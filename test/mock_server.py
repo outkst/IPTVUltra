@@ -98,6 +98,73 @@ def short_epg(stream_id, limit):
     return {'epg_listings': out}
 
 
+def xmltv_text(provider=False):
+    """An XMLTV file for the Xtream playlist, with the current times.
+
+    Channel ch3.test is found by its id (other case), stream 7 (no EPG id) and
+    stream 8 (EPG id ch8.test, not in the file) by a display name. The file
+    also has a placeholder channel, a channel that is not in the playlist,
+    programs out of the time range, and 1 program that stops before it
+    starts.
+
+    The provider file (xmltv.php) has times in +0100, as the provider. It has
+    ch3.test with other titles (the first source is more important), ch4.test, and
+    stream 14 (no EPG id) by name.
+    """
+    now = int(time.time())
+    slot = now - (now % 1800)
+    off = 3600 if provider else 0
+
+    def ts(t):
+        return time.strftime('%Y%m%d%H%M%S', time.gmtime(t + off)) + (
+            ' +0100' if provider else ' +0000')
+
+    def prog(ch, a, b, title, desc=''):
+        d = f'<desc lang="en">{desc}</desc>' if desc else ''
+        return (f'<programme start="{ts(a)}" stop="{ts(b)}" channel="{ch}">'
+                f'<title lang="en">{title}</title>{d}</programme>')
+
+    if provider:
+        chans = [
+            ('ch3.test', ['Three']),
+            ('ch4.test', ['Four']),
+            ('p14.xml', ['Channel 00014']),
+        ]
+        progs = [
+            prog('ch3.test', slot, slot + 1800, 'Provider Three'),
+            prog('ch4.test', slot, slot + 1800, 'Provider Four'),
+            prog('p14.xml', slot, slot + 1800, 'Provider Fourteen'),
+        ]
+    else:
+        chans = [
+            ('dummy-1', ['Channel 00003']),
+            ('CH3.TEST', ['Three']),
+            ('seven.xml', ['Seven', 'Channel 00007']),
+            ('ch8.other', ['Channel 00008']),
+            ('elsewhere.xml', ['Somewhere Else']),
+        ]
+        progs = [
+            prog('dummy-1', slot, slot + 7200, 'PLACEHOLDER'),
+            prog('CH3.TEST', now - 6 * 3600, now - 5 * 3600, 'Too old'),
+            prog('CH3.TEST', slot - 1800, slot, 'Before 3'),
+            prog('CH3.TEST', slot, slot + 1800, 'Tom &amp; Jerry', 'D' * 300),
+            prog('CH3.TEST', slot + 1800, slot + 3600, 'After 3'),
+            prog('CH3.TEST', slot + 3600, slot + 3000,
+                 'Stops before it starts'),
+            prog('CH3.TEST', now + 30 * 3600, now + 31 * 3600, 'Too far'),
+            prog('seven.xml', slot, slot + 1800, 'Seven Now'),
+            prog('ch8.other', slot, slot + 1800, 'Eight Now'),
+            prog('elsewhere.xml', slot, slot + 1800, 'Not in the playlist'),
+        ]
+    out = ['<?xml version="1.0" encoding="UTF-8"?><tv>']
+    for cid, names in chans:
+        dn = ''.join(f'<display-name>{n}</display-name>' for n in names)
+        out.append(f'<channel id="{cid}">{dn}</channel>')
+    out += progs
+    out.append('</tv>')
+    return ''.join(out).encode()
+
+
 # ---- VOD / series fixtures ----
 VOD_CATS = [{
     'category_id': str(100 + i),
@@ -384,6 +451,37 @@ class H(http.server.SimpleHTTPRequestHandler):
                 stats['media_requests'] = stats.get('media_requests', 0) + 1
                 stats['last_media'] = u.path
             return self.send_clip()
+        if u.path == '/xmltv.php':
+            # The provider sends its file with Content-Encoding gzip
+            import gzip
+            body = gzip.compress(xmltv_text(provider=True))
+            with lock:
+                stats['provider_xmltv_requests'] = stats.get(
+                    'provider_xmltv_requests', 0) + 1
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/xml; charset=utf-8')
+            self.send_header('Content-Encoding', 'gzip')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if u.path in ('/xmltv.xml', '/xmltv.xml.gz'):
+            # The .gz file comes as a file (no Content-Encoding), as from a
+            # download shop
+            import gzip
+            body = xmltv_text()
+            gz = u.path.endswith('.gz')
+            if gz:
+                body = gzip.compress(body)
+            with lock:
+                stats['xmltv_requests'] = stats.get('xmltv_requests', 0) + 1
+            self.send_response(200)
+            self.send_header('Content-Type',
+                             'application/x-gzip' if gz else 'application/xml')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if u.path == '/__stats':
             with lock:
                 return self.send_json(stats)

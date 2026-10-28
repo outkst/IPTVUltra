@@ -129,8 +129,35 @@ function renderCats() {
 // in the user's order)
 function saveFavorites() {
   if (!_activePlaylistKey) return;
-  getPlaylistState(_activePlaylistKey).favs = [...favoriteIds];
+  const ps = getPlaylistState(_activePlaylistKey);
+  if (Array.isArray(ps.favs)) noteFavoriteChanges(ps.favs, favoriteIds);
+  ps.favs = [...favoriteIds];
   savePlaylistState();
+}
+
+/**
+ * Writes the favorites that a change added or removed to the Diagnostics log.
+ * A change of the sequence writes nothing.
+ * @param {!Array<string>} before The stored favorite ids.
+ * @param {!Set<string>} after The new favorite ids.
+ */
+function noteFavoriteChanges(before, after) {
+  const prev = new Set(before);
+  const added = [...after].filter(id => !prev.has(id));
+  const removed = before.filter(id => !after.has(id));
+  const name = (id) => {
+    const l = _chansByFavId.get(id);
+    return l && l[0] ? l[0].name : id;
+  };
+  for (const [what, ids] of [['added', added], ['removed', removed]]) {
+    if (!ids.length) continue;
+    if (ids.length <= 3) {
+      for (const id of ids) diagLog(`Favorite ${what}: ${name(id)}`);
+    } else {
+      diagLog(`Favorites ${what}: ${ids.length} (${
+          ids.slice(0, 3).map(name).join(', ')}, …)`);
+    }
+  }
 }
 // Providers write quality tags in superscript ("ᵁᴴᴰ ³⁸⁴⁰ᴾ", "⁴ᵏ", "⁸ᴷ", "ᶠᴴᴰ").
 // Each run of superscript characters becomes its own plain word ("uhd 3840p"),

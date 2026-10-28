@@ -170,6 +170,21 @@ function settingsRows() {
       }
     },
     {
+      id: 'xtXmltv',
+      type: 'toggle',
+      label: 'Provider XMLTV',
+      disabled: !t || !t.key.startsWith('x:'),
+      sub: t && t.key.startsWith('x:') ?
+          `${forName} · also download the provider's XMLTV file every 12 h, for the channels that your EPG URL does not cover` :
+          'Xtream playlists only',
+      get: () => !!(ps && ps.xtXmltv),
+      set: v => {
+        ps.xtXmltv = v;
+        savePlaylistState();
+        if (t.key === _activePlaylistKey) xmltvSourcesChanged();
+      }
+    },
+    {
       id: 'autoLoad',
       type: 'toggle',
       label: 'Auto-load last playlist',
@@ -632,6 +647,9 @@ function diagLines() {
       typeof _epgQueue !== 'undefined' ?
           _epgQueue.length :
           0} · window ${EPG_WIN_HOURS} h · past ${epgPastHours()} h`);
+  if (currentPlaylistType === 'xtream' && xmltvSources().length)
+    L.push(`XMLTV: ${_xmltv.loading ? 'loading · ' : ''}${
+        _xmltv.info || 'not loaded'}`);
   const ch = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
   const verr = videoPlayer.error ? ` · error ${videoPlayer.error.code}` : '';
   L.push(`Stream: ${ch ? ch.name : 'none'} · ${liveEngineName()} · ${
