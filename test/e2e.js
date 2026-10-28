@@ -257,6 +257,87 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                   'iptv_playlist_state'))[_activePlaylistKey]
                       .favs.join() === 's:3,s:4'),
       await page.evaluate(() => [...favoriteIds].join()));
+
+  // ---------- XMLTV for the Xtream playlist (mock file /xmltv.xml[.gz])
+  const xmltvN = await page.evaluate(
+      (u) => loadXtreamXmltv([u]), BASE + '/xmltv.xml.gz');
+  check(
+      'XMLTV (.gz file): keeps the 3 channels of the playlist, no placeholder',
+      await page.evaluate(
+          (n) => n === 3 && xmltvData.size === 3 &&
+              !xmltvData.has('dummy-1') && !xmltvData.has('elsewhere.xml'),
+          xmltvN),
+      await page.evaluate(() => [...xmltvData.keys()].join()));
+  check(
+      'XMLTV: found by id (other case) and by name (no EPG id, unknown EPG id)',
+      await page.evaluate(() => {
+        const t = (id) => (getCurrentProgramme(id) || {}).title;
+        return t('ch3.test') === 'Tom & Jerry' && t('7') === 'Seven Now' &&
+            t('ch8.test') === 'Eight Now' && !epgNeedsFetch('ch3.test');
+      }));
+  check(
+      'XMLTV: 1 h before to 24 h after, descriptions cut at 160 characters',
+      await page.evaluate(() => {
+        const l = xmltvProgsOf('ch3.test');
+        return l.map(p => p.title).join() === 'Before 3,Tom & Jerry,After 3' &&
+            l[1].desc.length === 160 && l[0].desc === '';
+      }),
+      await page.evaluate(
+          () => xmltvProgsOf('ch3.test').map(p => p.title).join()));
+  check(
+      'XMLTV: the guide row of the channel shows the XMLTV programme',
+      await page.evaluate(
+          () => [...epgRenderedRows.values()].some(
+              el => el.textContent.includes('Tom & Jerry'))));
+  check(
+      'XMLTV: programmes of the provider before the XMLTV data come first',
+      await page.evaluate(() => {
+        const p = [
+          {start: 0, stop: 10, title: 'a'}, {start: 10, stop: 25, title: 'b'}
+        ];
+        const x = [{start: 20, stop: 30, title: 'c'}];
+        const r = xmltvWithPast('t.test', x, p);
+        return r.map(q => q.title).join() === 'a,c' &&
+            xmltvWithPast('t.test', x, p) === r;
+      }));
+  check(
+      'XMLTV: the cache gives the data again for the same address',
+      await page.evaluate(async (u) => {
+        xmltvSetSource(u);
+        const n = await xmltvRestore();
+        return n === 3 && xmltvData.size === 3 &&
+            /cache/.test(_xmltv.info);
+      }, BASE + '/xmltv.xml.gz'));
+  await page.evaluate((u) => {
+    xmltvSetSource(u);
+    xmltvStart();
+  }, BASE + '/xmltv.xml');
+  check(
+      'XMLTV (plain file): xmltvStart downloads it after the start delay',
+      await page
+          .waitForFunction(
+              () => xmltvData.size === 3 && /download/.test(_xmltv.info),
+              {timeout: 15000})
+          .then(() => true, () => false),
+      await page.evaluate(() => _xmltv.info));
+  check(
+      'XMLTV + provider file: the EPG URL has priority, the provider adds channels',
+      await page.evaluate(async (u) => {
+        const ps = getPlaylistState(_activePlaylistKey);
+        ps.xtXmltv = true;
+        xmltvSetSource(u);
+        const n = await loadXtreamXmltv(xmltvSources());
+        const t = (id) => (getCurrentProgramme(id) || {}).title;
+        const ok = xmltvSources().length === 2 && n === 5 &&
+            t('ch3.test') === 'Tom & Jerry' &&
+            t('ch4.test') === 'Provider Four' &&
+            t('14') === 'Provider Fourteen' && t('7') === 'Seven Now' &&
+            settingsRows().some(r => r.id === 'xtXmltv' && !r.disabled);
+        ps.xtXmltv = false;
+        return ok;
+      }, BASE + '/xmltv.xml'),
+      await page.evaluate(() => _xmltv.info));
+  await page.evaluate(() => xmltvSetSource(''));
   // Manage favorites: order follows the Set; the manager reorders / removes /
   // restores
   await page.evaluate(() => {
@@ -284,6 +365,13 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               document.querySelector('.cats-row.focused')
                   .classList.contains('cats-hidden')));
   await page.evaluate(() => catsToggleHidden());
+  check(
+      'Diagnostics log: the favorite removed, then added again (OK, OK)',
+      await page.evaluate(
+          () => _diagLog.slice(-2).map(e => e.msg).join('|') ===
+              'Favorite removed: Channel 00003|Favorite added: Channel 00003'),
+      await page.evaluate(
+          () => _diagLog.slice(-2).map(e => e.msg).join('|')));
   check(
       'OK again restores it in place',
       await page.evaluate(
@@ -3230,7 +3318,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                     .filter(r => r.classList.contains('disabled'))
                     .map(r => r.dataset.id)
                     .join(',') ===
-              'epgTz,epgDst,epgExtra,startGroup,resume,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
+              'epgTz,epgDst,epgExtra,xtXmltv,startGroup,resume,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
   await back();
   check(
       'Back closes settings',

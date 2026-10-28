@@ -257,8 +257,35 @@ function buildEventProgs() {
 function epgProgsOf(tvgId) {
   const id = resolveEpgId(tvgId);
   const p = id ? epgData.get(id) : null;
+  const x = xmltvProgsOf(tvgId);
+  if (x) return p && p.length ? xmltvWithPast(tvgId, x, p) : x;
   if (p && p.length) return p;
   return (tvgId && _eventProgs.get(tvgId)) || null;
+}
+// tvgId -> {x, p, list}: the last list that xmltvWithPast made
+const _xmltvMerged = new Map();
+/**
+ * The XMLTV data starts 1 h before the current time. Thus, the programs
+ * before it come from the provider: the archive table of a catch-up channel,
+ * or a lazy fetch. The result stays in a cache until 1 of the 2 lists changes.
+ * @param {string} tvgId
+ * @param {!Array<!Object>} x XMLTV programs, sorted.
+ * @param {!Array<!Object>} p Provider programs, sorted.
+ * @return {!Array<!Object>}
+ */
+function xmltvWithPast(tvgId, x, p) {
+  if (p[0].start >= x[0].start) return x;
+  const c = _xmltvMerged.get(tvgId);
+  if (c && c.x === x && c.p === p) return c.list;
+  const first = x[0].start;
+  const list = [];
+  for (const q of p) {
+    if (q.stop > first) break;
+    list.push(q);
+  }
+  const all = list.length ? list.concat(x) : x;
+  _xmltvMerged.set(tvgId, {x, p, list: all});
+  return all;
 }
 function evFinished(ev, now) {
   return ev.tag === 'ended' || now >= ev.stop;
@@ -976,12 +1003,14 @@ async function loadEPG(url) {
           const idM = _RE_CHAN_ID.exec(xml);
           const nmM = _RE_DISP_NAME.exec(xml);
           if (idM) {
-            const cid = idM[1];
+            // Each kept string is a copy (copyStr), else it keeps a part of
+            // the download in memory
+            const cid = copyStr(idM[1]);
             newIdMap.set(cid.toLowerCase(), cid);
             if (nmM) {
-              newIdMap.set(nmM[1].toLowerCase().trim(), cid);
+              newIdMap.set(copyStr(nmM[1].toLowerCase().trim()), cid);
               const nn = normChannelName(unescapeXml(nmM[1]));
-              if (nn && !newNameMap.has(nn)) newNameMap.set(nn, cid);
+              if (nn && !newNameMap.has(nn)) newNameMap.set(copyStr(nn), cid);
             }
           }
         }
@@ -1008,13 +1037,14 @@ async function loadEPG(url) {
                 (pStop === null || pStop >= windowStart)) {
               const cid = chM[1];
               if (!newData.has(cid)) {
-                newData.set(cid, []);
-                newIdMap.set(cid.toLowerCase(), cid);
+                const k = copyStr(cid);
+                newData.set(k, []);
+                newIdMap.set(k.toLowerCase(), k);
               }
               newData.get(cid).push({
                 start: pStart,
                 stop: pStop || 0,
-                title: tiM ? unescapeXml(tiM[1].trim()) : ''
+                title: tiM ? copyStr(unescapeXml(tiM[1].trim())) : ''
               });
               programmeCount++;
             }

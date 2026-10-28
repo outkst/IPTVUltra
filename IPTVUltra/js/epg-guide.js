@@ -988,6 +988,7 @@ function resetLazyEpg() {
 
 function epgNeedsFetch(tvgId) {
   if (!_xt || !tvgId) return false;
+  if (xmltvProgsOf(tvgId)) return false;  // the XMLTV file has its programmes
   const m = _epgFetchMeta.get(tvgId);
   if (!m) return true;
   if (m.status === 'pending') return false;
@@ -1238,6 +1239,441 @@ function prefetchFavoritesEpg() {
   queueEpgFetch([...ids], false);
 }
 
+// ----- XMLTV for an Xtream playlist -----
+// The XMLTV address of an Xtream playlist is optional (start page). An XMLTV
+// file can be large: 1 file of an EPG supplier has 141 MB, 17,000 channels,
+// and 70 % placeholder channels (`dummy-…`). Thus, the parser keeps only the
+// channels of the playlist and the time from 1 h before to 24 h after the
+// current time. The times are UTC, and the EPG time settings do not change
+// them. Measured on the C4 (2026-10-27): the parser read 146 M characters in
+// approximately 6 s. It used 3.5 s of processor time and 8 MB of heap (20 MB
+// with descriptions).
+// Each kept string is a copy (copyStr). With references into the download, the
+// heap increased by 208 MB.
+const XMLTV_BACK_MS = 3600000;
+const XMLTV_AHEAD_MS = 24 * 3600000;
+const XMLTV_REFRESH_MS = 12 * 3600000;  // the file has data for about 27 h
+const XMLTV_RETRY_MS = 30 * 60000;
+const XMLTV_START_DELAY_MS = 4000;  // after the channel list, before the fetch
+const XMLTV_MAX_PROGS = 150000;
+const XMLTV_SLICE_MS = 8;  // processor time of the parser before it yields
+const XMLTV_DESC_MAX = 160;
+let _xmltv = {epgUrl: '', gen: 0, at: 0, due: 0, loading: false, info: ''};
+
+/**
+ * Sets the XMLTV address of the Xtream playlist that loads next, and removes
+ * the data of the previous playlist. An empty address stops the XMLTV data,
+ * but not the XMLTV file of the provider (xmltvSources).
+ * @param {string} url
+ */
+function xmltvSetSource(url) {
+  const had = xmltvData.size > 0;
+  xmltvData = new Map();
+  _xmltvAlias = new Map();
+  _xmltvMerged.clear();
+  if (had) {
+    xmltvRefreshRows();
+    scheduleEpgFetchForVisible();  // the provider EPG of these rows again
+  }
+  _xmltv = {
+    epgUrl: url || '',
+    gen: _xmltv.gen + 1,
+    at: 0,
+    due: 0,
+    loading: false,
+    info: ''
+  };
+}
+
+/**
+ * The XMLTV sources of the loaded playlist, the most important first: the EPG
+ * URL of the playlist, then the XMLTV file of the provider if the Settings row
+ * "Provider XMLTV" is on. A subsequent source adds only channels that the
+ * sources before it do not have.
+ * @return {!Array<string>}
+ */
+function xmltvSources() {
+  const out = [];
+  if (_xmltv.epgUrl) out.push(_xmltv.epgUrl);
+  const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
+  if (ps && ps.xtXmltv && _xt)
+    out.push(`${_xt.base}/xmltv.php?username=${_xt.u}&password=${_xt.pw}`);
+  return out;
+}
+
+/**
+ * @param {string} tvgId
+ * @return {?Array<!Object>} The XMLTV programs of the channel, or null.
+ */
+function xmltvProgsOf(tvgId) {
+  if (!tvgId || !xmltvData.size) return null;
+  const k = tvgId.toLowerCase();
+  return xmltvData.get(_xmltvAlias.get(k) || k) || null;
+}
+
+/**
+ * Starts the XMLTV data of the playlist that was applied: the cache first, then
+ * a download if the data is older than XMLTV_REFRESH_MS.
+ */
+async function xmltvStart() {
+  if (!xmltvSources().length) return;
+  const gen = _xmltv.gen;
+  await xmltvRestore();
+  if (gen !== _xmltv.gen) return;
+  const now = Date.now();
+  _xmltv.due = _xmltv.at ? _xmltv.at + XMLTV_REFRESH_MS : 0;
+  if (_xmltv.due < now + XMLTV_START_DELAY_MS) {
+    _xmltv.due = now + XMLTV_START_DELAY_MS;
+    setTimeout(xmltvTick, XMLTV_START_DELAY_MS + 50);
+  }
+}
+
+/** Downloads the XMLTV file when it is due. The minute tick calls it. */
+function xmltvTick() {
+  if (_xmltv.loading || document.hidden || currentPlaylistType !== 'xtream' ||
+      Date.now() < _xmltv.due)
+    return;
+  const urls = xmltvSources();
+  if (urls.length) loadXtreamXmltv(urls);
+}
+
+/**
+ * Starts the XMLTV data again after a change of the sources (Settings).
+ */
+function xmltvSourcesChanged() {
+  if (currentPlaylistType !== 'xtream') return;
+  xmltvSetSource(_xmltv.epgUrl);
+  xmltvStart();
+}
+
+/**
+ * Puts the XMLTV data of the cache into the live maps. The cache must be for
+ * the same sources, and not older than 24 h.
+ * @return {!Promise<number>} The number of channels.
+ */
+async function xmltvRestore() {
+  const key = _activePlaylistKey, gen = _xmltv.gen;
+  const rec = await cacheGet('playlists', 'xmltv|' + key);
+  if (gen !== _xmltv.gen || _activePlaylistKey !== key || !rec ||
+      rec.url !== xmltvSources().join(' ') || !Array.isArray(rec.chans) ||
+      Date.now() - rec.at > XMLTV_AHEAD_MS)
+    return 0;
+  const from = Date.now() - XMLTV_BACK_MS;
+  const data = new Map();
+  for (const [k, progs] of rec.chans) {
+    const keep = progs.filter(p => p.stop >= from);
+    if (keep.length) data.set(k, keep);
+  }
+  if (!data.size) return 0;
+  xmltvApply(data, new Map(rec.alias || []), rec.at, 'cache');
+  return data.size;
+}
+
+/**
+ * Makes new XMLTV data the live data, and updates the rows on the screen.
+ * @param {!Map<string, !Array<!Object>>} data
+ * @param {!Map<string, string>} alias
+ * @param {number} at The time of the download.
+ * @param {string} from 'cache' or 'download'.
+ */
+function xmltvApply(data, alias, at, from) {
+  xmltvData = data;
+  _xmltvAlias = alias;
+  _xmltvMerged.clear();
+  _xmltv.at = at;
+  let n = 0;
+  for (const l of data.values()) n += l.length;
+  _xmltv.info = `${data.size.toLocaleString()} channels, ${
+      n.toLocaleString()} programs, ${from} of ${
+      new Date(at).toLocaleString()}`;
+  perfMark(`xmltv-ready(${data.size}${from === 'cache' ? ',cache' : ''})`);
+  xmltvRefreshRows();
+}
+
+/** Updates the guide rows on the screen and the playing channel. */
+function xmltvRefreshRows() {
+  for (const [idx] of epgRenderedRows) {
+    const ch = currentFilteredChannels[idx];
+    if (ch && ch.tvgId) _epgDirtyIds.add(ch.tvgId);
+  }
+  const cur = currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
+  if (cur && cur.tvgId) _epgDirtyIds.add(cur.tvgId);
+  flushEpgRowUpdates();
+}
+
+/**
+ * Downloads and reads the XMLTV sources of the Xtream playlist, 1 after the
+ * other. The result goes into the cache. A source with an error does not stop
+ * the other sources.
+ * @param {!Array<string>} urls See xmltvSources.
+ * @return {!Promise<number>} The number of channels with data, 0 on an error.
+ */
+async function loadXtreamXmltv(urls) {
+  if (_xmltv.loading || !urls.length || currentPlaylistType !== 'xtream')
+    return 0;
+  const state = _xmltv, key = _activePlaylistKey;
+  const live = () => state === _xmltv && key === _activePlaylistKey;
+  state.loading = true;
+  const t0 = Date.now();
+  const errors = [];
+  let data = null, alias = null, truncated = false;
+  try {
+    for (let i = 0; i < urls.length; i++) {
+      showEPGToast(
+          `Downloading guide data (XMLTV ${i + 1} of ${urls.length}) …`,
+          'loading');
+      try {
+        const resp = await fetch(urls[i]);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const res = await xmltvParse(await xmltvTextReader(resp.body), live);
+        if (!live()) return 0;
+        truncated = truncated || res.truncated;
+        if (!data) {
+          data = res.data;
+          alias = res.alias;
+        } else {
+          xmltvAddSource(data, alias, res);
+        }
+      } catch (e) {
+        if (!live()) return 0;
+        errors.push(`source ${i + 1}: ${e.message}`);
+      }
+    }
+    if (!data || !data.size)
+      throw new Error(
+          errors.join(', ') || 'no channel of the playlist in the file');
+    xmltvApply(data, alias, Date.now(), 'download');
+    state.info += ` · ${((Date.now() - t0) / 1000).toFixed(1)} s${
+        truncated ? ' · limit of programs' :
+                    ''}${errors.length ? ' · ' + errors.join(', ') : ''}`;
+    for (const e of errors) diagLog(`XMLTV: ${e}`);
+    state.due = Date.now() + XMLTV_REFRESH_MS;
+    showEPGToast(
+        `${data.size.toLocaleString()} channels from XMLTV`, 'success',
+        'Guide data');
+    hideEPGToast(3000);
+    await cachePut('playlists', 'xmltv|' + key, {
+      at: state.at,
+      url: urls.join(' '),
+      chans: [...data],
+      alias: [...alias]
+    });
+    return data.size;
+  } catch (e) {
+    if (live()) {
+      state.due = Date.now() + XMLTV_RETRY_MS;
+      state.info = `error: ${e.message}`;
+      diagLog(`XMLTV: ${e.message}`);
+      showEPGToast(`XMLTV: ${e.message}`, 'error', 'Guide data');
+      hideEPGToast(5000);
+    }
+    return 0;
+  } finally {
+    state.loading = false;
+  }
+}
+
+/**
+ * Adds the result of a less important source. It adds only channels that
+ * the result does not have.
+ * @param {!Map<string, !Array<!Object>>} data
+ * @param {!Map<string, string>} alias
+ * @param {{data: !Map<string, !Array<!Object>>, alias: !Map<string, string>}}
+ *     res
+ */
+function xmltvAddSource(data, alias, res) {
+  for (const [k, l] of res.data)
+    if (!data.has(k)) data.set(k, l);
+  for (const [t, k] of res.alias)
+    if (!data.has(t) && !alias.has(t)) alias.set(t, k);
+}
+
+/**
+ * Gives a reader of the text of a download. A `.gz` file starts with the bytes
+ * 1f 8b, and the reader unpacks it. The server sends such a file with no
+ * Content-Encoding.
+ * @param {!ReadableStream<!Uint8Array>} body
+ * @return {!Promise<!ReadableStreamDefaultReader<string>>}
+ */
+async function xmltvTextReader(body) {
+  const src = body.getReader();
+  const head = await src.read();
+  let first = head.done ? null : head.value;
+  let bytes = new ReadableStream({
+    async pull(ctl) {
+      if (first) {
+        ctl.enqueue(first);
+        first = null;
+        return;
+      }
+      const {done, value} = await src.read();
+      if (done)
+        ctl.close();
+      else
+        ctl.enqueue(value);
+    },
+    cancel(reason) {
+      return src.cancel(reason);
+    }
+  });
+  if (first && first[0] === 0x1f && first[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined')
+      throw new Error('this TV cannot unpack a .gz file');
+    bytes = bytes.pipeThrough(new DecompressionStream('gzip'));
+  }
+  return bytes.pipeThrough(new TextDecoderStream()).getReader();
+}
+
+/**
+ * Reads an XMLTV text and keeps the programs of the channels of the playlist.
+ * A channel is found by its EPG id, else by a `display-name` that is the same
+ * as the channel name (not case-sensitive).
+ * @param {!ReadableStreamDefaultReader<string>} reader
+ * @param {function(): boolean} live Gives `false` when the playlist changed.
+ * @return {!Promise<{data: !Map<string, !Array<!Object>>,
+ *     alias: !Map<string, string>, truncated: boolean}>}
+ */
+async function xmltvParse(reader, live) {
+  // The keys are strings of the playlist or copies. Thus, they keep no part
+  // of the download in memory.
+  const ids = new Map();    // lower-case tvgId -> the same string
+  const names = new Map();  // lower-case channel name -> lower-case tvgIds
+  for (const ch of channels) {
+    if (!ch.tvgId) continue;
+    const t = ch.tvgId.toLowerCase();
+    ids.set(t, t);
+    const n = (ch.name || '').trim().toLowerCase();
+    if (!n) continue;
+    const l = names.get(n);
+    if (l)
+      l.push(t);
+    else
+      names.set(n, [t]);
+  }
+  const m = {
+    ids,
+    names,
+    keep: new Map(),   // lower-case XMLTV id -> key of the result
+    own: new Set(),    // tvgIds that are also XMLTV ids
+    byName: new Map()  // tvgId -> XMLTV id, found by name
+  };
+  const data = new Map();
+  const from = Date.now() - XMLTV_BACK_MS, to = Date.now() + XMLTV_AHEAD_MS;
+  let buf = '', cur = 0, nProg = 0, nKept = 0, stop = '';
+  let t1 = Date.now();
+  while (!stop) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    if (!live()) {
+      stop = 'playlist';
+      break;
+    }
+    t1 = Date.now();
+    if (cur > 65536) {
+      buf = buf.slice(cur);
+      cur = 0;
+    }
+    buf += value;
+    let idx;
+    while ((idx = buf.indexOf('</channel>', cur)) !== -1) {
+      const s = buf.lastIndexOf('<channel', idx);
+      if (s >= cur) xmltvChannel(buf.substring(s, idx), m);
+      cur = idx + 10;
+    }
+    while ((idx = buf.indexOf('</programme>', cur)) !== -1) {
+      const s = buf.lastIndexOf('<programme', idx);
+      if (s >= cur) {
+        const a = buf.indexOf('channel="', s) + 9;
+        const k = a > 8 && a < idx ?
+            m.keep.get(buf.substring(a, buf.indexOf('"', a)).toLowerCase()) :
+            undefined;
+        const p = k ? xmltvProgramme(buf.substring(s, idx), from, to) : null;
+        if (p) {
+          const l = data.get(k);
+          if (l)
+            l.push(p);
+          else
+            data.set(k, [p]);
+          if (++nKept >= XMLTV_MAX_PROGS) stop = 'limit';
+        }
+      }
+      cur = idx + 12;
+      if (stop) break;
+      if ((++nProg & 255) === 0 && Date.now() - t1 > XMLTV_SLICE_MS) {
+        await new Promise(r => setTimeout(r, 0));
+        if (!live()) {
+          stop = 'playlist';
+          break;
+        }
+        t1 = Date.now();
+      }
+    }
+  }
+  if (stop) reader.cancel().catch(() => {});
+  buf = '';
+  const alias = new Map();
+  for (const [t, k] of m.byName)
+    if (!m.own.has(t) && data.has(k)) alias.set(t, k);
+  for (const l of data.values()) l.sort((x, y) => x.start - y.start);
+  return {data, alias, truncated: stop === 'limit'};
+}
+
+/**
+ * Reads 1 `<channel>` element. The parser keeps the channel if its id is a
+ * tvgId of the playlist, or if 1 of its display names is a channel name.
+ * @param {string} xml
+ * @param {!Object} m The maps of xmltvParse.
+ */
+function xmltvChannel(xml, m) {
+  const idM = _RE_CHAN_ID.exec(xml);
+  if (!idM) return;
+  const id = idM[1].toLowerCase();
+  if (id.startsWith('dummy-')) return;  // placeholder channels of the service
+  let k = m.ids.get(id);
+  if (k) {
+    m.keep.set(k, k);
+    m.own.add(k);
+  }
+  _RE_DISP_NAMES.lastIndex = 0;
+  let d;
+  while ((d = _RE_DISP_NAMES.exec(xml))) {
+    const l = m.names.get(unescapeXml(d[1]).trim().toLowerCase());
+    if (!l) continue;
+    if (!k) {
+      k = copyStr(id);
+      m.keep.set(k, k);
+    }
+    for (const t of l)
+      if (t !== k && !m.byName.has(t)) m.byName.set(t, k);
+  }
+}
+
+/**
+ * Reads 1 `<program>` element.
+ * @param {string} xml
+ * @param {number} from Programs that stop before this time are not kept.
+ * @param {number} to Programs that start after this time are not kept.
+ * @return {?Object} {start, stop, title, desc}, or null.
+ */
+function xmltvProgramme(xml, from, to) {
+  const st = _RE_START_ATTR.exec(xml);
+  const start = st ? parseXMLTVDate(st[1]) : null;
+  if (start === null || start > to) return null;
+  const sp = _RE_STOP_ATTR.exec(xml);
+  const stop = sp ? parseXMLTVDate(sp[1]) : null;
+  if (stop === null || stop < from || stop <= start) return null;
+  const ti = _RE_TITLE_TAG.exec(xml);
+  const de = _RE_DESC_TAG.exec(xml);
+  let desc = de ? unescapeXml(de[1].trim()) : '';
+  if (desc.length > XMLTV_DESC_MAX) desc = desc.slice(0, XMLTV_DESC_MAX);
+  return {
+    start,
+    stop,
+    title: ti ? copyStr(unescapeXml(ti[1].trim())) : '',
+    desc: copyStr(desc)
+  };
+}
+
 // ── Minute tick ───────────────────────────────────────────────
 function startEpgTick() {
   if (epgRefreshTimer) clearInterval(epgRefreshTimer);
@@ -1248,6 +1684,7 @@ function startEpgTick() {
 // is rebuilt only when the hour window rolls over.
 function epgMinuteTick() {
   const now = Date.now();
+  if (currentPlaylistType === 'xtream') xmltvTick();
   if (currentPlaylistType === 'xtream' && epgMode && vodMode === 'live') {
     const HOUR_MS = 3600000;
     // Same window origin as renderEPGGuide (catch-up playlists start days back,
@@ -1297,10 +1734,18 @@ function epgMinuteTick() {
     updateLiveOsd();
 }
 
-async function loadXtreamPlaylist(serverUrl, username, password) {
+/**
+ * Loads an Xtream playlist: the cached channel list, else the provider.
+ * @param {string} serverUrl
+ * @param {string} username
+ * @param {string} password
+ * @param {string=} epgUrl Optional XMLTV address of the playlist.
+ */
+async function loadXtreamPlaylist(serverUrl, username, password, epgUrl) {
   if (isLoading) return;
   isLoading = true;
   resetLazyEpg();
+  xmltvSetSource(epgUrl);
   resetVodState(false);
   epgData.clear();
   epgIdMap.clear();
@@ -1471,6 +1916,7 @@ function applyXtreamChannels(
   // EPG is fetched lazily per visible row (see "Xtream lazy EPG"): cached
   // entries first, then favorites in the background
   startEpgTick();
+  xmltvStart();
   const key = _activePlaylistKey;
   epgRestoreFromCache(key).then(n => {
     perfMark(`epg-cache-restored(${n})`);

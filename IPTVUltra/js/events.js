@@ -17,7 +17,7 @@ loadSelectedBtn.addEventListener('click', () => {
       savedPlaylists[selectedPlaylistId]) {
     const p = savedPlaylists[selectedPlaylistId];
     if (p.type === 'xtream')
-      loadXtreamPlaylist(p.url, p.username, p.password);
+      loadXtreamPlaylist(p.url, p.username, p.password, p.epgUrl || '');
     else
       loadM3UFromUrl(p.url, p.epgUrl || '');
   }
