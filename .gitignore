@@ -17,3 +17,6 @@ __pycache__/
 # Local deploy script and editor state
 deploy.ps1
 .vscode/
+
+# Local downloads for tests (large EPG files)
+/temp/

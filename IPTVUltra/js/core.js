@@ -733,6 +733,7 @@ const panelXtream = document.getElementById('panelXtream');
 const xtreamServer = document.getElementById('xtreamServer');
 const xtreamUsername = document.getElementById('xtreamUsername');
 const xtreamPassword = document.getElementById('xtreamPassword');
+const xtreamEpgUrl = document.getElementById('xtreamEpgUrl');
 const xtreamName = document.getElementById('xtreamName');
 const saveXtreamBtn = document.getElementById('saveXtreamBtn');
 

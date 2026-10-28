@@ -108,7 +108,8 @@ This table shows the keys of the remote:
 
 ## Screenshots
 
-These screenshots are from a previous version of the app.
+The screenshots of the start page and of the M3U channel list are from a
+previous version of the app.
 
 Start page:
 
@@ -118,9 +119,9 @@ M3U channel list:
 
 <img src="https://i.imgur.com/8OUuXP3.jpeg" width="900" />
 
-Xtream guide:
+Xtream guide, with the test data of `test/mock_server.py`:
 
-<img src="https://i.imgur.com/eBib3Bz.png" width="900" />
+<img src="docs/images/xtream-guide.png" width="900" />
 
 ## Add a playlist
 
@@ -136,10 +137,12 @@ Xtream guide:
    | Username | `myuser` |
    | Password | `mypassword` |
 
-3. Select **Save Playlist**.
+3. Optional: type the URL of an XMLTV file in **EPG / XMLTV URL**.
+4. Select **Save Playlist**.
 
 The app gets the program data from the provider. Thus, an EPG URL is not
-necessary.
+necessary. The app saves the XMLTV URL with the playlist, but it does not load
+the file for an Xtream playlist at this time.
 
 ### M3U playlist
 

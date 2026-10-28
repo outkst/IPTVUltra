@@ -183,12 +183,37 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // ---------- Xtream: add + load ----------
   for (const [sel, text] of [
            ['#xtreamServer', BASE], ['#xtreamUsername', 'user'],
-           ['#xtreamPassword', 'pass']]) {
+           ['#xtreamPassword', 'pass'],
+           ['#xtreamEpgUrl', BASE + '/xmltv.xml']]) {
     await page.focus(sel);
     await typeText(text);
   }
   await click('#saveXtreamBtn');
   await page.waitForSelector('.saved-item', {timeout: 5000});
+  check(
+      'Xtream playlist saves the optional EPG URL and shows it in the list',
+      await page.evaluate(
+          (u) => savedPlaylists[0].epgUrl === u &&
+              xtreamEpgUrl.value === '' &&
+              document.querySelector('.saved-item .saved-epg') !== null &&
+              focusableElements.includes(xtreamEpgUrl),
+          BASE + '/xmltv.xml'));
+  await click('.saved-item');
+  check(
+      'selecting a saved Xtream playlist fills the EPG URL field',
+      await page.evaluate(
+          (u) => xtreamEpgUrl.value === u, BASE + '/xmltv.xml'));
+  // The later Xtream checks use this playlist without an XMLTV URL.
+  await page.evaluate(() => {
+    addXtreamPlaylist(
+        savedPlaylists[0].url, savedPlaylists[0].username,
+        savedPlaylists[0].password, savedPlaylists[0].name, '');
+  });
+  check(
+      'saving an Xtream playlist with an empty EPG URL removes the saved URL',
+      await page.evaluate(
+          () => savedPlaylists[0].epgUrl === '' &&
+              !document.querySelector('.saved-item .saved-epg')));
   // Pre-seed two favorites so the prefetch path runs (tvgIds ch3.test,
   // ch4.test)
   await page.evaluate(() => {
@@ -4859,20 +4884,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const names = [
       `End | Old Match | all | ${ymd(now - 10 * H)} | ${
           hm(now -
-             10 * H)} (GMT) | 8K EXCLUSIVE | US: TEST PPV 1`,  // finished long
-                                                               // ago → hidden
+             10 * H)} (GMT) | EXTRA | US: TEST PPV 1`,  // ended → hidden
       `Slot 2 | 7pm Somebody at Somewhere`,  // no zone → not an event
       `NEXT | LATER VS LATEST | ${day(now + 3 * H)} ${
-          hm(now + 3 * H)} UTC (UK) | 8K EXCLUSIVE | UK: TEST PPV 3`,
+          hm(now + 3 * H)} UTC (UK) | EXTRA | UK: TEST PPV 3`,
       `UFC 04 : MAIN CARD start:${ymd(now - H / 2)} ${
           hm(now - H / 2)}:00 stop:${ymd(now + 2 * H)} ${
           hm(now + 2 * H)}:00`,  // on now
       `NEXT | SOON VS SOONER | ${day(now - 3 * H)} ${
           hm(now -
-             3 * H)} EDT (US) | 8K EXCLUSIVE | US: TEST PPV 5`,  // EDT
-                                                                 // wall-clock:
-                                                                 // starts now +
-                                                                 // 1 h
+             3 * H)} EDT (US) | EXTRA | US: TEST PPV 5`,  // starts now + 1 h
       `(Test) (PPV) 006 |  (2098-12-31 08:00:01)`,  // placeholder slot
     ];
     const parsed =

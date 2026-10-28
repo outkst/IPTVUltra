@@ -688,6 +688,7 @@ function editPlaylist(idx) {
     xtreamServer.value = p.url;
     xtreamUsername.value = p.username || '';
     xtreamPassword.value = p.password || '';
+    xtreamEpgUrl.value = p.epgUrl || '';
     xtreamName.value = p.name || '';
   } else {
     switchTab('m3u');

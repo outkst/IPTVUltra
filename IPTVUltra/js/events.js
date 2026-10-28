@@ -28,6 +28,7 @@ saveXtreamBtn.addEventListener('click', () => {
   const uname = xtreamUsername.value.trim();
   const pass = xtreamPassword.value.trim();
   const name = xtreamName.value.trim();
+  const epgUrl = xtreamEpgUrl.value.trim();
   if (!server || !uname || !pass) {
     updateStartStatus(
         'Please enter server URL, username, and password', true, false, false,
@@ -40,7 +41,12 @@ saveXtreamBtn.addEventListener('click', () => {
         0);
     return;
   }
-  addXtreamPlaylist(server, uname, pass, name);
+  if (epgUrl && !/^https?:\/\//i.test(epgUrl)) {
+    updateStartStatus(
+        'EPG URL must start with http:// or https://', true, false, false, 0);
+    return;
+  }
+  addXtreamPlaylist(server, uname, pass, name, epgUrl);
 });
 tabM3u.addEventListener('click', () => switchTab('m3u'));
 tabXtream.addEventListener('click', () => switchTab('xtream'));
