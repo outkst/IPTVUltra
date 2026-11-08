@@ -553,6 +553,13 @@ function goToHomeScreen() {
     clearTimeout(_epgToastTimer);
     _epgToastTimer = null;
   }
+  // The live timers must not reload or seek a stream on the start page
+  stopStallWatchdog();
+  if (_errRetryTimer) {
+    clearTimeout(_errRetryTimer);
+    _errRetryTimer = null;
+  }
+  _stopHold();
 
   // Dismiss EPG toast immediately
   const _toast = document.getElementById('epgToast');
