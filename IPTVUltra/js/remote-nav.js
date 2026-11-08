@@ -120,16 +120,18 @@ function epgMoveCursor(dir) {
   const t = epgCursorTime();
   if (!progs.length) {
     scrollEPGTimeBy(dir * 30);
+    // Keep the cursor in the guide window.
     epgFocusT = t + dir * 1800000;
+    if (_epgWinStart)
+      epgFocusT = Math.max(_epgWinStart, Math.min(_epgWinEnd - 1, epgFocusT));
     if (ch && dir < 0) epgMaybeFetchHistory(ch);
     return;
   }
-  let i = _epgBinarySearch(progs, t);
-  if (i >= 0 && progs[i].stop <= t)
-    i = Math.min(
-        progs.length - 1,
-        i + (dir > 0 ? 0 : 1));  // cursor in a gap: nearest side
-  let j = i + dir;
+  // If the cursor is between 2 programs (or before the first program), the
+  // next program is i + 1 and the previous program is i.
+  const i = _epgBinarySearch(progs, t);
+  const inGap = i < 0 || progs[i].stop <= t;
+  const j = inGap ? (dir > 0 ? i + 1 : i) : i + dir;
   if (j < 0) {
     // Earlier than anything loaded: the archive may hold more; fetch the full
     // table and nudge the view back
@@ -212,7 +214,9 @@ function toggleEPGFav(id) {
       el.classList.toggle('fav-active', isFav);
     }
   });
-  if (!epgMode) renderChannelList();
+  // In the Favorites group, the list changes. CLAUDE.md tells you to use
+  // refreshCurrentView. refreshEPGRows keeps the row of the cursor.
+  if (!epgMode || currentGroup === 'favorites') refreshCurrentView();
 }
 
 function selectEPGFocusedChannel() {
@@ -351,8 +355,9 @@ function handleRemoteNav(e) {
       updateEPGRowFocus();
     } else if (down) {
       e.preventDefault();
-      epgFocusedRowIdx =
-          Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1);
+      epgFocusedRowIdx = Math.max(
+          0,
+          Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1));
       updateEPGRowFocus();
     } else if (left) {
       e.preventDefault();
