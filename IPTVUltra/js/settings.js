@@ -225,6 +225,20 @@ function settingsRows() {
       }
     },
     {
+      id: 'manageSaved',
+      type: 'action',
+      label: 'Manage saved searches',
+      sub: t ? `Keyword searches below All Channels for ${t.name}${
+                   _activePlaylistKey === t.key && savedSearches().length ?
+                       ` · ${savedSearches().length} saved` :
+                       ''}` :
+               'Load a playlist first',
+      button: 'Open',
+      disabled: !t || !_activePlaylistKey || _activePlaylistKey === 'm:demo' ||
+          _activePlaylistKey !== t.key,
+      run: () => openSavedSearchList()
+    },
+    {
       id: 'manageCats',
       type: 'action',
       label: 'Manage categories',

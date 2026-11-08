@@ -31,6 +31,8 @@ function normGroupName(group) {
   const g = group == null ? '' : String(group).trim();
   if (g === 'favorites' || g === 'all' || g === 'recent')
     return g[0].toUpperCase() + g.slice(1);
+  // The key of a saved search starts with "ss:"
+  if (/^ss:/i.test(g)) return 'SS: ' + g.slice(3);
   return g;
 }
 /**
@@ -902,8 +904,8 @@ function digitEntryAllowed() {
     return false;
   if (confirmDialog && !confirmDialog.classList.contains('hidden'))
     return false;
-  if (settingsOpen || catsOpen || diagOpen || versionsOpen || vodPlay.active ||
-      vodMode !== 'live')
+  if (settingsOpen || catsOpen || diagOpen || versionsOpen || ssOpen ||
+      vodPlay.active || vodMode !== 'live')
     return false;
   if (_isTextInput(document.activeElement)) return false;
   return !_chanByNum.size ? false : true;

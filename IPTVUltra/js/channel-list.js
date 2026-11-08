@@ -31,11 +31,21 @@ function extractGroups() {
   _hiddenGroups = new Set((ps && ps.hiddenGroups) || []);
   _groupOrder = (ps && ps.groupOrder) || [];
   _searchCache = {query: null, result: null};  // the hidden groups can change
-  groupsList = ['favorites', 'all', 'recent'].concat(
-      sortGroupNames(allGroupNames().filter(g => !_hiddenGroups.has(g))));
+  // The saved searches of the playlist follow All Channels
+  groupsList = ['favorites', 'all']
+                   .concat(savedSearchKeys(), ['recent'])
+                   .concat(sortGroupNames(
+                       allGroupNames().filter(g => !_hiddenGroups.has(g))));
   renderGroupsList();
 }
 const PINNED_GROUPS = ['favorites', 'all', 'recent'];
+/**
+ * @param {string} g A group key.
+ * @return {boolean} True for a pinned group or a saved search.
+ */
+function isPinnedGroup(g) {
+  return PINNED_GROUPS.includes(g) || isSavedSearchKey(g);
+}
 
 // ----- Categories manager (hide / reorder, per playlist) and Favorites manager
 // (reorder / remove) ----- The same overlay serves both: `catsMode` is 'cats'
@@ -384,17 +394,41 @@ function renderGroupsList() {
     } else if (group === 'recent') {
       folderIcon = '🕒';
       displayName = 'Recent';
+    } else if (group === SS_NEW_KEY) {
+      folderIcon = '➕';
+      displayName =
+          currentSearchQuery ? 'Save this search' : 'New saved search';
+      div.classList.add('ss-new');
+    } else if (isSavedSearchKey(group)) {
+      const s = savedSearchOf(group);
+      folderIcon = '🔎';
+      displayName = escapeHtml(s ? s.name : '');
+      div.classList.add('ss-group');
     } else {
       folderIcon = '📁';
       displayName = escapeHtml(group);
     }
-    if (currentSearchQuery && !PINNED_GROUPS.includes(group) &&
+    if (currentSearchQuery && !isPinnedGroup(group) &&
         group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
       displayName = highlightText(group, currentSearchQuery);
     }
     div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${
-        displayName}</span>`;
+                        displayName}</span>` +
+        (isSavedSearchKey(group) && group !== SS_NEW_KEY ?
+             '<span class="ss-edit" title="Edit">✎</span>' :
+             '');
+    const editBtn = div.querySelector('.ss-edit');
+    if (editBtn)
+      editBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        openSavedSearchEditor(savedSearchOf(group));
+      });
     div.onclick = () => {
+      if (group === SS_NEW_KEY) {
+        // A new saved search starts with the text of the search box
+        openSavedSearchEditor(null, ssTermsFromSearchBox());
+        return;
+      }
       currentGroup = group;
       stdGroupFocusIdx = Math.max(0, groupsList.indexOf(group));
       if (_activePlaylistKey) {
@@ -409,7 +443,7 @@ function renderGroupsList() {
       renderGroupsList();
       requestAnimationFrame(refreshCurrentView);
     };
-    if (PINNED_GROUPS.includes(group) && pinnedDiv) {
+    if (isPinnedGroup(group) && pinnedDiv) {
       pinnedDiv.appendChild(div);
     } else {
       groupsListDiv.appendChild(div);
@@ -510,6 +544,8 @@ function renderChannelList() {
       title = '🕒 Recent';
     } else if (currentGroup === 'all') {
       title = '📺 All Channels';
+    } else if (savedSearchOf(currentGroup)) {
+      title = '🔎 ' + savedSearchOf(currentGroup).name;
     } else {
       title = '📁 ' + currentGroup;
     }
@@ -528,11 +564,15 @@ function renderChannelList() {
     filtered = _hiddenGroups.size ?
         channels.filter(ch => !_hiddenGroups.has(ch.group)) :
         [...channels];
+  } else if (isSavedSearchKey(currentGroup)) {
+    const s = savedSearchOf(currentGroup);
+    filtered = s ? savedSearchChannels(s) : [];
   } else {
     filtered =
         arrangeEventGroup(channels.filter(ch => ch.group === currentGroup));
   }
   currentFilteredChannels = filtered;
+  ssUpdateMark();
   if (stdFocusIdx >= filtered.length)
     stdFocusIdx = Math.max(0, filtered.length - 1);
   if (currentPlaylistType === 'xtream') return;

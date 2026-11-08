@@ -611,7 +611,9 @@ function epgProgsHtml(ch) {
                                                p.desc)}</span>` :
         '';
     const cls = (isNow ? ' now-playing' : '') +
-        (isPast ? (progIsCatchup(ch, p, now) ? ' past catchup' : ' past') : '');
+        (isPast ? (progIsCatchup(ch, p, now) ? ' past catchup' : ' past') :
+                  '') +
+        (ssProgMatches(p) ? ' ss-match' : '');
     parts.push(
         `<div class="epg-prog-block${cls}" data-start="${p.start}" data-stop="${
             p.stop}" style="left:${sx}px;width:${w}px">` +

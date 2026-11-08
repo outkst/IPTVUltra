@@ -3385,3 +3385,108 @@ body.live-player #videoPlayer {
   align-items: center;
   justify-content: center;
 }
+
+/* ----- Saved keyword searches ----- */
+.group-item.ss-group {
+  position: relative;
+  padding-right: 34px;
+}
+
+.group-item .ss-edit {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: #8b93a7;
+}
+
+.group-item .ss-edit:hover {
+  background: #2a3a70;
+  color: #fff;
+}
+
+.group-item.ss-new {
+  color: #8b93a7;
+}
+
+.ss-card {
+  width: min(760px, 90vw);
+}
+
+.ss-section {
+  font-size: 0.75rem;
+  color: #8b93a7;
+  padding: 10px 14px 2px;
+}
+
+.ss-value {
+  flex: 1;
+  min-width: 0;
+}
+
+.ss-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 4px 6px;
+}
+
+.ss-input.ss-add {
+  color: #8fa8ff;
+}
+
+.ss-input:not([readonly]) {
+  background: #11141c;
+  border-color: #6c8eff;
+}
+
+.ss-count {
+  color: #8b93a7;
+}
+
+.ss-btns {
+  justify-content: flex-start;
+}
+
+.ss-btn {
+  background: #242731;
+  border: 1px solid #4a4e5c;
+  color: #ddd;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  padding: 8px 18px;
+  cursor: pointer;
+}
+
+.ss-btn.focused {
+  background: #2a3a70;
+  border-color: #6c8eff;
+  color: #fff;
+}
+
+.ss-summary {
+  font-size: 0.85rem;
+  color: #c9cfdd;
+  padding: 8px 14px 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A program that matches the open saved search. A solid border on purpose
+   (see the rule of .epg-prog-placeholder). */
+.epg-row .epg-prog-block.ss-match,
+.epg-row.epg-focused .epg-prog-block.ss-match,
+.epg-row.active.epg-focused .epg-prog-block.ss-match {
+  border-color: #f0b400;
+}
+
+.epg-prog-block.ss-match .epg-prog-title {
+  color: #ffd75e;
+}

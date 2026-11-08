@@ -469,7 +469,7 @@ document.addEventListener('keydown', (e) => {
   if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0)
     return;
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
-  if (settingsOpen || catsOpen || diagOpen || versionsOpen) return;
+  if (settingsOpen || catsOpen || diagOpen || versionsOpen || ssOpen) return;
   if (vodMode !== 'live' && !vodPlay.active) return;
   if (vodPlay.active && (kc === 427 || kc === 428)) return;
   e.preventDefault();
@@ -496,6 +496,11 @@ document.addEventListener('keydown', (e) => {
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
     e.preventDefault();
     confirmNo.click();
+    return;
+  }
+  if (ssOpen) {
+    e.preventDefault();
+    savedSearchBack();
     return;
   }
   if (versionsOpen) {

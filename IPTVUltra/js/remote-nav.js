@@ -266,6 +266,10 @@ function handleRemoteNav(e) {
 
   // Diagnostics / Sort menu / Categories manager / Settings overlay own the
   // remote while open
+  if (ssOpen) {
+    handleSavedSearchKey(e);
+    return;
+  }
   if (versionsOpen) {
     handleVersionsKey(e);
     return;

@@ -736,7 +736,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const catsAfter = await page.evaluate(
       () => ({
         open: catsOpen,
-        groups: groupsList.slice(0, 4),
+        groups: groupsList.slice(0, 5),
         hiddenInAll: currentGroup === 'all' &&
             currentFilteredChannels.some(ch => ch.group === 'Group 01'),
         total: currentFilteredChannels.length
@@ -747,8 +747,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           catsSt.saved[0] === 'Group 01' && catsSt.order[0] === 'Group 01' &&
           catsSt.order[1] === 'Group 03' && catsSt.order[2] === 'Group 02' &&
           !catsAfter.open && !catsAfter.groups.includes('Group 01') &&
-          catsAfter.groups[2] === 'recent' &&
-          catsAfter.groups[3] === 'Group 03' && !catsAfter.hiddenInAll &&
+          catsAfter.groups[2] === 'ss:+' && catsAfter.groups[3] === 'recent' &&
+          catsAfter.groups[4] === 'Group 03' && !catsAfter.hiddenInAll &&
           catsAfter.total === 2900,
       JSON.stringify({catsSt, catsAfter}));
   await page.evaluate(() => {
@@ -974,11 +974,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           surfTarget),
       `target=${surfTarget}`);
   check(
-      'Recent group is pinned third and lists the channels just watched, newest first; it is a Starting group option',
+      'Recent group follows the saved searches and lists the channels just watched, newest first; it is a Starting group option',
       await page.evaluate(
-          () => groupsList[2] === 'recent' &&
+          () => groupsList[3] === 'recent' &&
               document.querySelectorAll('#groupsPinned .group-item').length ===
-                  3 &&
+                  4 &&
               recentChannels()[0] === channels[currentChannelIndex] &&
               recentChannels().length >= 3 &&
               settingsRows()
@@ -3408,7 +3408,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                     .filter(r => r.classList.contains('disabled'))
                     .map(r => r.dataset.id)
                     .join(',') ===
-              'epgTz,epgDst,epgExtra,xtXmltv,startGroup,resume,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
+              'epgTz,epgDst,epgExtra,xtXmltv,startGroup,resume,manageSaved,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
   await back();
   check(
       'Back closes settings',
@@ -5233,6 +5233,68 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       archive: merged.map(p => p.title + ':' + p.hasArchive).join()
     };
   });
+  // ---------- Saved keyword searches ----------
+  const ss = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const pick = channels.filter(c => c.tvgId && !_hiddenGroups.has(c.group))
+                     .slice(10, 14);
+    const saved = pick.map(c => ({c, name: c.name, progs: epgData.get(c.tvgId)}));
+    const prog = (a, b, title) => ({start: now + a * H, stop: now + b * H, title});
+    epgData.set(pick[0].tvgId, [prog(-0.5, 1, 'Steelers at Ravens')]);
+    epgData.set(pick[1].tvgId, [prog(-0.5, 1, 'News'),
+                                prog(1, 2, 'Penguins Hockey')]);
+    pick[2].name = 'Pittsburgh News';
+    epgData.set(pick[3].tvgId, [prog(-0.5, 1, 'Spitting Image')]);
+    const before = savedSearches().length;
+    savedSearches().push({id: 'e2e', name: 'Pgh', terms: ['Pitt', 'Penguins',
+                                                          'Steelers']});
+    ssSaveAll();
+    const keys = groupsList.slice(0, 5).join();
+    currentGroup = 'ss:e2e';
+    renderGroupsList();
+    refreshCurrentView();
+    const list = currentFilteredChannels.slice();
+    const order = pick.map(c => list.indexOf(c));
+    const header = document.getElementById('channelsHeaderTitle').textContent;
+    const mark = ssProgMatches({title: 'Steelers at Ravens'}) &&
+        !ssProgMatches({title: 'Spitting Image'});
+    const html = epgProgsHtml(pick[0]);
+    // The editor: start with the text of the search box, add a term, save
+    openSavedSearchEditor(null, ['Pirates']);
+    const ed1 = {open: ssOpen, terms: ssEd.terms.join(), name: ssEd.name};
+    ssStartEdit(ssAddRow());
+    ssCommitEdit('Panthers');
+    const ed2 = ssEd.terms.join();
+    ssSaveEditor();
+    const after = savedSearches().map(s => s.name + ':' + s.terms.join('|'));
+    const grp = currentGroup;
+    // Clean up
+    const ps = getPlaylistState(_activePlaylistKey);
+    ps.savedSearches = ps.savedSearches.slice(0, before);
+    for (const x of saved) {
+      x.c.name = x.name;
+      if (x.progs) epgData.set(x.c.tvgId, x.progs);
+      else epgData.delete(x.c.tvgId);
+    }
+    ssSaveAll();
+    currentGroup = 'all';
+    renderGroupsList();
+    refreshCurrentView();
+    return {keys, order, header, mark, block: /ss-match/.test(html), ed1, ed2,
+            after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e')};
+  });
+  check(
+      'saved search: below All Channels, any term, word start, program now first',
+      ss.keys === 'favorites,all,ss:e2e,ss:+,recent' && ss.order[0] === 0 &&
+          ss.order[1] === 1 && ss.order[2] === 2 && ss.order[3] === -1 &&
+          /Pgh/.test(ss.header) && ss.mark && ss.block,
+      JSON.stringify(ss));
+  check(
+      'saved search editor: prefill, add a term, save opens the new search',
+      ss.ed1.open && ss.ed1.terms === 'Pirates' && ss.ed2 === 'Pirates,Panthers' &&
+          ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
+          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
+      JSON.stringify(ss));
   // An event name with no usable time gives a title with no time
   const ut = await page.evaluate(() => [
     'Xyz (XY) 25: 2025 A vs B - Field Hockey - 22/10 15:00',

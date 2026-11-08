@@ -6,6 +6,7 @@
 // ── playback ─────────────────────────────────────────────────
 function _inPlayerMode() {
   return playerActive() && !settingsOpen && !diagOpen && !versionsOpen &&
+      !ssOpen &&
       !(confirmDialog && !confirmDialog.classList.contains('hidden'));
 }
 function showPlayerControls() {
