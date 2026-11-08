@@ -492,13 +492,27 @@ function fmtAge(ts) {
   return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 
+/**
+ * Gives the HLS URL of an Xtream live channel, with the user name and the
+ * password in URL encoding.
+ * @param {string} base The server address, with no slash at the end.
+ * @param {string} username The user name.
+ * @param {string} password The password.
+ * @param {*} streamId The stream ID.
+ * @return {string} The URL.
+ */
+function xtreamLiveUrl(base, username, password, streamId) {
+  return `${base}/live/${encodeURIComponent(username)}/${
+      encodeURIComponent(password)}/${streamId}.m3u8`;
+}
+
 // ----- Loading playlists -----
 // Everything after a channel list is available (parsed fresh or read from the
 // cache)
 function applyM3UChannels(parsed, url, epgUrl, fromCache) {
   channels = parsed;
   buildChannelIndexMap();
-  localStorage.setItem('last_m3u_url', url);
+  storageSet('last_m3u_url', url);
   updateStartStatus(
       `Loaded ${channels.length.toLocaleString()} channels${
           fromCache ? ' (cached)' : ''}!`,

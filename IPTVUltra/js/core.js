@@ -282,6 +282,21 @@ function saveJson(key, v) {
   } catch (_) { /* storage unavailable */
   }
 }
+
+/**
+ * Writes a string to localStorage. A full storage does not stop the caller.
+ * @param {string} key The key.
+ * @param {string} value The value.
+ * @return {boolean} True if the write was a success.
+ */
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function loadSettings() {
   let st = {};
   try {

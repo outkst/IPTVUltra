@@ -1846,7 +1846,7 @@ async function xtreamFetchChannels(base, username, password, progress) {
         tvgId: s.epg_channel_id || String(s.stream_id),
         tvgLogo: s.stream_icon || '',
         group: catMap[String(s.category_id)] || '',
-        url: `${base}/live/${username}/${password}/${s.stream_id}.m3u8`,
+        url: xtreamLiveUrl(base, username, password, s.stream_id),
         streamId: s.stream_id,
         num: isNaN(num) ?
             0 :
@@ -1866,6 +1866,10 @@ async function xtreamFetchChannels(base, username, password, progress) {
 // from the cache)
 function applyXtreamChannels(
     parsed, base, username, password, fromCache, tz, epgOffsetMin) {
+  // The cache key has no password. Thus, make the URLs from the current one.
+  for (const ch of parsed)
+    if (ch.streamId != null && ch.streamId !== '')
+      ch.url = xtreamLiveUrl(base, username, password, ch.streamId);
   channels = parsed;
   buildChannelIndexMap();
   _xt = {
@@ -1888,8 +1892,7 @@ function applyXtreamChannels(
   for (const ch of parsed)
     if (!_xtStreamIdByTvgId.has(ch.tvgId))
       _xtStreamIdByTvgId.set(ch.tvgId, ch.streamId);
-  localStorage.setItem(
-      'last_m3u_url', '');  // clear M3U cache; Xtream uses its own auth
+  storageSet('last_m3u_url', '');  // clear M3U cache; Xtream uses its own auth
   updateStartStatus(
       `Loaded ${channels.length.toLocaleString()} channels${
           fromCache ? ' (cached)' : ''}!`,
