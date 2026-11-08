@@ -963,6 +963,11 @@ function getNextProgramme(tvgId) {
   return nextIdx < progs.length ? progs[nextIdx] : null;
 }
 
+// The parser streams the file, thus the size of the file is not the memory
+// limit. The kept programs are the memory. These 2 limits stop a very large
+// file. When a limit stops the parse, the toast and the log tell you.
+const EPG_M3U_MAX_BYTES = 200 * 1048576;
+const EPG_M3U_MAX_PROGS = 150000;
 async function loadEPG(url) {
   if (epgLoading) return;
   epgLoading = true;
@@ -984,6 +989,8 @@ async function loadEPG(url) {
   let cursor = 0;
   let programmeCount = 0;
   let bytesRead = 0;
+  let cut = '';          // why the parse stopped before the end of the file
+  let elementCount = 0;  // all <programme> elements, for the yields
   const now = Date.now();
   const windowStart = now - 120000;
   const windowEnd = now + 6 * 3600000;  // 6h
@@ -998,8 +1005,8 @@ async function loadEPG(url) {
       const {done, value} = await reader.read();
       if (done) break;
       bytesRead += value.byteLength;
-      // Hard abort: avoid OOM on feeds > 20 MB
-      if (bytesRead > 20 * 1024 * 1024) {
+      if (bytesRead > EPG_M3U_MAX_BYTES) {
+        cut = `${Math.round(EPG_M3U_MAX_BYTES / 1048576)} MB limit`;
         reader.cancel();
         break;
       }
@@ -1066,13 +1073,20 @@ async function loadEPG(url) {
                 title: tiM ? copyStr(unescapeXml(tiM[1].trim())) : ''
               });
               programmeCount++;
+              if (programmeCount >= EPG_M3U_MAX_PROGS) {
+                cut = `${EPG_M3U_MAX_PROGS.toLocaleString()} programs limit`;
+                break;
+              }
             }
           }
         }
         cursor = idx + 12;
 
         // Yield inside the loop so GC can run between elements
-        if (programmeCount > 0 && programmeCount % 128 === 0) {
+        // Count each element, also an element out of the window. Before, the
+        // count of kept programs stayed at a multiple of 128 for the elements
+        // out of the window, and each of these elements yielded.
+        if (++elementCount % 512 === 0) {
           const _progMsg = `${(bytesRead / 1048576).toFixed(1)} MB — ${
               programmeCount.toLocaleString()} programs …`;
           statusArea.innerText = `📅 EPG: ${_progMsg}`;
@@ -1086,6 +1100,10 @@ async function loadEPG(url) {
         }
       }
 
+      if (cut) {
+        reader.cancel();
+        break;
+      }
       // Safety: if a single element is pathologically large, discard to cursor
       if (buffer.length - cursor > 1048576) {
         const trim = Math.max(
@@ -1118,7 +1136,9 @@ async function loadEPG(url) {
     const mb = (bytesRead / 1048576).toFixed(1);
     const readyMsg = `${epgData.size.toLocaleString()} channels, ${
         programmeCount.toLocaleString()} programs (${mb} MB)${
-        byName ? `, ${byName.toLocaleString()} matched by name` : ''}`;
+        byName ? `, ${byName.toLocaleString()} matched by name` :
+                 ''}${cut ? ` · file cut at the ${cut}` : ''}`;
+    if (cut) diagLog(`XMLTV (M3U): the parse stopped at the ${cut}`);
     statusArea.innerText = `📅 EPG ready — ${readyMsg}`;
     showEPGToast(readyMsg, 'success');
     hideEPGToast(3500);
