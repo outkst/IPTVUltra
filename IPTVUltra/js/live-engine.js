@@ -296,7 +296,11 @@ const _shakaRaw = new Map();  // playlist URL -> requests of the filter itself
  */
 function playlistRestarted(uri, text) {
   const m = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(text);
-  const first = text.split(/\r?\n/).find(l => l && l[0] !== '#') || '';
+  // A segment URL can have a token in the query, and the token can change on
+  // each request. Thus, compare the segment URLs without the query.
+  const line =
+      text.split(/\r?\n/).find(l => l.trim() && l.trim()[0] !== '#') || '';
+  const first = line.trim().replace(/[?#].*$/, '');
   if (!m || !first) return false;
   const seq = +m[1], prev = _shakaSeq.get(uri);
   _shakaSeq.set(uri, {seq, first});
