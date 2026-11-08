@@ -18,6 +18,21 @@ function favIdOf(ch, idx) {
       ch.url ? `u:${ch.url}` :
                `idx_${idx}`;
 }
+
+/**
+ * Gives the group name that the app uses for a channel. The name has no spaces
+ * at the start or at the end. A provider group with the key of a pinned group
+ * (`favorites`, `all`, or `recent`) gets a capital first letter, because the
+ * two groups must have different keys.
+ * @param {*} group The group name from the provider.
+ * @return {string} The group name.
+ */
+function normGroupName(group) {
+  const g = group == null ? '' : String(group).trim();
+  if (g === 'favorites' || g === 'all' || g === 'recent')
+    return g[0].toUpperCase() + g.slice(1);
+  return g;
+}
 function buildChannelIndexMap() {
   channelIndexMap = new Map();
   _chanByNum = new Map();
@@ -25,6 +40,8 @@ function buildChannelIndexMap() {
   _chansByFavId = new Map();
   for (let i = 0; i < channels.length; i++) {
     const ch = channels[i];
+    const g = normGroupName(ch.group);
+    if (g !== ch.group) ch.group = g;
     channelIndexMap.set(ch, i);
     const n = ch.num;
     if (n > 0 && !_chanByNum.has(n)) _chanByNum.set(n, i);

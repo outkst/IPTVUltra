@@ -9,10 +9,12 @@
 let _hiddenGroups = new Set();
 let _groupOrder = [
 ];  // user order for this playlist; groups not listed follow alphabetically
+// buildChannelIndexMap gives each channel the name from normGroupName. Thus,
+// the list, the filters, and the set of hidden groups use the same name.
 function allGroupNames() {
   const groups = new Set();
   for (const ch of channels)
-    if (ch.group && ch.group.trim()) groups.add(ch.group.trim());
+    if (ch.group) groups.add(ch.group);
   return Array.from(groups);
 }
 function sortGroupNames(names) {
