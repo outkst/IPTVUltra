@@ -286,7 +286,30 @@ function placeLiveNotice() {
 // the filter compares the MEDIA-SEQUENCE and the first segment with the
 // previous playlist of the same URL.
 const _shakaSeq = new Map();  // playlist URL -> {seq, first}
-const _shakaRaw = new Map();  // playlist URL -> requests of the filter itself
+// The URLs of the audio and subtitle playlists in the multivariant playlist.
+// Only the video playlist can tell that the provider sends a placeholder.
+const _shakaRenditions = new Set();
+/**
+ * Keeps the URLs of the audio and subtitle playlists of a multivariant
+ * playlist.
+ * @param {!Array<string>} bases The URLs of the multivariant playlist.
+ * @param {string} text The playlist text.
+ */
+function noteShakaRenditions(bases, text) {
+  const re = /^#EXT-X-MEDIA:(.*)$/gm;
+  let m;
+  while ((m = re.exec(text))) {
+    if (!/(^|,)TYPE=(AUDIO|SUBTITLES)(,|$)/.test(m[1])) continue;
+    const u = /(^|,)URI="([^"]*)"/.exec(m[1]);
+    if (!u) continue;
+    for (const base of bases) {
+      try {
+        _shakaRenditions.add(new URL(u[2], base).href);
+      } catch (_) { /* not a valid URL */
+      }
+    }
+  }
+}
 /**
  * Tells if a media playlist starts again (a relay restart).
  * @param {string} uri The playlist URL.
@@ -320,13 +343,10 @@ function shakaResponseFilter(player) {
   return async (type, response) => {
     const load = _shakaLoad;
     if (type !== RT.MANIFEST || !load || liveEngine.shaka !== player) return;
+    // A request of this filter: the filter does not examine it 2 times
+    if (response.originalRequest && response.originalRequest.iptvRaw) return;
     const url = load.url;
     const uri = response.uri || url;
-    const raw = _shakaRaw.get(uri) || 0;
-    if (raw > 0) {  // a request of this filter: no second filter pass
-      _shakaRaw.set(uri, raw - 1);
-      return;
-    }
     let text = SU.fromUTF8(response.data);
     if (HLS_RELAY_NOT_READY.test(text)) {
       const last = _hlsLastPlaylist.get(uri);
@@ -342,13 +362,14 @@ function shakaResponseFilter(player) {
         if (_shakaLoad !== load) return;
         const req = shaka.net.NetworkingEngine.makeRequest(
             [uri], player.getConfiguration().manifest.retryParameters);
-        _shakaRaw.set(uri, (_shakaRaw.get(uri) || 0) + 1);
+        // The response of this request goes through this filter too. The
+        // filter does not examine a request with this mark. The response keeps
+        // the request object (originalRequest), also after a redirect.
+        req.iptvRaw = true;
         let r = null;
         try {
           r = await player.getNetworkingEngine().request(type, req).promise;
         } catch (_) {
-          // No response, thus the filter did not run: the count goes back
-          _shakaRaw.set(uri, Math.max(0, (_shakaRaw.get(uri) || 0) - 1));
           continue;
         }
         text = SU.fromUTF8(r.data);
@@ -369,6 +390,12 @@ function shakaResponseFilter(player) {
       return;
     }
     const media = /^#EXTINF/m.test(text);
+    if (!media) {
+      noteShakaRenditions([uri, response.originalUri || uri], text);
+    }
+    // Not for an audio or a subtitle playlist (the same as hls.js)
+    const video = media && !_shakaRenditions.has(uri) &&
+        !_shakaRenditions.has(response.originalUri || uri);
     // The playlist of a catch-up (the provider archive) has an end
     const archive = !!catchup && catchup.url === url;
     if (media && !archive && playlistRestarted(uri, text) &&
@@ -380,7 +407,7 @@ function shakaResponseFilter(player) {
     response.data = SU.toUTF8(clean);
     _hlsLastPlaylist.set(uri, clean);
     liveEngine.manifestFails = 0;
-    if (media) notePlaceholderPlaylist(text);
+    if (video) notePlaceholderPlaylist(text);
   };
 }
 // A cold relay can also restart. Its next playlist then starts again at
@@ -536,6 +563,7 @@ function loadLiveSource(url, cause = '') {
   liveEngine.manifestFails = 0;
   _hlsLastPlaylist.clear();  // a new start must not get an old playlist
   _shakaSeq.clear();
+  _shakaRenditions.clear();
   liveEngine.subManual = false;
   liveEngine.audioManual = false;
   // The engine attaches its MediaSource
