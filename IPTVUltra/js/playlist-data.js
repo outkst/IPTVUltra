@@ -305,7 +305,10 @@ async function epgRestoreFromCache(key) {
 function channelListSignature(list) {
   let h = 0;
   for (const c of list) {
-    const s = c.url + '|' + c.name + '|' + c.group;
+    // A tvgId from applyEpgNameFallback is not from the provider.
+    const s = c.url + '|' + c.name + '|' + normGroupName(c.group) + '|' +
+        (c.tvgIdFromName ? '' : c.tvgId || '') + '|' + (c.num || '') + '|' +
+        (c.archive || '') + '|' + (c.tvgLogo || '');
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return list.length + ':' + h;
@@ -313,10 +316,22 @@ function channelListSignature(list) {
 // Swap in a refreshed list without disturbing the user: same channel keeps
 // playing, same group stays
 function replaceChannelList(parsed) {
-  const playingUrl = currentChannelIndex >= 0 && channels[currentChannelIndex] ?
-      channels[currentChannelIndex].url :
-      null;
+  const old = channels;
+  const focusList = currentFilteredChannels;
+  const focusCh = focusList[epgMode ? epgFocusedRowIdx : stdFocusIdx] || null;
   channels = parsed;
+  // Keep the tvgIds that applyEpgNameFallback found by name (M3U).
+  if (currentPlaylistType === 'm3u') {
+    const byUrl = new Map();
+    for (const c of old)
+      if (c.tvgIdFromName && c.url) byUrl.set(c.url, c.tvgId);
+    if (byUrl.size)
+      for (const c of parsed)
+        if (!c.tvgId && byUrl.has(c.url)) {
+          c.tvgId = byUrl.get(c.url);
+          c.tvgIdFromName = true;
+        }
+  }
   buildChannelIndexMap();
   if (currentPlaylistType === 'xtream') {
     _xtStreamIdByTvgId = new Map();
@@ -324,12 +339,37 @@ function replaceChannelList(parsed) {
       if (!_xtStreamIdByTvgId.has(ch.tvgId))
         _xtStreamIdByTvgId.set(ch.tvgId, ch.streamId);
   }
-  currentChannelIndex =
-      playingUrl ? channels.findIndex(c => c.url === playingUrl) : -1;
-  if (lastChannelIndex >= channels.length) lastChannelIndex = -1;
+  // The indexes of the old list go to the same channel in the new list: by
+  // the URL, else by the favorite id.
+  const mapCh = (ch) => {
+    if (!ch) return -1;
+    if (ch.url && _chanByUrl.has(ch.url)) return _chanByUrl.get(ch.url);
+    const l = _chansByFavId.get(favIdOf(ch, -1));
+    return l && l.length ? channelIndexMap.get(l[0]) : -1;
+  };
+  const mapIdx = (i) => (i >= 0 ? mapCh(old[i]) : -1);
+  currentChannelIndex = mapIdx(currentChannelIndex);
+  lastChannelIndex = mapIdx(lastChannelIndex);
+  _altOrigin = mapIdx(_altOrigin);
+  _altTried = new Set([..._altTried].map(mapIdx).filter(i => i >= 0));
+  if (catchup) {
+    catchup.chIdx = mapIdx(catchup.chIdx);
+    if (catchup.chIdx < 0) catchup = null;
+  }
   extractGroups();
   validateCurrentGroup();
   refreshCurrentView();
+  const fi =
+      focusCh ? currentFilteredChannels.indexOf(channels[mapCh(focusCh)]) : -1;
+  if (fi >= 0 && vodMode === 'live') {
+    if (epgMode) {
+      epgFocusedRowIdx = fi;
+      updateEPGRowFocus();
+    } else {
+      stdFocusIdx = fi;
+      updateStdChannelFocus();
+    }
+  }
   if (currentChannelIndex >= 0 && epgMode)
     updateEPGInfoPanel(channels[currentChannelIndex]);
 }

@@ -932,8 +932,10 @@ function applyEpgNameFallback(nameMap) {
     if (!cid || !epgData.has(cid)) continue;
     if (ch.tvgId)
       epgIdMap.set(ch.tvgId.toLowerCase(), cid);
-    else
+    else {
       ch.tvgId = cid;
+      ch.tvgIdFromName = true;  // replaceChannelList keeps this tvgId
+    }
     n++;
   }
   if (n)
