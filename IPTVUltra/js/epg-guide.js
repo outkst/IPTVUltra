@@ -903,7 +903,7 @@ function renderEPGGuide() {
   const winEnd = winStart + winHours * HOUR_MS;
 
   if (winStart !== _epgSkeletonWinStart || winHours !== EPG_WIN_HOURS) {
-    // _epgSkeletonWinStart is 0 after a forced rebuild (text scale, clock)
+    // A setting (text scale, clock) sets _epgSkeletonWinStart to 0
     const prevStart = _epgSkeletonWinStart || _epgWinStart;
     const sameWidth = EPG_WIN_HOURS === winHours;
     EPG_WIN_HOURS = winHours;
