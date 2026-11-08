@@ -3490,3 +3490,20 @@ body.live-player #videoPlayer {
 .epg-prog-block.ss-match .epg-prog-title {
   color: #ffd75e;
 }
+
+/* The saved searches: a section between All Channels and Recent */
+.ss-groups {
+  margin: 6px 0;
+  padding: 2px 0 4px;
+  border-top: 1px solid #2f3445;
+  border-bottom: 1px solid #2f3445;
+}
+
+.ss-groups-title {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8b93a7;
+  padding: 8px 24px 2px;
+}

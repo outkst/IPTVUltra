@@ -380,6 +380,7 @@ function renderGroupsList() {
   const pinnedDiv = document.getElementById('groupsPinned');
   groupsListDiv.innerHTML = '';
   if (pinnedDiv) pinnedDiv.innerHTML = '';
+  let ssSection = null;  // the box of the saved searches
   for (const group of groupsList) {
     const div = document.createElement('div');
     div.className = 'group-item' + (currentGroup === group ? ' active' : '');
@@ -443,7 +444,17 @@ function renderGroupsList() {
       renderGroupsList();
       requestAnimationFrame(refreshCurrentView);
     };
-    if (isPinnedGroup(group) && pinnedDiv) {
+    if (isSavedSearchKey(group) && pinnedDiv) {
+      // The saved searches are a section with a rule above and below
+      if (!ssSection) {
+        ssSection = document.createElement('div');
+        ssSection.className = 'ss-groups';
+        ssSection.innerHTML =
+            '<div class="ss-groups-title">Saved searches</div>';
+        pinnedDiv.appendChild(ssSection);
+      }
+      ssSection.appendChild(div);
+    } else if (isPinnedGroup(group) && pinnedDiv) {
       pinnedDiv.appendChild(div);
     } else {
       groupsListDiv.appendChild(div);
