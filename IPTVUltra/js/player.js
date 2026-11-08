@@ -50,6 +50,8 @@ function startVodPlayback(p) {
     clearVodNext();
   }
   vodClearLoadListeners();
+  _nativeRate = 0;
+  _cancelHold();  // a step of the previous title must not seek this one
   const loadToken = ++_vodLoadToken;
   stopStallWatchdog();
   if (_errRetryTimer) {
@@ -156,10 +158,8 @@ function stopVodPlayback(backToDetails) {
   vodClearLoadListeners();
   _vodLoadToken++;
   flushVodTech();
-  _scrubPos =
-      null;  // abandon any scrub in progress; no seek/play on the way out
   _nativeRate = 0;  // the pipeline is being unloaded; nothing to restore
-  if (_isHolding()) _stopHold();
+  _cancelHold();    // no seek and no play on the way out
   _holdKeyDir = null;
   closeVodTracks();
   umsDetach();
@@ -232,8 +232,10 @@ function updateVodOsd(posOverride) {
     updateLiveOsd();
     return;
   }
-  const pos =
-      posOverride !== undefined ? posOverride : (videoPlayer.currentTime || 0);
+  // A step that waits for `seeked` shows its target
+  const pos = posOverride !== undefined ? posOverride :
+      _stepPos !== null                 ? _stepPos :
+                                          (videoPlayer.currentTime || 0);
   const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) ||
       vodPlay.dur || 0;
   document.getElementById('vodOsdTitle').textContent = vodPlay.title || '';
@@ -494,8 +496,9 @@ function updatePlayerFocus() {
       (el, i) => el.classList.toggle(
           'focused', player.focus === 'buttons' && i === player.btn));
   const u = activeUms();
-  const on = u ? u.selectedSub >= 0 :
-                 getSubtitleTracks().some(t => t.mode === 'showing');
+  const on = u && u.subTracks.length ?
+      u.selectedSub >= 0 :
+      getSubtitleTracks().some(t => t.mode === 'showing');
   const cc = document.getElementById('vodCcBtn');
   if (cc) cc.classList.toggle('on', on);
 }
@@ -875,8 +878,12 @@ function vodTracksItems() {
     return items;
   }
   const u = activeUms();
+  // The media service and the HTML tracks are independent for each type: the
+  // same rule as applyVodTrackPrefs and updateVodTracksHint
+  let umsAudioDone = false;
   if (u && (u.subTracks.length || u.audioTracks.length > 1)) {
     if (u.audioTracks.length > 1) {
+      umsAudioDone = true;
       items.push({header: 'Audio'});
       u.audioTracks.forEach((t, i) => items.push({
         kind: 'audio',
@@ -885,6 +892,10 @@ function vodTracksItems() {
         on: i === u.selectedAudio
       }));
     }
+  }
+  if (u &&
+      (u.subTracks.length ||
+       (u.audioTracks.length > 1 && !getSubtitleTracks().length))) {
     items.push({header: 'Subtitles'});
     items.push({kind: 'sub', ums: -1, label: 'Off', on: u.selectedSub < 0});
     u.subTracks.forEach(t => items.push({
@@ -909,7 +920,7 @@ function vodTracksItems() {
     }
     return items;
   }
-  const auds = getAudioTracks();
+  const auds = umsAudioDone ? [] : getAudioTracks();
   if (auds.length > 1) {
     items.push({header: 'Audio'});
     auds.forEach((t, i) => items.push({
@@ -1478,6 +1489,7 @@ function flushVodTech() {
   _vodTechSaveTimer = null;
   saveJson('iptv_vod_tech', vodTech);
 }
+window.addEventListener('pagehide', flushVodTech);
 function umsTechUpdated(u) {
   const s = umsTechString(u);
   umsMeasureFps(u);

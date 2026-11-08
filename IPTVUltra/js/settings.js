@@ -45,7 +45,8 @@ function selectInitialChannel() {
   if (!channels.length) return;
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   if (ps && ps.resume !== false && ps.lastChannel) {
-    let idx = channels.findIndex(c => c.url === ps.lastChannel.url);
+    let idx = chanIndexByUrl(ps.lastChannel.url);
+    if (idx === undefined) idx = -1;
     if (idx < 0 && ps.lastChannel.tvgId)
       idx = channels.findIndex(c => c.tvgId === ps.lastChannel.tvgId);
     if (idx >= 0) {

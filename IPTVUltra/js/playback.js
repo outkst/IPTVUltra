@@ -216,6 +216,8 @@ function selectChannel(index) {
   const cause = _selectingAlt       ? 'alternative source' :
       currentChannelIndex === index ? 'same channel again' :
                                       '';
+  const prevPlaying =
+      currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
   currentChannelIndex = index;
   _reloadAttempts = 0;
   if (_errRetryTimer) {
@@ -249,9 +251,13 @@ function selectChannel(index) {
     if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx))
       epgRenderedRows.get(filteredIdx).classList.add('active');
     // The cursor goes to the channel that plays. Thus, Up and Down start from
-    // that row also after a pointer click, a long press of OK, or an
-    // alternative source.
-    if (filteredIdx >= 0 && filteredIdx !== epgFocusedRowIdx) {
+    // that row also after a pointer click or a long press of OK. An
+    // alternative source after a failure moves the cursor only if the cursor
+    // was on the row that played: you can scroll the guide during a failure.
+    const followAlt = !_selectingAlt ||
+        (prevPlaying &&
+         currentFilteredChannels[epgFocusedRowIdx] === prevPlaying);
+    if (filteredIdx >= 0 && filteredIdx !== epgFocusedRowIdx && followAlt) {
       epgFocusedRowIdx = filteredIdx;
       epgFocusT = 0;
       updateEPGRowFocus();
@@ -488,6 +494,7 @@ function reloadStream(auto, cause) {
   if (currentChannelIndex < 0) return;
   if (vodPlay.active || vodMode !== 'live')
     return;  // live reloads pause while in Movies/Series
+  _clearSteps();
   const isAuto = auto === true;
   if (!isAuto)
     _reloadAttempts = 0;  // a manual reload restores the auto-reload budget

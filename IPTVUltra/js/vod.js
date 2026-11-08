@@ -257,18 +257,23 @@ function cssUrl(u) {
       c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')));
 }
 function vodStreamUrl(id, ext) {
-  return `${_xt.base}/movie/${_xt.user}/${_xt.pass}/${id}.${ext || 'mp4'}`;
+  return `${_xt.base}/movie/${encodeURIComponent(_xt.user)}/${
+      encodeURIComponent(_xt.pass)}/${id}.${ext || 'mp4'}`;
 }
 function episodeUrl(ep) {
-  return `${_xt.base}/series/${_xt.user}/${_xt.pass}/${ep.id}.${
-      ep.ext || 'mp4'}`;
+  return `${_xt.base}/series/${encodeURIComponent(_xt.user)}/${
+      encodeURIComponent(_xt.pass)}/${ep.id}.${ep.ext || 'mp4'}`;
 }
 
 // ── catalog ──────────────────────────────────────────────────
 // A late result of a different playlist must not go into the caches of the
 // current playlist. The loaders compare _xt before and after each request.
 function vodCheckPlaylist(xt) {
-  if (_xt !== xt) throw new Error('playlist changed');
+  if (_xt !== xt) {
+    const err = new Error('playlist changed');
+    err.stale = true;  // the screens ignore this error
+    throw err;
+  }
 }
 async function loadVodCats(mode) {
   if (mode === 'movies' ? vodCats : seriesCats) return;
@@ -697,7 +702,7 @@ function setVodMode(mode) {
         if (vodMode === mode) openVodList('home');
       })
       .catch(err => {
-        if (vodMode === mode) {
+        if (vodMode === mode && !err.stale) {
           renderVodCats();
           showVodEmpty(`Could not load categories: ${err.message}`);
         }
@@ -776,16 +781,16 @@ function updateVodCatFocus(scroll) {
     els[vodNav.catIdx].scrollIntoView({block: 'nearest'});
 }
 
-async function openVodList(list, catId) {
+async function openVodList(list, catId, query = '') {
   vodNav.list = list;
   vodNav.catId = catId || null;
   vodNav.focus = 0;
   vodNav.gridScroll = 0;
-  vodNav.query = '';
+  vodNav.query = query;
   vodNav.detail = null;
   document.getElementById('vodDetails').style.display = 'none';
   const si = document.getElementById('vodSearchInput');
-  si.value = '';
+  si.value = query;
   if (vodNav.zone !== 'cats') vodNav.zone = 'content';
   renderVodCats();
   if (list === 'home') {
@@ -803,14 +808,17 @@ async function openVodList(list, catId) {
   else {
     showVodEmpty('Loading …');
     const mode = vodMode;
+    vodNav.loading = true;  // a search waits for the list
     try {
       items = list === 'all' ? vodVisible(await loadVodAll(mode), mode) :
                                await loadVodCategory(mode, catId);
     } catch (err) {
-      if (vodMode === mode && vodNav.list === list &&
+      if (!err.stale && vodMode === mode && vodNav.list === list &&
           vodNav.catId === (catId || null))
         showVodEmpty(`Could not load: ${err.message}`);
       return false;
+    } finally {
+      vodNav.loading = false;
     }
     if (vodMode !== mode || vodNav.list !== list ||
         vodNav.catId !== (catId || null))
@@ -830,19 +838,13 @@ function applyVodSearch() {
   const q = vodNav.query || '';
   if (vodNav.screen === 'home') {
     if (q.trim()) {
-      const mode = vodMode;
-      openVodList('all').then(ok => {
-        // Apply the query only to a good load of the list "all".
-        if (!ok || vodMode !== mode || vodNav.list !== 'all' ||
-            vodNav.screen !== 'grid')
-          return;
-        vodNav.query = q;
-        document.getElementById('vodSearchInput').value = q;
-        applyVodSearch();
-      });
+      // The list starts with the query. Text that you type during the load
+      // changes vodNav.query, and the load applies the last query.
+      openVodList('all', null, q);
     }
     return;
   }
+  if (vodNav.loading) return;  // the load applies the query
   vodNav.items = vodDerivedItems();
   vodNav.focus = 0;
   vodNav.gridScroll = 0;
@@ -931,8 +933,8 @@ function renderVodHome() {
         .then(() => {
           if (vodMode === mode && vodNav.screen === 'home') renderVodHome();
         })
-        .catch(() => {
-          if (vodMode === mode && vodNav.screen === 'home') {
+        .catch(err => {
+          if (vodMode === mode && vodNav.screen === 'home' && !err.stale) {
             const r = home.querySelector('.vod-strip-empty');
             if (r) r.textContent = 'Recently Added unavailable';
           }

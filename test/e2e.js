@@ -5216,6 +5216,29 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       evSport[0] === 'Red vs Blue · U18 (Home)#Hockey' &&
           evSport[1] === 'A vs B · Cricket#',
       JSON.stringify(evSport));
+  // The search mark does not break an entity, and a short EPG refresh does
+  // not copy hasArchive false (the value of a program that was on)
+  const fix2 = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const old = [
+      {start: now - 2 * H, stop: now - H, title: 'A', hasArchive: true},
+      {start: now - H, stop: now + H, title: 'B', hasArchive: false},
+    ];
+    const merged = epgMergeShort(old, [
+      {start: now - H, stop: now + H, title: 'B'},
+      {start: now + H, stop: now + 2 * H, title: 'C'},
+    ]);
+    return {
+      mark: highlightText('Women\'s 39ers', '39'),
+      archive: merged.map(p => p.title + ':' + p.hasArchive).join()
+    };
+  });
+  check(
+      'search mark keeps entities; a short EPG does not copy hasArchive false',
+      fix2.mark ===
+              'Women&#39;s <span class="search-match-highlight">39</span>ers' &&
+          fix2.archive === 'A:true,B:undefined,C:undefined',
+      JSON.stringify(fix2));
   check(
       'event group: sorted by start time, finished hidden (Sort, hide finished) or last (Sort), untouched when As listed',
       ev.hide === 'ev3.test,ev4.test,ev2.test,ev1.test,ev5.test' &&

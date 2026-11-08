@@ -390,7 +390,7 @@ function renderGroupsList() {
     }
     if (currentSearchQuery && !PINNED_GROUPS.includes(group) &&
         group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
-      displayName = highlightText(displayName, currentSearchQuery);
+      displayName = highlightText(group, currentSearchQuery);
     }
     div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${
         displayName}</span>`;
@@ -418,27 +418,36 @@ function renderGroupsList() {
   if (currentPlaylistType === 'm3u') updateStdGroupFocus(false);
 }
 
+/**
+ * Gives the HTML of a text with the search terms marked. The function escapes
+ * the text itself: a mark in escaped text can break an entity (`&#39;`).
+ * @param {string} text The raw text.
+ * @param {string} query The search text.
+ * @return {string} HTML.
+ */
 function highlightText(text, query) {
-  if (!query) return text;
-  const terms = query.toLowerCase().split(/\s+/);
-  let result = text;
-  for (const term of terms) {
-    if (term.length < 2) continue;
-    const regex =
-        new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    result =
-        result.replace(regex, '<span class="search-match-highlight">$1</span>');
-  }
-  return result;
+  const terms = (query || '')
+                    .toLowerCase()
+                    .split(/\s+/)
+                    .filter(t => t.length >= 2)
+                    .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!terms.length) return escapeHtml(text);
+  const regex = new RegExp(`(${terms.join('|')})`, 'gi');
+  return String(text)
+      .split(regex)
+      .map(
+          (part, i) => i % 2 ? `<span class="search-match-highlight">${
+                                   escapeHtml(part)}</span>` :
+                               escapeHtml(part))
+      .join('');
 }
 
-const SEARCH_CACHE_MS = 30000;
 function searchChannels(query) {
   if (!query.trim()) return [...channels];
-  // The programme titles change with the time and with new EPG data. Thus,
-  // the key has the sizes of the EPG maps and a period of 30 s.
-  const cacheKey = query + '\n' + epgData.size + '|' + xmltvData.size + '|' +
-      Math.floor(Date.now() / SEARCH_CACHE_MS);
+  // The result stays until the query, the channel list, or the hidden
+  // groups change. A new result for new EPG data can change the sequence of
+  // the rows under the cursor.
+  const cacheKey = query;
   if (_searchCache.query === cacheKey) return _searchCache.result;
   const terms = query.toLowerCase().split(/\s+/);
   // Matches channel names and groups, and also what is on now: a programme

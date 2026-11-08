@@ -33,6 +33,29 @@ function normGroupName(group) {
     return g[0].toUpperCase() + g.slice(1);
   return g;
 }
+/**
+ * Decodes the percent codes of a URL.
+ * @param {string} url
+ * @return {string} The decoded URL, or the URL if it has an incorrect code.
+ */
+function decodeUrlSafe(url) {
+  try {
+    return decodeURIComponent(url);
+  } catch (_) {
+    return url;
+  }
+}
+/**
+ * The index of the channel with a stream URL. A saved URL can have no URL
+ * encoding.
+ * @param {string} url
+ * @return {number|undefined}
+ */
+function chanIndexByUrl(url) {
+  if (!url) return undefined;
+  const i = _chanByUrl.get(url);
+  return i !== undefined ? i : _chanByUrl.get(decodeUrlSafe(url));
+}
 function buildChannelIndexMap() {
   channelIndexMap = new Map();
   _chanByNum = new Map();
@@ -45,7 +68,13 @@ function buildChannelIndexMap() {
     channelIndexMap.set(ch, i);
     const n = ch.num;
     if (n > 0 && !_chanByNum.has(n)) _chanByNum.set(n, i);
-    if (ch.url && !_chanByUrl.has(ch.url)) _chanByUrl.set(ch.url, i);
+    if (ch.url && !_chanByUrl.has(ch.url)) {
+      _chanByUrl.set(ch.url, i);
+      // Saved URLs from before 3.17.0 have no URL encoding of the user name
+      // and the password
+      const plain = decodeUrlSafe(ch.url);
+      if (plain !== ch.url && !_chanByUrl.has(plain)) _chanByUrl.set(plain, i);
+    }
     const fid = favIdOf(ch, i);
     if (_chansByFavId.has(fid))
       _chansByFavId.get(fid).push(ch);
@@ -519,7 +548,7 @@ function recentChannels() {
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   const out = [];
   for (const r of (ps && ps.recent) || []) {
-    let i = _chanByUrl.get(r.url);
+    let i = chanIndexByUrl(r.url);
     if (i === undefined && r.tvgId)
       i = channels.findIndex(c => c.tvgId === r.tvgId);
     if (i !== undefined && i >= 0 && channels[i] && !out.includes(channels[i]))

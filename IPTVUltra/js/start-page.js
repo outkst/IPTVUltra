@@ -27,13 +27,16 @@ function addPlaylist(url, name, epgUrl) {
   if (existing) {
     existing.name = name || existing.name;
     existing.epgUrl = epgUrl !== undefined ? epgUrl : (existing.epgUrl || '');
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) return;  // the error message stays
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
   } else {
     savedPlaylists.push(
         {name: name || url.substring(0, 40), url, epgUrl: epgUrl || ''});
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) {
+      savedPlaylists.pop();  // the fields keep the text for a new attempt
+      return;
+    }
     updateStartStatus(`Playlist saved!`, false, true, false, 0);
   }
   setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 2000);
@@ -50,7 +53,7 @@ function removePlaylist(idx) {
   } else if (selectedPlaylistId !== null && selectedPlaylistId > idx) {
     selectedPlaylistId--;  // the selected item moved up by 1
   }
-  savePlaylistsToStorage();  // also renders the list with the new selection
+  savePlaylistsToStorage();  // also renders the list
   updateFocusableElements();
   focusElement(0);
 }
@@ -77,6 +80,7 @@ function renderSavedPlaylists() {
   savedPlaylists.forEach((p, idx) => {
     const div = document.createElement('div');
     div.className = 'saved-item';
+    if (idx === selectedPlaylistId) div.style.background = '#2a3a70';
     div.onclick = () => {
       document.querySelectorAll('.saved-item')
           .forEach(i => i.style.background = '#1e2028');

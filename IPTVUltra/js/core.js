@@ -147,6 +147,8 @@ function redactCredentials(s) {
       .replace(
           /(\/\/[^/\s]+)\/[^/\s*]+\/[^/\s*]+\/(\d+(?:\.\w+)?)(?=$|[?#\s])/g,
           '$1/***/***/$2')
+      .replace(
+          /(\/\/[^/\s]+\/(?:playlist|get)\/)[^/\s]+\/[^/\s]+\//gi, '$1***/***/')
       .replace(/^(x:[^|]*\|).+$/, '$1***');
 }
 const _diagLog = (() => {
@@ -174,7 +176,7 @@ function diagSave() {
   }
 }
 function diagLog(msg) {
-  _diagLog.push({t: Date.now(), msg: String(msg).slice(0, 300)});
+  _diagLog.push({t: Date.now(), msg: redactCredentials(msg).slice(0, 300)});
   if (_diagLog.length > DIAG_MAX) _diagLog.shift();
   if (!_diagSaveTimer) _diagSaveTimer = setTimeout(diagSave, 2000);
 }

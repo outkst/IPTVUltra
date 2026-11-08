@@ -95,7 +95,10 @@ function parseExtinf(line) {
       break;
     }
   }
-  const head = comma >= 0 ? line.slice(0, comma) : line;
+  // A quote that does not close: the name is after the last comma
+  const lastComma = comma < 0 ? line.lastIndexOf(',') : -1;
+  const cut = comma >= 0 ? comma : lastComma >= 8 ? lastComma : -1;
+  const head = cut >= 0 ? line.slice(0, cut) : line;
   const attrs = {};
   _RE_EXTINF_ATTR.lastIndex = 0;
   let m;
@@ -104,7 +107,7 @@ function parseExtinf(line) {
     if (!(key in attrs))
       attrs[key] = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
   }
-  return {name: comma >= 0 ? line.slice(comma + 1).trim() : null, attrs};
+  return {name: cut >= 0 ? line.slice(cut + 1).trim() : null, attrs};
 }
 
 async function parseM3UStreaming(content) {
@@ -326,9 +329,18 @@ async function epgRestoreFromCache(key) {
 // EPG_PERSIST_MAX_AGE_MS, for all playlists. The app does this 1 time in a
 // session, after the restore.
 let _epgSweepDone = false;
+// The sweep reads all of the EPG store. Thus, it runs 1 time in 24 h.
+const EPG_SWEEP_KEY = 'iptv_epg_sweep_at';
 function epgSweepCache() {
   if (_epgSweepDone) return;
   _epgSweepDone = true;
+  let last = 0;
+  try {
+    last = +localStorage.getItem(EPG_SWEEP_KEY) || 0;
+  } catch (_) { /* storage unavailable */
+  }
+  if (Date.now() - last < 86400000) return;
+  storageSet(EPG_SWEEP_KEY, String(Date.now()));
   cacheDb().then(db => {
     if (!db) return;
     try {
@@ -408,9 +420,22 @@ function replaceChannelList(parsed) {
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
   _altTried = new Set([..._altTried].map(mapIdx).filter(i => i >= 0));
+  let catchupGone = false;
   if (catchup) {
     catchup.chIdx = mapIdx(catchup.chIdx);
-    if (catchup.chIdx < 0) catchup = null;
+    catchupGone = catchup.chIdx < 0;
+  }
+  // Open UI keeps indexes of the previous list: close it
+  if (versionsOpen) closeVersions();
+  surfCancel();
+  if (_rowOk) {
+    clearTimeout(_rowOk.timer);
+    _rowOk = null;
+  }
+  if (catchupGone) {
+    // The archive channel is not in the new list: stop the archive
+    catchup = null;
+    if (currentChannelIndex >= 0) selectChannel(currentChannelIndex);
   }
   extractGroups();
   validateCurrentGroup();

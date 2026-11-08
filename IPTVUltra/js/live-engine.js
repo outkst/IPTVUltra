@@ -1361,6 +1361,7 @@ function liveBehindSecs() {
 }
 function liveGoLive() {
   if (!liveEngineActive()) return;
+  _clearSteps();  // a waiting step must not move the playhead back
   try {
     if (liveEngine.shaka)
       liveEngine.shaka.goToLive();
@@ -1617,14 +1618,21 @@ async function avSyncApplyNow(v) {
       category: 'sound',
       settings: {avSync: 'on', [_avSyncKey]: String(v)}
     }));
+    // The app went to the background during the write: put the TV value back
+    if (document.hidden) await avSyncRestoreNow();
     return true;
   } catch (e) {
     diagLog('AV sync: cannot set TV setting: ' + e.message);
     return false;
   }
 }
+// The restore starts at once. webOS stops the timers and the network of a
+// hidden app, thus a restore behind a write in the queue can wait until the
+// app is visible again. Later operations wait for the restore.
 function avSyncRestore() {
-  return avSyncQueue(avSyncRestoreNow);
+  const p = avSyncRestoreNow();
+  _avSyncQueue = _avSyncQueue.then(() => p).catch(() => false);
+  return p;
 }
 async function avSyncRestoreNow() {
   const o = _avSyncOrig;
@@ -1687,7 +1695,8 @@ document.addEventListener('visibilitychange', () => {
   }
   if (!document.hidden && liveEngine.resumeUrl && vodMode === 'live' &&
       !vodPlay.active && currentChannelIndex >= 0 &&
-      channels[currentChannelIndex].url === liveEngine.resumeUrl) {
+      (catchup ? catchup.url : channels[currentChannelIndex].url) ===
+          liveEngine.resumeUrl) {
     liveEngine.resumeUrl = '';
     reloadStream(false, 'return from background');
   }
@@ -1809,9 +1818,10 @@ function _liveScrubLimits() {
   const now = Date.now();
   let min = now, max = now, bufStart = now;
   if (liveEngineActive()) {
+    // The same calculation as liveWallTimeAt, with 1 read of the buffer
     const r = liveBufferRange();
-    bufStart = min = liveWallTimeAt(r.start);
-    max = liveWallTimeAt(r.end);
+    bufStart = min = now - Math.max(0, r.live - r.start) * 1000;
+    max = now - Math.max(0, r.live - r.end) * 1000;
   }
   const ch = channels[currentChannelIndex];
   if (ch && !liveEngine.hlsWait && channelHasCatchup(ch)) {
@@ -1915,6 +1925,11 @@ function _startHold(dir) {
   const live = _liveTrick();
   if (live) {
     if (liveEngine.hlsWait) return;
+    // The native pipeline plays at the live point: no fast forward
+    if (dir === 'right' && !liveEngineActive()) {
+      _flashTrickBadge('● Live');
+      return;
+    }
     const lim = _liveScrubLimits();
     if (lim.max - lim.min < 1000) {
       _flashTrickBadge(
@@ -1943,11 +1958,16 @@ function _startHold(dir) {
   document.getElementById('vodOsd').classList.add('visible');
   const ramp = vodPlay.active ? _VOD_SCRUB_RAMP : _LIVE_SCRUB_RAMP;
   const sign = dir === 'left' ? -1 : 1;
+  let lim = null, limAt = 0;  // live limits, read again each 500 ms
   const tick = () => {
     const speed = _getRampSpeed(ramp, Date.now() - _trickHoldStart);
     _showTrickBadge((sign < 0 ? '◀◀ ' : '▶▶ ') + speed + '×');
     if (live) {
-      const lim = _liveScrubLimits();
+      const now = Date.now();
+      if (!limAt || now - limAt >= 500) {
+        lim = _liveScrubLimits();
+        limAt = now;
+      }
       _liveScrubWall = Math.max(
           lim.min, Math.min(lim.max, _liveScrubWall + sign * speed * 100));
       updateLiveOsd();
@@ -2025,10 +2045,15 @@ function _stopHold() {
 function _cancelHold() {
   _scrubPos = null;
   _liveScrubWall = null;
+  _clearSteps();
+  if (_isHolding()) _stopHold();
+}
+
+/** Removes the short presses that wait for `seeked`. */
+function _clearSteps() {
   _stepPos = null;
   _stepWall = null;
   videoPlayer.removeEventListener('seeked', _flushStep);
-  if (_isHolding()) _stopHold();
 }
 
 function _isHolding() {

@@ -22,7 +22,7 @@ function addXtreamPlaylist(serverUrl, username, password, name, epgUrl) {
     existing.name = name || existing.name;
     existing.password = password;
     if (epgUrl !== undefined) existing.epgUrl = epgUrl;
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) return;  // the error message stays
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
   } else {
@@ -42,7 +42,10 @@ function addXtreamPlaylist(serverUrl, username, password, name, epgUrl) {
       password,
       epgUrl: epgUrl || ''
     });
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) {
+      savedPlaylists.pop();  // the fields keep the text for a new attempt
+      return;
+    }
     updateStartStatus('Xtream playlist saved!', false, true, false, 0);
   }
   setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 2000);
@@ -101,11 +104,20 @@ let EPG_WIN_HOURS = EPG_PAST_HOURS_MIN +
     EPG_AHEAD_HOURS;  // total window; recomputed per playlist by epgPastHours()
 // Hours of history the guide shows: 1 h, or the longest catch-up archive in the
 // playlist (capped)
+// The value stays until the channel list changes. Each EPG reply reads it, and
+// a loop on 18k channels for each reply is too slow on the TV.
+let _epgPastHoursFor = null, _epgPastHoursLen = -1, _epgPastHoursVal = 0;
 function epgPastHours() {
+  if (_epgPastHoursFor === channels && _epgPastHoursLen === channels.length)
+    return _epgPastHoursVal;
   let days = 0;
   for (const ch of channels)
     if (ch.archive > days) days = ch.archive;
-  return days ? Math.min(EPG_PAST_HOURS_MAX, days * 24) : EPG_PAST_HOURS_MIN;
+  _epgPastHoursFor = channels;
+  _epgPastHoursLen = channels.length;
+  _epgPastHoursVal =
+      days ? Math.min(EPG_PAST_HOURS_MAX, days * 24) : EPG_PAST_HOURS_MIN;
+  return _epgPastHoursVal;
 }
 
 // ── Catch-up (provider timeshift archive) ─────────────────────
@@ -137,14 +149,17 @@ function progIsCatchup(ch, p, now) {
 // reports Europe/Amsterdam yet prints UTC strings), so the offset is learnt
 // from the EPG itself: `start` string vs `start_timestamp`
 // (xtreamNoteEpgOffset).
-function fmtTimeshiftStart(ms, tz) {
-  const d = new Date(
-      ms +
-      (typeof _xt === 'object' && _xt && typeof _xt.epgOffsetMin === 'number' ?
-           _xt.epgOffsetMin * 60000 :
-           0));
+// `offMin` is the offset of the listing of the program, if the EPG gave one.
+// A program on the other side of a daylight saving change has a different
+// offset than the current time.
+function fmtTimeshiftStart(ms, tz, offMin) {
+  const off = typeof offMin === 'number' ? offMin :
+      typeof _xt === 'object' && _xt && typeof _xt.epgOffsetMin === 'number' ?
+                                           _xt.epgOffsetMin :
+                                           null;
+  const d = new Date(ms + (off !== null ? off * 60000 : 0));
   const p = n => String(n).padStart(2, '0');
-  if (typeof _xt === 'object' && _xt && typeof _xt.epgOffsetMin === 'number') {
+  if (off !== null) {
     return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${
         p(d.getUTCDate())}:${p(d.getUTCHours())}-${p(d.getUTCMinutes())}`;
   }
@@ -179,25 +194,41 @@ function fmtTimeshiftStart(ms, tz) {
 function epgListingNearNow(listings) {
   if (!Array.isArray(listings) || !listings.length) return null;
   const now = Date.now() / 1000;
-  let best = listings[0];
+  let best = null, bestTs = -Infinity, first = null;
   for (const ep of listings) {
     const ts = parseInt(ep.start_timestamp);
-    if (ts <= now && ts > parseInt(best.start_timestamp)) best = ep;
+    if (isNaN(ts)) continue;
+    if (!first) first = ep;
+    if (ts <= now && ts > bestTs) {
+      best = ep;
+      bestTs = ts;
+    }
   }
-  return best;
+  return best || first;
 }
 // Learn the panel's clock from one EPG listing: minutes between its `start`
 // string (read as UTC) and start_timestamp. Each reply gives a new sample. A
 // different sample replaces the value (daylight saving time).
-function xtreamNoteEpgOffset(ep) {
-  if (!_xt || !ep || !ep.start) return;
+/**
+ * The clock offset of the panel for 1 listing: the minutes between its
+ * `start` string (read as UTC) and start_timestamp.
+ * @param {?Object} ep A listing.
+ * @return {?number} The offset in minutes, or null.
+ */
+function epgListingOffset(ep) {
+  if (!ep || !ep.start) return null;
   const m =
       String(ep.start).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
   const ts = parseInt(ep.start_timestamp) * 1000;
-  if (!m || isNaN(ts)) return;
+  if (!m || isNaN(ts)) return null;
   const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
   const off = Math.round((asUtc - ts) / 60000);
-  if (Math.abs(off) > 14 * 60 || _xt.epgOffsetMin === off) return;
+  return Math.abs(off) > 14 * 60 ? null : off;
+}
+function xtreamNoteEpgOffset(ep) {
+  if (!_xt) return;
+  const off = epgListingOffset(ep);
+  if (off === null || _xt.epgOffsetMin === off) return;
   _xt.epgOffsetMin = off;
   // Remember it with the cached playlist so a cached launch can build catch-up
   // URLs before any EPG fetch
@@ -213,10 +244,11 @@ function xtreamNoteEpgOffset(ep) {
 }
 function catchupUrl(ch, prog) {
   const mins = Math.max(1, Math.ceil((prog.stop - prog.start) / 60000));
-  return `${_xt.base}/timeshift/${_xt.user}/${_xt.pass}/${mins}/${
+  return `${_xt.base}/timeshift/${encodeURIComponent(_xt.user)}/${
+      encodeURIComponent(_xt.pass)}/${mins}/${
       fmtTimeshiftStart(
-          epgUnshiftTime(prog.start),
-          _xt.tz)}/${ch.streamId}.${
+          epgUnshiftTime(prog.start), _xt.tz,
+          prog.tsOff)}/${ch.streamId}.${
       catchupExt()}`;  // archive is indexed by provider time
 }
 // When Shaka Player is the live engine, a catch-up first uses the archive as
@@ -310,8 +342,13 @@ async function fetchXtreamEpgFull(tvgId) {
         title,
         desc: rawDesc.replace(_RE_TS_INJECT, '').trim()
       };
-      if (ep.has_archive !== undefined)
+      // The provider gives has_archive 0 to the program that is on and to
+      // the programs after it. Thus, the value is correct only for a program
+      // that stopped.
+      if (ep.has_archive !== undefined && pStop <= Date.now())
         prog.hasArchive = String(ep.has_archive) === '1';
+      const tsOff = epgListingOffset(ep);
+      if (tsOff !== null) prog.tsOff = tsOff;
       byStart.set(pStart, prog);
     }
     const progs = [...byStart.values()].sort((a, b) => a.start - b.start);
@@ -347,6 +384,7 @@ async function fetchXtreamEpgFull(tvgId) {
 function startCatchup(chIdx, prog, startAt) {
   const ch = channels[chIdx];
   if (!ch || !channelHasCatchup(ch)) return;
+  _clearSteps();  // a step of the live stream must not move the archive
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
   if (_errRetryTimer) {
@@ -836,6 +874,9 @@ function refreshEPGRows() {
 
   body.style.height = `${currentFilteredChannels.length * EPG_ROW_H}px`;
   epgMeasureViewport();
+  // A new group or search starts at the top. Set it before the rows are
+  // built, else the rows of the previous position are built and removed.
+  if (scrollOuter && newList) scrollOuter.scrollTop = 0;
   _epgLastStartIdx = -1;
   renderEPGVisibleRows();
   epgVirtualScrollListener = queueEPGRender;
@@ -1183,12 +1224,15 @@ async function fetchXtreamEpgFor(tvgId) {
           const title = unescapeXml(decodeBase64Field(ep.title || '').trim());
           const rawDesc =
               unescapeXml(decodeBase64Field(ep.description || '').trim());
-          progs.push({
+          const prog = {
             start: pStart,
             stop: pStop,
             title,
             desc: rawDesc.replace(_RE_TS_INJECT, '').trim()
-          });
+          };
+          const tsOff = epgListingOffset(ep);
+          if (tsOff !== null) prog.tsOff = tsOff;
+          progs.push(prog);
         }
         progs.sort((a, b) => a.start - b.start);
       }
@@ -1247,9 +1291,11 @@ function epgMergeShort(old, progs) {
   }
   for (const p of progs) {
     if (p.hasArchive === undefined) {
+      // Only a true value goes to the new program. A false value can be the
+      // value of a program that was on at the time of the archive fetch.
       const i = _epgBinarySearch(old, p.start);
-      if (i >= 0 && old[i].start === p.start && old[i].hasArchive !== undefined)
-        p.hasArchive = old[i].hasArchive;
+      if (i >= 0 && old[i].start === p.start && old[i].hasArchive === true)
+        p.hasArchive = true;
     }
     out.push(p);
   }
