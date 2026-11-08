@@ -50,14 +50,22 @@ function setLoadSelectedButtonEnabled(enabled) {
   if (loadSelectedBtn) loadSelectedBtn.disabled = !enabled;
 }
 
+const HTML_ESCAPES = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  '\'': '&#39;'
+};
+
+/**
+ * Escapes text for HTML content and for an attribute value in quotes.
+ * @param {*} str The text.
+ * @return {string} The escaped text.
+ */
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/[&<>]/g, function(m) {
-    if (m === '&') return '&amp;';
-    if (m === '<') return '&lt;';
-    if (m === '>') return '&gt;';
-    return m;
-  });
+  return String(str).replace(/[&<>"']/g, m => HTML_ESCAPES[m]);
 }
 
 // ----- Streaming Parser (never hangs) -----
