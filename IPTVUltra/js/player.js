@@ -322,7 +322,13 @@ function updateLiveOsd() {
   const next = progs[pi + 1] || null;
   document.getElementById('vodOsdTitle').textContent =
       `${chDisplayNum(ch, currentChannelIndex)}  ${ch.name}`;
-  const subBits = [ch.group || '', now ? now.title : ''].filter(Boolean);
+  const untimed = now ? null : untimedEventOf(ch.tvgId);
+  const subBits = [
+    ch.group || '',
+    now         ? now.title :
+        untimed ? untimed.title :
+                  ''
+  ].filter(Boolean);
   document.getElementById('vodOsdSub').textContent = subBits.join(' · ');
   let pct = 0;
   if (now && now.stop > now.start)
@@ -1541,11 +1547,18 @@ const CAPTION_COLORS = {
   cyan: '0,255,255',
   green: '0,255,0'
 };
+// The sizes agree with the subtitles of the media service (VOD and the native
+// pipeline). Chromium sets the cue font to 5 % of the video height, and these
+// values are a percentage of that font. The media service uses its own
+// renderer in a 1280x720 plane. Measured on the C4 (2026-11-08) with the same
+// text: at "small", the media service text was 1.41 times as wide as a cue of
+// 80 %. The other sizes use the ratio of the box heights of the renderer
+// (98, 122, 130, and 146).
 const CAPTION_SIZES = {
-  small: 80,
-  medium: 100,
-  large: 125,
-  extraLarge: 150
+  small: 113,
+  medium: 141,
+  large: 150,
+  extraLarge: 168
 };
 const CAPTION_BGS = {
   none: 'transparent',

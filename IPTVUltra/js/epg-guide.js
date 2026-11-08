@@ -630,7 +630,7 @@ function epgProgsHtml(ch) {
               day: 'numeric',
               month: 'short'
             })} ${formatClock(ev.start)}`) :
-        epgPlaceholderText(ch.tvgId);
+        escapeHtml(epgPlaceholderText(ch.tvgId));
     const cls = label === 'Loading ...' ? 'epg-prog-placeholder loading' :
                                           'epg-prog-placeholder';
     parts.push(
@@ -1005,9 +1005,10 @@ function updateEPGInfoPanel(ch) {
     if (nowPlayingLabel) nowPlayingLabel.style.display = '';
   } else {
     const placeholder = epgPlaceholderText(ch.tvgId);
+    const u = untimedEventOf(ch.tvgId);
     time.textContent = '';
     title.textContent = placeholder;
-    desc.textContent = '';
+    desc.textContent = u ? u.note : '';
     if (nowPlayingLabel) nowPlayingLabel.style.display = 'none';
   }
 
@@ -1103,6 +1104,8 @@ function epgNeedsFetch(tvgId) {
 
 // Placeholder text for a guide row / info panel that has no programme blocks
 function epgPlaceholderText(tvgId) {
+  const u = untimedEventOf(tvgId);
+  if (u) return u.title;
   if (_xt) {
     if (!tvgId || !_xtStreamIdByTvgId.has(tvgId))
       return 'No data available ...';

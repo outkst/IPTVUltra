@@ -4344,7 +4344,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       /^video::cue \{/.test(scss.before) &&
           /color: rgba\(255,255,0,0\.7\)/.test(scss.after) &&
           /background-color: #000/.test(scss.after) &&
-          /font-size: 125%/.test(scss.after) &&
+          /font-size: 150%/.test(scss.after) &&
           /text-shadow: 3px 3px 4px #000/.test(scss.after) && scss.back,
       JSON.stringify(scss));
   check(
@@ -5233,6 +5233,17 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       archive: merged.map(p => p.title + ':' + p.hasArchive).join()
     };
   });
+  // An event name with no usable time gives a title with no time
+  const ut = await page.evaluate(() => [
+    'Xyz (XY) 25: 2025 A vs B - Field Hockey - 22/10 15:00',
+    'Xyz (XY) 1: Cheer 24/7', 'Xyz (XY) 218:'
+  ].map(n => parseUntimedName({name: n, group: 'US| TEST PPV'})));
+  check(
+      'event names with no time zone give a title and the date of the name',
+      ut[0] && ut[0].title === 'A vs B · Field Hockey' &&
+          /^Listed for 22 Oct 2025, 15:00/.test(ut[0].note) && ut[1] &&
+          ut[1].title === 'Cheer 24/7' && ut[1].note === '' && ut[2] === null,
+      JSON.stringify(ut));
   check(
       'search mark keeps entities; a short EPG does not copy hasArchive false',
       fix2.mark ===

@@ -275,7 +275,7 @@ function parseEventName(ch) {
   if (segs.length) {
     const sm = _RE_EV_SPORT.exec(segs[0]);
     if (sm) {
-      const s = sm[1].replace(/^flo(?=[a-z]{3})/, '');
+      const s = sm[1];
       if (s !== 'live') sport = s.charAt(0).toUpperCase() + s.slice(1);
       segs[0] = sm[2];
     }
@@ -298,10 +298,66 @@ function eventOf(ch) {
   }
   return ev;
 }
+// Event names with no usable time, for example "Xyz (XY) 25: 2025 A vs B -
+// Field Hockey - 22/10 15:00". The name gives no time zone, and on the
+// provider (2026-11-08) the dates were more than 1 year old. Thus, the guide
+// shows the title with no time: in the row in place of "No data", in the info
+// panel, and in the live banner.
+const _RE_UT_GROUP = /PPV|EVENT/i;
+const _RE_UT_LABEL = /^[^:|]{1,30}?\d{1,4}\s*:\s*(\S.*)$/;
+const _RE_UT_DATE = /\s*-\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d\d)\s*$/;
+const _RE_UT_YEAR = /^((?:19|20)\d\d)\s+/;
+const _untimedCache = new WeakMap();
+let _untimedEvents = new Map();  // tvgId -> {title, note}
+/**
+ * Reads the title of an event name that has no usable time.
+ * @param {!Object} ch The channel.
+ * @return {?{title: string, note: string}} The title and a note with the
+ *     date of the name, or null.
+ */
+function parseUntimedName(ch) {
+  if (!_RE_UT_GROUP.test(ch.group || '')) return null;
+  const m = _RE_UT_LABEL.exec(ch.name || '');
+  if (!m) return null;
+  let rest = m[1].trim(), note = '';
+  const d = _RE_UT_DATE.exec(rest);
+  rest = rest.replace(_RE_UT_DATE, '');
+  const y = _RE_UT_YEAR.exec(rest);
+  rest = rest.replace(_RE_UT_YEAR, '').replace(/\s+-\s+/g, ' · ').trim();
+  if (!rest || rest.length < 3) return null;
+  if (d) {
+    const mon = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
+      'Nov', 'Dec'
+    ][+d[2] - 1];
+    if (mon)
+      note = `Listed for ${+ d[1]} ${mon}${y ? ' ' + y[1] : ''}, ${d[3]}:${
+          d[4]} (no time zone in the name)`;
+  }
+  return {title: rest, note};
+}
+/**
+ * The title of an untimed event for a channel, if the channel has no EPG.
+ * @param {string} tvgId
+ * @return {?{title: string, note: string}}
+ */
+function untimedEventOf(tvgId) {
+  return (tvgId && _untimedEvents.get(tvgId)) || null;
+}
 function buildEventProgs() {
   _eventProgs = new Map();
+  _untimedEvents = new Map();
   for (const ch of channels) {
     const ev = eventOf(ch);
+    if (!ev && ch.tvgId && !_untimedEvents.has(ch.tvgId) &&
+        _RE_UT_GROUP.test(ch.group || '')) {
+      let u = _untimedCache.get(ch);
+      if (u === undefined) {
+        u = parseUntimedName(ch);
+        _untimedCache.set(ch, u);
+      }
+      if (u) _untimedEvents.set(ch.tvgId, u);
+    }
     if (ev && ch.tvgId && !_eventProgs.has(ch.tvgId))
       _eventProgs.set(ch.tvgId, [{
                         start: ev.start,
