@@ -3,6 +3,9 @@
  */
 
 // ----- Stall Watchdog -----
+// A frozen picture (the playhead does not move, readyState 3 or 4) gets this
+// number of times the checks of a stall before a reload.
+const STALL_FROZEN_FACTOR = 2;
 function startStallWatchdog() {
   stopStallWatchdog();
   stallLastTime = -1;
@@ -33,18 +36,22 @@ function startStallWatchdog() {
     // the element then keeps readyState 4 (seen on the C4, 2026-10-26)
     const waits = videoPlayer.readyState < 3 ||
         (!!liveEngine.shaka && liveEngine.shaka.isBuffering());
-    if (t === stallLastTime && waits) {
+    // A playhead that does not move with data (readyState 3 or 4) is a frozen
+    // picture. It is not good playback, but it gets more time than a stall.
+    const limit = waits ? STALL_THRESHOLD_CHECKS :
+                          STALL_FROZEN_FACTOR * STALL_THRESHOLD_CHECKS;
+    if (t === stallLastTime) {
       stallCount++;
       _stallGoodChecks = 0;
-      if (stallCount >= STALL_THRESHOLD_CHECKS && bufEnd - t < 2 &&
+      if (stallCount >= limit && bufEnd - t < 2 &&
           Date.now() - _stallBufAt < STALL_ALIVE_MS) {
-        stallCount = STALL_THRESHOLD_CHECKS - 1;  // slow, not dead: wait
-      } else if (stallCount >= STALL_THRESHOLD_CHECKS) {
+        stallCount = limit - 1;  // slow, not dead: wait
+      } else if (stallCount >= limit) {
         stallCount = 0;
         stallLastTime = -1;
         noteStreamFail(
             liveEngineName(),
-            `No progress for ${STALL_THRESHOLD_CHECKS * 2} s (readyState ${
+            `No progress for ${limit * 2} s (readyState ${
                 videoPlayer.readyState}, t=${t.toFixed(1)} s)`,
             '');
         if (_reloadAttempts >= MAX_AUTO_RELOADS) {
@@ -485,9 +492,12 @@ function reloadStream(auto, cause) {
   if (!isAuto)
     _reloadAttempts = 0;  // a manual reload restores the auto-reload budget
   stopStallWatchdog();
-  const url = catchup && catchup.chIdx === currentChannelIndex ?
-      catchup.url :
-      channels[currentChannelIndex].url;
+  const c = catchup && catchup.chIdx === currentChannelIndex ? catchup : null;
+  // A catch-up continues from the position in the program. Before the
+  // metadata of the stream, the position is not known: keep the last value.
+  if (c && videoPlayer.readyState >= 1 && videoPlayer.currentTime > 0)
+    c.seekTo = videoPlayer.currentTime;
+  const url = c ? c.url : channels[currentChannelIndex].url;
   const wasPlaying = !videoPlayer.paused;
   videoPlayer.pause();
   umsNoteCurrentId();
@@ -499,6 +509,8 @@ function reloadStream(auto, cause) {
     liveUms = null;
   } else
     liveUmsRefresh();
+  // Shaka Player gets the position with its load (loadShakaSource)
+  if (c && !liveEngine.shaka) catchupSeekOnLoad(c);
   if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
   startStallWatchdog();
   const reloading = isAuto ?
@@ -562,6 +574,13 @@ function goToHomeScreen() {
     clearTimeout(_epgToastTimer);
     _epgToastTimer = null;
   }
+  // The live timers must not reload or seek a stream on the start page
+  stopStallWatchdog();
+  if (_errRetryTimer) {
+    clearTimeout(_errRetryTimer);
+    _errRetryTimer = null;
+  }
+  _stopHold();
 
   // Dismiss EPG toast immediately
   const _toast = document.getElementById('epgToast');

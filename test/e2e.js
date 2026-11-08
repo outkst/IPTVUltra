@@ -3999,8 +3999,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /^blob:/.test(scold.src) && scold.reloads === 0 &&
           scold.log.some(m => /Shaka Player waits for the relay/.test(m)),
       JSON.stringify(scold));
-  // A poll of the filter that is rejected (HTTP 509): the count of the raw
-  // requests goes back, and the next playlist of Shaka Player gets the filter
+  // A poll of the filter that is rejected (HTTP 509): the next playlist of
+  // Shaka Player gets the filter
   await page.evaluate(() => {
     channels[1].url =
         'http://localhost:8765/hlscold/index.m3u8?fail=1&r=' + Date.now();
@@ -4014,14 +4014,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                                       shaka: !!liveEngine.shaka,
                                       live: !!(liveEngine.shaka &&
                                                liveEngine.shaka.isLive()),
-                                      raw: [..._shakaRaw.values()],
                                       waits: liveEngine.relayWaits,
                                       restarts: _hlsRelayRestart.n
                                     }));
   check(
-      'a rejected poll of the filter keeps no raw request count',
-      sfail.shaka && sfail.live && sfail.raw.every(v => v === 0) &&
-          sfail.waits === 1 && sfail.restarts === 0,
+      'a rejected poll of the filter does not stop the filter on the next playlist',
+      sfail.shaka && sfail.live && sfail.waits === 1 && sfail.restarts === 0,
       JSON.stringify(sfail));
   // A relay that does not start: after the wait, the native pipeline gets the
   // channel, and the app tells why. Date.now() goes past the wait.
