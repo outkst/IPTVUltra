@@ -401,6 +401,7 @@ function renderGroupsList() {
       if (currentSearchQuery) {
         currentSearchQuery = '';
         searchInput.value = '';
+        if (epgSearchInput) epgSearchInput.value = '';
       }
       renderGroupsList();
       requestAnimationFrame(refreshCurrentView);

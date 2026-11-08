@@ -169,17 +169,35 @@ function fmtTimeshiftStart(ms, tz) {
         p(u.getUTCDate())}:${p(u.getUTCHours())}-${p(u.getUTCMinutes())}`;
   }
 }
+/**
+ * Gives the listing that starts last before the current time, else the first
+ * listing. The clock of the panel can change (daylight saving time). Thus,
+ * the offset sample must be near the current time.
+ * @param {?Array<!Object>} listings The epg_listings of a reply.
+ * @return {?Object}
+ */
+function epgListingNearNow(listings) {
+  if (!Array.isArray(listings) || !listings.length) return null;
+  const now = Date.now() / 1000;
+  let best = listings[0];
+  for (const ep of listings) {
+    const ts = parseInt(ep.start_timestamp);
+    if (ts <= now && ts > parseInt(best.start_timestamp)) best = ep;
+  }
+  return best;
+}
 // Learn the panel's clock from one EPG listing: minutes between its `start`
-// string (read as UTC) and start_timestamp
+// string (read as UTC) and start_timestamp. Each reply gives a new sample. A
+// different sample replaces the value (daylight saving time).
 function xtreamNoteEpgOffset(ep) {
-  if (!_xt || typeof _xt.epgOffsetMin === 'number' || !ep || !ep.start) return;
+  if (!_xt || !ep || !ep.start) return;
   const m =
       String(ep.start).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
   const ts = parseInt(ep.start_timestamp) * 1000;
   if (!m || isNaN(ts)) return;
   const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
   const off = Math.round((asUtc - ts) / 60000);
-  if (Math.abs(off) > 14 * 60) return;
+  if (Math.abs(off) > 14 * 60 || _xt.epgOffsetMin === off) return;
   _xt.epgOffsetMin = off;
   // Remember it with the cached playlist so a cached launch can build catch-up
   // URLs before any EPG fetch
@@ -278,7 +296,7 @@ async function fetchXtreamEpgFull(tvgId) {
     if (!Array.isArray(listings)) return;
     const byStart = new Map();
     for (const p of epgData.get(tvgId) || []) byStart.set(p.start, p);
-    if (listings.length) xtreamNoteEpgOffset(listings[0]);
+    xtreamNoteEpgOffset(epgListingNearNow(listings));
     for (const ep of listings) {
       const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000),
             pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
@@ -301,6 +319,7 @@ async function fetchXtreamEpgFull(tvgId) {
     epgData.delete(tvgId);
     epgData.set(tvgId, progs);
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
+    epgTrimLru();
     const m = _epgFetchMeta.get(tvgId);
     if (!m || m.status !== 'pending')
       _epgFetchMeta.set(tvgId, {at: Date.now(), status: 'done'});
@@ -466,6 +485,7 @@ function enterEPGMode() {
   } else {
     epgFocusedRowIdx = 0;
   }
+  _epgListKey = epgListKey();  // keep this focus in refreshEPGRows
   const floatingBtn = document.getElementById('epgFloatingGroupsBtn');
   if (floatingBtn)
     floatingBtn.style.display = !groupsColumnVisible ? '' : 'none';
@@ -694,6 +714,16 @@ let _epgScrollDir = 1;
 // variable on the scroller that the time strip and every row's programme area
 // translate by; see .epg-progs in style.css.
 let _epgX = 0;
+// False until the guide puts the pan on the current time (the first render
+// after a new window width or a new playlist). A pan of 0 is a correct
+// position.
+let _epgPanSet = false;
+// The group and the search of the rendered rows. A different value starts the
+// list at row 0 (see refreshEPGRows).
+let _epgListKey = null;
+function epgListKey() {
+  return JSON.stringify([currentGroup, currentSearchQuery]);
+}
 function epgMaxPan() {
   if (!_epgViewW) epgMeasureViewport();
   return Math.max(
@@ -753,9 +783,13 @@ function rebuildEPGSkeleton(winStart, winEnd) {
   // Day labels at each midnight when the window spans more than one day
   // (catch-up history)
   if (winEnd - winStart > 26 * 3600000) {
+    // Each local midnight from the date. A day with a daylight saving change
+    // has 23 h or 25 h.
     const d0 = new Date(winStart);
-    d0.setHours(0, 0, 0, 0);
-    for (let t = d0.getTime(); t <= winEnd; t += 86400000) {
+    for (let k = 0;; k++) {
+      const t =
+          new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + k).getTime();
+      if (t > winEnd) break;
       if (t < winStart) continue;
       const x = ((t - winStart) / 60000 * EPG_PX_PER_MIN).toFixed(1);
       const d = new Date(t);
@@ -778,6 +812,12 @@ function refreshEPGRows() {
   if (!body) return;
 
   const prevScrollTop = scrollOuter ? scrollOuter.scrollTop : 0;
+  // A different group or search starts at the top. A refresh of the same list
+  // keeps the row and the scroll position.
+  const listKey = epgListKey();
+  const newList = listKey !== _epgListKey;
+  _epgListKey = listKey;
+  if (newList) epgFocusedRowIdx = 0;
 
   body.innerHTML = '';
   body.style.height = '';
@@ -818,10 +858,14 @@ function refreshEPGRows() {
   // Restore the vertical position; keep the time pan, or centre it on "now" the
   // first time
   if (scrollOuter) {
-    if (prevScrollTop > 0) scrollOuter.scrollTop = prevScrollTop;
-    if (_epgX > 0) {
+    if (newList)
+      scrollOuter.scrollTop = 0;
+    else if (prevScrollTop > 0)
+      scrollOuter.scrollTop = prevScrollTop;
+    if (_epgPanSet) {
       epgApplyPan();
     } else {
+      _epgPanSet = true;
       requestAnimationFrame(() => {
         const nowOffsetPx = (_epgWinStart ? (Date.now() - _epgWinStart) : 0) /
             60000 * EPG_PX_PER_MIN;
@@ -859,12 +903,25 @@ function renderEPGGuide() {
   const winEnd = winStart + winHours * HOUR_MS;
 
   if (winStart !== _epgSkeletonWinStart || winHours !== EPG_WIN_HOURS) {
-    const keepX = EPG_WIN_HOURS === winHours ?
-        0 :
-        -1;  // a different window width invalidates the pan
+    // A setting (text scale, clock) sets _epgSkeletonWinStart to 0
+    const prevStart = _epgSkeletonWinStart || _epgWinStart;
+    const sameWidth = EPG_WIN_HOURS === winHours;
     EPG_WIN_HOURS = winHours;
     rebuildEPGSkeleton(winStart, winEnd);
-    if (keepX < 0) _epgX = 0;
+    if (!sameWidth || !prevStart) {
+      // A different window width or a new playlist: pan to the current time
+      _epgX = 0;
+      _epgPanSet = false;
+    } else if (winStart !== prevStart) {
+      // The window moved (hour rollover, or a return after some time in VOD).
+      // Move the pan by the same time, thus the same times stay in view.
+      _epgX = Math.max(
+          0,
+          Math.min(
+              epgMaxPan(),
+              Math.round(
+                  _epgX - (winStart - prevStart) / 60000 * EPG_PX_PER_MIN)));
+    }
   }
   refreshEPGRows();
 }
@@ -973,6 +1030,12 @@ function decodeBase64Field(s) {
 // providers (17k channels ≈ 17k requests). Instead EPG is fetched only for
 // rows that are on screen, for the playing channel, and in the background
 // for favorites. Results live in epgData with a TTL and LRU eviction.
+// The favorites prefetch (prefetchFavoritesEpg) puts favorites into the
+// queue in batches.
+const EPG_FAV_BATCH = 100;
+const EPG_FAV_RESCANS = 3;
+let _epgFavPending = [];  // favorite tvgIds that are not in the queue
+let _epgFavRescans = 0;
 function resetLazyEpg() {
   _xt = null;
   _xtStreamIdByTvgId = new Map();
@@ -980,6 +1043,8 @@ function resetLazyEpg() {
   _epgQueue = [];
   _epgQueued.clear();
   _epgPrefetchActive = false;
+  _epgFavPending = [];
+  _epgFavRescans = 0;
   if (_epgVisibleFetchTimer) {
     clearTimeout(_epgVisibleFetchTimer);
     _epgVisibleFetchTimer = null;
@@ -1046,6 +1111,8 @@ function queueEpgFetch(tvgIds, front) {
 // with data; the same ids one at a time → all with data)
 let _epgLastStart = 0, _epgPumpTimer = null;
 function pumpEpgQueue() {
+  if (_epgFavPending.length && _epgQueue.length < EPG_QUEUE_MAX / 2)
+    epgFeedFavorites();
   while (_epgInFlight < EPG_FETCH_CONCURRENCY && _epgQueue.length) {
     const wait = _epgLastStart + EPG_FETCH_SPACING_MS - Date.now();
     if (wait > 0) {
@@ -1065,8 +1132,22 @@ function pumpEpgQueue() {
       pumpEpgQueue();
     });
   }
-  if (_epgPrefetchActive && !_epgQueue.length && !_epgInFlight) {
+  if (_epgPrefetchActive && !_epgQueue.length && !_epgInFlight &&
+      !_epgFavPending.length) {
+    // A full queue can remove favorites (the rows on the screen go first).
+    // Put them in the queue again, a maximum of EPG_FAV_RESCANS times.
+    const left = favoriteEpgIdsToFetch();
+    if (left.length && _epgFavRescans < EPG_FAV_RESCANS) {
+      _epgFavRescans++;
+      _epgFavPending = left;
+      epgFeedFavorites();
+      return;
+    }
     _epgPrefetchActive = false;
+    if (left.length) {
+      hideEPGToast(0);
+      return;
+    }
     showEPGToast('Favorites guide ready', 'success');
     hideEPGToast(2500);
     if (currentChannelIndex >= 0 && channels[currentChannelIndex])
@@ -1094,7 +1175,7 @@ async function fetchXtreamEpgFor(tvgId) {
       if (Array.isArray(listings)) {
         const cutoff = Date.now() -
             2 * 3600000;  // keep a little history for the 1h-back guide window
-        if (listings.length) xtreamNoteEpgOffset(listings[0]);
+        xtreamNoteEpgOffset(epgListingNearNow(listings));
         for (const ep of listings) {
           const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000);
           const pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
@@ -1125,30 +1206,74 @@ async function fetchXtreamEpgFor(tvgId) {
              Date.now() - EPG_CACHE_TTL_MS + 60000,
     status: ok ? 'done' : 'error'
   });
-  if (ok && progs.length)
-    epgPersist(
-        tvgId, Date.now(),
-        epgShiftProgs(progs, -1));  // cache keeps provider time
-  if (empty && epgData.has(tvgId)) {
+  if (!progs.length && epgData.has(tvgId)) {
     onEpgChannelUpdated(tvgId);
     return;
-  }  // keep what we have (stale beats blank)
+  }  // keep the data (also after a network error)
   if (progs.length) {
+    // The short EPG starts approximately 2 h back. Keep the earlier programs
+    // (for example, the archive table of fetchXtreamEpgFull).
+    const merged = epgMergeShort(epgData.get(tvgId), progs);
+    epgPersist(
+        tvgId, Date.now(),
+        epgShiftProgs(merged, -1));  // cache keeps provider time
     epgData.delete(
         tvgId);  // re-insert so Map insertion order doubles as LRU order
-    epgData.set(tvgId, progs);
+    epgData.set(tvgId, merged);
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
-    if (epgData.size > EPG_CACHE_MAX) {
-      for (const k of epgData.keys()) {
-        if (epgData.size <= EPG_CACHE_MAX) break;
-        epgData.delete(k);
-        _epgFetchMeta.delete(k);
-      }
-    }
-  } else {
-    epgData.delete(tvgId);
+    epgTrimLru();
   }
   onEpgChannelUpdated(tvgId);
+}
+
+/**
+ * Merges a new short EPG list into the programs that the guide has for a
+ * channel. The function keeps the earlier programs that stop before the first
+ * program of the new list, and only those in the guide window. It also keeps
+ * the programs after the new list. A program of the new list gets the
+ * `hasArchive` value of the earlier program with the same start.
+ * @param {?Array<!Object>} old The programs in epgData, or null.
+ * @param {!Array<!Object>} progs The new short EPG, sorted by start.
+ * @return {!Array<!Object>} The merged list, sorted by start.
+ */
+function epgMergeShort(old, progs) {
+  if (!old || !old.length) return progs;
+  const first = progs[0].start;
+  const from = Date.now() - epgPastHours() * 3600000;
+  const out = [];
+  for (const p of old) {
+    if (p.start >= first) break;
+    if (p.stop <= first && p.stop > from) out.push(p);
+  }
+  for (const p of progs) {
+    if (p.hasArchive === undefined) {
+      const i = _epgBinarySearch(old, p.start);
+      if (i >= 0 && old[i].start === p.start && old[i].hasArchive !== undefined)
+        p.hasArchive = old[i].hasArchive;
+    }
+    out.push(p);
+  }
+  // Keep the programs after the last program of the new list
+  const last = progs[progs.length - 1].stop;
+  for (const p of old)
+    if (p.start >= last) out.push(p);
+  return out;
+}
+
+/**
+ * Removes the LRU channels from epgData until it has a maximum of
+ * EPG_CACHE_MAX channels. The function also removes the fetch condition and
+ * the archive condition of a removed channel. Thus, the guide can fetch them
+ * again.
+ */
+function epgTrimLru() {
+  if (epgData.size <= EPG_CACHE_MAX) return;
+  for (const k of epgData.keys()) {
+    if (epgData.size <= EPG_CACHE_MAX) break;
+    epgData.delete(k);
+    _epgFetchMeta.delete(k);
+    _epgFullFetched.delete(k);
+  }
 }
 
 // Refresh whatever is on screen for this channel, in place. Completed fetches
@@ -1223,20 +1348,40 @@ function epgOnScrollSettled() {
   if (ahead.length) queueEpgFetch(ahead, false);
 }
 
-// Background prefetch so the Favorites group is populated without scrolling
-function prefetchFavoritesEpg() {
-  if (!_xt) return;
+// Background prefetch so the Favorites group is populated without scrolling.
+// The queue holds a maximum of EPG_QUEUE_MAX channels. Thus, the favorites go
+// into the queue in batches of EPG_FAV_BATCH when the queue becomes shorter
+// (pumpEpgQueue).
+/**
+ * Gives the tvgIds of the favorites that must have an EPG fetch.
+ * @return {!Array<string>}
+ */
+function favoriteEpgIdsToFetch() {
   const ids = new Set();
   for (let i = 0; i < channels.length; i++) {
     const ch = channels[i];
     if (ch.tvgId && favoriteIds.has(favIdOf(ch, i)) && epgNeedsFetch(ch.tvgId))
       ids.add(ch.tvgId);
   }
-  if (!ids.size) return;
+  return [...ids];
+}
+// Puts the next batch of favorites at the end of the queue
+function epgFeedFavorites() {
+  const room = Math.min(EPG_FAV_BATCH, EPG_QUEUE_MAX - _epgQueue.length);
+  if (room <= 0 || !_epgFavPending.length) return;
+  queueEpgFetch(_epgFavPending.splice(0, room), false);
+}
+function prefetchFavoritesEpg() {
+  if (!_xt) return;
+  const ids = favoriteEpgIdsToFetch();
+  if (!ids.length) return;
   _epgPrefetchActive = true;
+  _epgFavRescans = 0;
+  _epgFavPending = ids;
   showEPGToast(
-      `Loading guide for ${ids.size.toLocaleString()} favorites …`, 'loading');
-  queueEpgFetch([...ids], false);
+      `Loading guide for ${ids.length.toLocaleString()} favorites …`,
+      'loading');
+  epgFeedFavorites();
 }
 
 // ----- XMLTV for an Xtream playlist -----
@@ -1680,6 +1825,36 @@ function startEpgTick() {
   epgRefreshTimer = setInterval(epgMinuteTick, 60000);
 }
 
+/**
+ * Updates the time classes of each `.epg-prog-block` in 1 rendered row. When
+ * a program stops, its element gets `past` (and `catchup` if the archive has
+ * it). When a program goes out of the archive, its element loses `catchup`.
+ * @param {!Element} el The row.
+ * @param {?Object} ch The channel of the row.
+ * @param {number} now The current time in ms.
+ */
+function epgTickRowBlocks(el, ch, now) {
+  const blocks = el.getElementsByClassName('epg-prog-block');
+  let progs = null;
+  for (let i = 0; i < blocks.length; i++) {
+    const b = blocks[i], cl = b.classList;
+    const start = +b.dataset.start, stop = +b.dataset.stop;
+    cl.toggle('now-playing', start <= now && stop > now);
+    if (stop > now) continue;
+    if (!cl.contains('past')) {
+      // Find the program for its hasArchive value.
+      if (!progs) progs = (ch && epgProgsOf(ch.tvgId)) || [];
+      const j = _epgBinarySearch(progs, start);
+      const p = j >= 0 && progs[j].start === start ? progs[j] : {start, stop};
+      cl.add('past');
+      if (ch && progIsCatchup(ch, p, now)) cl.add('catchup');
+    } else if (
+        cl.contains('catchup') && !progIsCatchup(ch, {start, stop}, now)) {
+      cl.remove('catchup');
+    }
+  }
+}
+
 // Runs once a minute. Updates only what is on screen, in place; the full guide
 // is rebuilt only when the hour window rolls over.
 function epgMinuteTick() {
@@ -1693,20 +1868,15 @@ function epgMinuteTick() {
     const winStart =
         Math.floor((now - epgPastHours() * HOUR_MS) / HOUR_MS) * HOUR_MS;
     if (_epgSkeletonWinStart && winStart !== _epgSkeletonWinStart) {
-      // Hour rolled over: shift the horizontal scroll so the same wall-clock
-      // time stays in view, then rebuild the time strip and rows once.
-      _epgX = Math.max(0, _epgX - 60 * EPG_PX_PER_MIN);
+      // A new hour: make the time strip and the rows again (1 time).
+      // renderEPGGuide moves the pan. Thus, the same time stays in view.
       renderEPGGuide();
     } else {
       updateEPGNowMarker();
-      for (const [, el] of epgRenderedRows) {
-        const blocks = el.getElementsByClassName('epg-prog-block');
-        for (let i = 0; i < blocks.length; i++) {
-          const b = blocks[i];
-          b.classList.toggle(
-              'now-playing', +b.dataset.start <= now && +b.dataset.stop > now);
-        }
-      }
+      for (const [idx, el] of epgRenderedRows)
+        epgTickRowBlocks(el, currentFilteredChannels[idx], now);
+      if (!epgFocusT)
+        updateEPGBlockFocus();       // the cursor stays on the current time
       scheduleEpgFetchForVisible();  // re-queues rows whose cached EPG passed
                                      // its TTL
     }
