@@ -580,7 +580,7 @@ function goToHomeScreen() {
     clearTimeout(_errRetryTimer);
     _errRetryTimer = null;
   }
-  _stopHold();
+  _cancelHold();
 
   // Dismiss EPG toast immediately
   const _toast = document.getElementById('epgToast');

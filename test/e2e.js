@@ -2754,8 +2754,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check(
         'OSD shows codec, bit depth, resolution, frame rate and audio from the pipeline',
         await page.evaluate(
-            () => document.getElementById('vodOsdTech').textContent ===
-                    'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1' &&
+            () => (flushVodTech(),  // the write waits 2 s
+                   document.getElementById('vodOsdTech').textContent ===
+                       'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1') &&
                 JSON.parse(
                     localStorage.getItem('iptv_vod_tech'))[vodPlay.key] ===
                     'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1'),
