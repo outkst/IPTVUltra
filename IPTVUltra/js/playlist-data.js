@@ -69,6 +69,44 @@ function escapeHtml(str) {
 }
 
 // ----- Streaming Parser (never hangs) -----
+// An attribute of an #EXTINF line: a name, then a value in double quotes, in
+// single quotes, or with no quotes.
+const _RE_EXTINF_ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)'|([^\s,"']*))/g;
+
+/**
+ * Reads an #EXTINF line. A value in quotes can contain a comma, and a value in
+ * double quotes can contain an apostrophe. The name is the text after the
+ * first comma outside quotes.
+ * @param {string} line The #EXTINF line.
+ * @return {{name: ?string, attrs: !Object<string, string>}} The name (null
+ *     when the line has no comma) and the attributes, with names in lower case.
+ */
+function parseExtinf(line) {
+  let quote = '';
+  let comma = -1;
+  for (let k = 8; k < line.length; k++) {
+    const c = line[k];
+    if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === '"' || (c === '\'' && line[k - 1] === '=')) {
+      quote = c;
+    } else if (c === ',') {
+      comma = k;
+      break;
+    }
+  }
+  const head = comma >= 0 ? line.slice(0, comma) : line;
+  const attrs = {};
+  _RE_EXTINF_ATTR.lastIndex = 0;
+  let m;
+  while ((m = _RE_EXTINF_ATTR.exec(head))) {
+    const key = m[1].toLowerCase();
+    if (!(key in attrs))
+      attrs[key] = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+  }
+  return {name: comma >= 0 ? line.slice(comma + 1).trim() : null, attrs};
+}
+
 async function parseM3UStreaming(content) {
   const lines = content.split(/\r?\n/);
   const total = lines.length;
@@ -82,22 +120,19 @@ async function parseM3UStreaming(content) {
       const line = lines[j].trim();
       if (!line) continue;
       if (line.startsWith('#EXTINF:')) {
-        const nameMatch = line.match(/#EXTINF:.*?,(.*)$/);
-        const tvgIdMatch = line.match(/tvg-id=["']([^"']*)["']/i);
-        const tvgLogoMatch = line.match(/tvg-logo=["']([^"']*)["']/i);
-        const groupMatch = line.match(/group-title=["']([^"']*)["']/i);
+        const inf = parseExtinf(line);
         current = {
-          name: nameMatch ? nameMatch[1].trim() : 'Unknown',
-          tvgId: tvgIdMatch ? tvgIdMatch[1] : '',
-          tvgLogo: tvgLogoMatch ? tvgLogoMatch[1] : '',
-          group: groupMatch ? groupMatch[1] : '',
+          name: inf.name === null ? 'Unknown' : copyStr(inf.name),
+          tvgId: copyStr(inf.attrs['tvg-id'] || ''),
+          tvgLogo: copyStr(inf.attrs['tvg-logo'] || ''),
+          group: copyStr((inf.attrs['group-title'] || '').trim()),
           url: ''
         };
       } else if (
           !line.startsWith('#') && current &&
           (line.startsWith('http') || line.startsWith('https') ||
            line.startsWith('//'))) {
-        current.url = line.startsWith('//') ? 'https:' + line : line;
+        current.url = copyStr(line.startsWith('//') ? 'https:' + line : line);
         channelsList.push(current);
         current = null;
       }
