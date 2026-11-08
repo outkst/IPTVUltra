@@ -1551,15 +1551,17 @@ const CAPTION_COLORS = {
 // The sizes agree with the subtitles of the media service (VOD and the native
 // pipeline). Chromium sets the cue font to 5 % of the video height, and these
 // values are a percentage of that font. The media service uses its own
-// renderer in a 1280x720 plane. Measured on the C4 (2026-11-08) with the same
-// text: at "small", the media service text was 1.41 times as wide as a cue of
-// 80 %. The other sizes use the ratio of the box heights of the renderer
-// (98, 122, 130, and 146).
+// renderer. Measured on the C4 (2026-11-08) with the same text: at "small",
+// the renderer gave a width of 499, and a cue of 80 % was 532 px wide. The
+// other sizes use the ratio of the box heights of the renderer (98, 122, 130,
+// and 146). The renderer values are screen pixels: the user compared the
+// values for a 1280x720 plane (113 to 168 %) on the TV, and the live text was
+// too large.
 const CAPTION_SIZES = {
-  small: 113,
-  medium: 141,
-  large: 150,
-  extraLarge: 168
+  small: 75,
+  medium: 94,
+  large: 100,
+  extraLarge: 112
 };
 const CAPTION_BGS = {
   none: 'transparent',

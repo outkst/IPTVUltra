@@ -4357,7 +4357,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       /^video::cue \{/.test(scss.before) &&
           /color: rgba\(255,255,0,0\.7\)/.test(scss.after) &&
           /background-color: #000/.test(scss.after) &&
-          /font-size: 150%/.test(scss.after) &&
+          /font-size: 100%/.test(scss.after) &&
           /text-shadow: 3px 3px 4px #000/.test(scss.after) && scss.back,
       JSON.stringify(scss));
   check(
