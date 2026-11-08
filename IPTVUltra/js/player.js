@@ -42,14 +42,15 @@ function startVodPlayback(p) {
        saved.pos >= vodMinResume(saved.dur) && saved.pos < saved.dur * 0.9) ?
       saved.pos :
       0;
-  if (p.restart && saved) {
-    delete vodProgress[key];
-    saveJson('iptv_vod_progress', vodProgress);
-  }
+  // "Start over" keeps the saved entry (also the watched state).
+  // saveVodProgress replaces it when the new position is more than
+  // vodMinResume.
   if (vodPlay.active) {
     saveVodProgress(true);
     clearVodNext();
   }
+  vodClearLoadListeners();
+  const loadToken = ++_vodLoadToken;
   stopStallWatchdog();
   if (_errRetryTimer) {
     clearTimeout(_errRetryTimer);
@@ -82,13 +83,13 @@ function startVodPlayback(p) {
       [`Season ${p.season}`, fmtRuntime(vodPlay.dur)].filter(Boolean).join(
           ' · ');
   if (resumeAt) vodPlay.sub += ` · Resumed from ${fmtClock(resumeAt)}`;
-  const player = document.getElementById('vodPlayer'),
+  const playerEl = document.getElementById('vodPlayer'),
         slot = document.getElementById('vodVideoSlot');
   if (videoPlayer.parentNode !== slot) slot.appendChild(videoPlayer);
   const badge = document.getElementById('pbTrickBadge');
-  if (badge && badge.parentNode !== player) player.appendChild(badge);
+  if (badge && badge.parentNode !== playerEl) playerEl.appendChild(badge);
   videoPlayer.removeAttribute('controls');
-  player.classList.remove('hidden');
+  playerEl.classList.remove('hidden');
   document.getElementById('vodPaused').classList.add('hidden');
   document.getElementById('vodLoading').classList.remove('hidden');
   document.getElementById('vodNext').classList.add('hidden');
@@ -113,22 +114,25 @@ function startVodPlayback(p) {
   // attach and the play also wait: the pipeline of the movie does not exist
   // before the source.
   afterLiveTeardown(() => {
-    if (!vodPlay.active) return;  // the player closed during the teardown
+    // The player closed, or a different title started, during the teardown.
+    if (!vodPlay.active || loadToken !== _vodLoadToken) return;
     videoPlayer.src = url;
     videoPlayer.load();
     umsAttach();
-    if (resumeAt > 0)
-      videoPlayer.addEventListener('loadedmetadata', function seekOnce() {
+    _vodOnMeta = () => {
+      _vodOnMeta = null;
+      if (!vodPlay.active || loadToken !== _vodLoadToken) return;
+      if (resumeAt > 0) {
         try {
           videoPlayer.currentTime = resumeAt;
         } catch (_) { /* not seekable yet */
         }
-      }, {once: true});
-    videoPlayer.addEventListener('loadedmetadata', function tracksOnce() {
+      }
       applyVodTrackPrefs();
-    }, {once: true});
+    };
+    videoPlayer.addEventListener('loadedmetadata', _vodOnMeta, {once: true});
     setTimeout(() => {
-      if (vodPlay.active) applyVodTrackPrefs();
+      if (vodPlay.active && loadToken === _vodLoadToken) applyVodTrackPrefs();
     }, 4000);  // some files announce tracks late
     videoPlayer.play().catch(() => {});
   });
@@ -136,10 +140,22 @@ function startVodPlayback(p) {
   updateVodOsd();
   showVodOsd();
 }
+// The loadedmetadata listener of the active VOD load (the resume seek and the
+// track preferences), and a counter that increases for each load. A listener
+// of an old load must not seek the next title or a live channel.
+let _vodOnMeta = null;
+let _vodLoadToken = 0;
+function vodClearLoadListeners() {
+  if (_vodOnMeta) videoPlayer.removeEventListener('loadedmetadata', _vodOnMeta);
+  _vodOnMeta = null;
+}
 function stopVodPlayback(backToDetails) {
   if (!vodPlay.active) return;
   saveVodProgress(true);
   clearVodNext();
+  vodClearLoadListeners();
+  _vodLoadToken++;
+  flushVodTech();
   _scrubPos =
       null;  // abandon any scrub in progress; no seek/play on the way out
   _nativeRate = 0;  // the pipeline is being unloaded; nothing to restore
@@ -371,8 +387,8 @@ function playerButtonsFor() {
         id: 'next',
         label: '⏭ Next episode',
         act: () => {
+          // playNextEpisode reads vodPlay.nextEp and then clears the card.
           vodPlay.nextEp = nextEpisode();
-          clearVodNext();
           playNextEpisode();
         }
       });
@@ -692,8 +708,12 @@ function trackDisplayName(track, i) {
 // the user picked manually)
 function applyVodTrackPrefs() {
   if (!vodPlay.active) return;
+  // The media service and the HTML tracks are 2 different sources. Use the
+  // media service for subtitles and for audio when it has tracks of that type.
   const u = vodPlay.ums;
-  if (u && u.subTracks.length) {
+  const umsSubs = !!(u && u.subTracks.length);
+  const umsAudio = !!(u && u.audioTracks.length);
+  if (umsSubs) {
     if (!vodPlay.subManual) {
       const pref = settings.subLang;
       let chosen = null;
@@ -709,6 +729,8 @@ function applyVodTrackPrefs() {
       }
       umsSelectSubtitle(chosen ? chosen.trackNum : -1);
     }
+  }
+  if (umsAudio) {
     if (u.audioTracks.length > 1 && !vodPlay.audioManual &&
         settings.audioLang !== 'default') {
       const i = u.audioTracks.findIndex(
@@ -716,10 +738,8 @@ function applyVodTrackPrefs() {
               {language: t.language, label: ''}, settings.audioLang));
       if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i);
     }
-    updateVodTracksHint();
-    return;
   }
-  const subs = getSubtitleTracks();
+  const subs = umsSubs ? [] : getSubtitleTracks();
   if (subs.length && !vodPlay.subManual) {
     const pref = settings.subLang;
     let chosen = null;
@@ -734,7 +754,7 @@ function applyVodTrackPrefs() {
       if (t.mode !== want) t.mode = want;
     });
   }
-  const auds = getAudioTracks();
+  const auds = umsAudio ? [] : getAudioTracks();
   if (auds.length > 1 && !vodPlay.audioManual &&
       settings.audioLang !== 'default') {
     const t = auds.find(a => trackMatchesLang(a, settings.audioLang));
@@ -749,30 +769,35 @@ function updateVodTracksHint() {
   const el = document.getElementById('vodOsdTracks');
   if (!el) return;
   const u = activeUms();
-  if (u && u.subTracks.length) {
+  const umsSubs = !!(u && u.subTracks.length);
+  const umsAudio = !!(u && u.audioTracks.length);
+  const bits = [];
+  let anySubs = umsSubs;
+  if (umsSubs) {
     const on = u.subTracks.find(t => t.trackNum === u.selectedSub);
-    const bits =
-        ['Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off')];
+    bits.push('Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off'));
+  } else {
+    const subs = getSubtitleTracks();
+    const on = subs.find(t => t.mode === 'showing');
+    anySubs = subs.length > 0;
+    if (subs.length)
+      bits.push(
+          'Subtitles: ' +
+          (on ? trackDisplayName(on, subs.indexOf(on)) : 'Off'));
+  }
+  if (umsAudio) {
     if (u.audioTracks.length > 1) {
       const a = u.audioTracks[u.selectedAudio];
       if (a) bits.push('Audio: ' + umsAudioLabel(a, u.selectedAudio));
     }
-    bits.push('Green: audio & subtitles');
-    el.textContent = bits.join(' · ');
-    updatePlayerFocus();
-    return;
+  } else {
+    const auds = getAudioTracks();
+    if (auds.length > 1) {
+      const a = auds.find(t => t.enabled);
+      if (a) bits.push('Audio: ' + trackDisplayName(a, auds.indexOf(a)));
+    }
   }
-  const subs = getSubtitleTracks(), auds = getAudioTracks();
-  const on = subs.find(t => t.mode === 'showing');
-  const bits = [];
-  if (subs.length)
-    bits.push(
-        'Subtitles: ' + (on ? trackDisplayName(on, subs.indexOf(on)) : 'Off'));
-  if (auds.length > 1) {
-    const a = auds.find(t => t.enabled);
-    if (a) bits.push('Audio: ' + trackDisplayName(a, auds.indexOf(a)));
-  }
-  if (!subs.length) bits.push('No subtitle tracks in this file');
+  if (!anySubs) bits.push('No subtitle tracks in this file');
   bits.push('Green: audio & subtitles');
   el.textContent = bits.join(' · ');
   updatePlayerFocus();
@@ -1440,17 +1465,30 @@ function umsMeasureFps(u) {
     }
   }, 3000);
 }
+// The media service sends many videoInfo and audioInfo messages. Write the
+// codec lines to localStorage 1 time, 2 s after the last change.
+let _vodTechSaveTimer = null;
+function saveVodTechSoon() {
+  if (_vodTechSaveTimer) clearTimeout(_vodTechSaveTimer);
+  _vodTechSaveTimer = setTimeout(flushVodTech, 2000);
+}
+function flushVodTech() {
+  if (!_vodTechSaveTimer) return;
+  clearTimeout(_vodTechSaveTimer);
+  _vodTechSaveTimer = null;
+  saveJson('iptv_vod_tech', vodTech);
+}
 function umsTechUpdated(u) {
   const s = umsTechString(u);
   umsMeasureFps(u);
   if (u.kind === 'vod' && vodPlay.ums === u) {
     const el = document.getElementById('vodOsdTech');
     if (el) el.textContent = s;
-    if (s && vodPlay.key) {
+    if (s && vodPlay.key && vodTech[vodPlay.key] !== s) {
       vodTech[vodPlay.key] = s;
       const ks = Object.keys(vodTech);
       if (ks.length > 300) delete vodTech[ks[0]];
-      saveJson('iptv_vod_tech', vodTech);
+      saveVodTechSoon();
     }
   } else if (u.kind === 'live' && liveUms === u) {
     noteCurrentStreamTech();
