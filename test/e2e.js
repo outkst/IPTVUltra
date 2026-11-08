@@ -4552,6 +4552,46 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           fz.norm === 'bbcone' && fz.norm2 === 'bbcone',
       JSON.stringify(fz));
 
+  // ---------- Text helpers: HTML escape, #EXTINF parser, group names,
+  // credentials in the log ----------
+  const th = await page.evaluate(() => {
+    const inf = parseExtinf(
+        '#EXTINF:-1 tvg-id="a.b" tvg-name="Rock, Paper" ' +
+        'group-title="Kid\'s TV" tvg-logo=\'http://x/l.png\',Rock, Paper HD');
+    return {
+      esc: escapeHtml('<a title="x">Bob\'s & co</a>'),
+      name: inf.name,
+      attrs: inf.attrs,
+      noComma: parseExtinf('#EXTINF:-1 tvg-id="x"').name,
+      groups: [' News ', 'all', 'recent', 'favorites', 'All'].map(
+          normGroupName),
+      redact: [
+        redactCredentials('m:http://h/get.php?username=bob&password=pw'),
+        redactCredentials('u:http://h:80/live/bob/pw/12.ts'),
+        redactCredentials('u:http://h:80/bob/pw/12')
+      ]
+    };
+  });
+  check(
+      'escapeHtml escapes the double quote and the apostrophe',
+      th.esc ===
+          '&lt;a title=&quot;x&quot;&gt;Bob&#39;s &amp; co&lt;/a&gt;',
+      th.esc);
+  check(
+      'parseExtinf keeps a comma and an apostrophe in a value in quotes',
+      th.name === 'Rock, Paper HD' && th.attrs['tvg-id'] === 'a.b' &&
+          th.attrs['tvg-name'] === 'Rock, Paper' &&
+          th.attrs['group-title'] === 'Kid\'s TV' &&
+          th.attrs['tvg-logo'] === 'http://x/l.png' && th.noComma === null,
+      JSON.stringify(th));
+  check(
+      'normGroupName trims and renames the keys of the pinned groups',
+      th.groups.join('|') === 'News|All|Recent|Favorites|All',
+      th.groups.join('|'));
+  check(
+      'redactCredentials removes the user name and the password',
+      th.redact.every(s => !/bob|pw/.test(s)), th.redact.join(' '));
+
   // ---------- Alternate sources: a duplicate of the channel (same name,
   // quality tag) is tried when the budget runs out ----------
   await page.evaluate(() => {
