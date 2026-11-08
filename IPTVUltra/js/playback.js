@@ -150,7 +150,7 @@ function exitLivePlayer() {
   if (!livePlayer.active) return;
   closeVodTracks();
   hideVodOsd();
-  if (_isHolding()) _stopHold();
+  _cancelHold();
   _holdKeyDir = null;
   livePlayer.active = false;
   document.getElementById('vodPlayer').classList.add('hidden');
@@ -191,6 +191,7 @@ function selectChannel(index) {
   if (!channels[index]) return;
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
+  _cancelHold();   // a seek of the previous channel must not go to this one
   catchup = null;  // any channel selection returns to live
   surfCancel();
   if (_selectingAlt) {

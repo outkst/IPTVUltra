@@ -1643,33 +1643,38 @@ let _holdKeyDir =
 let _holdKeyStart = 0;
 const HOLD_THRESHOLD_MS = 500;
 
-// Trick-play (hold-to-rewind / hold-to-FF)
-const _REWIND_RAMP = [
-  {after: 0, speed: -1},
-  {after: 1500, speed: -2},
-  {after: 4000, speed: -4},
-  {after: 8000, speed: -8},
-];
-const _FF_RAMP = [
-  {after: 0, speed: 2},
-  {after: 1500, speed: 4},
-  {after: 4000, speed: 8},
-];
+// Trick play (hold Left or Right). Measured on the C4 (2026-11-08, 720p,
+// Shaka Player): a seek takes 456 to 611 ms. The previous code set
+// currentTime each 100 ms. Thus, each seek stopped the previous seek, and the
+// picture stayed frozen (40 seeks in 4 s, 1 completed). While the key is held,
+// a virtual position moves on the bar. The video seeks 1 time when the key is
+// released.
 let _trickInterval = null;
 let _trickHoldStart = 0;
 let _trickHoldDir =
     null;  // 'left' | 'right' | null — null means not in trick play
-// VOD scrubbing: while Left/Right is held the OSD position moves at these
-// speeds (seconds of content per second) and the video seeks once on release.
-// Seeking a large file on every tick stalls the decoder and the bar never
-// moves.
+let _trickBadgeTimer = null;
+// The speeds of the virtual position (seconds of content in 1 s of hold)
 const _VOD_SCRUB_RAMP = [
   {after: 0, speed: 10},
   {after: 1500, speed: 30},
   {after: 4000, speed: 60},
   {after: 8000, speed: 120},
 ];
-let _scrubPos = null;  // virtual position during a VOD scrub, null otherwise
+const _LIVE_SCRUB_RAMP = [
+  {after: 0, speed: 5},
+  {after: 1500, speed: 10},
+  {after: 4000, speed: 30},
+  {after: 8000, speed: 60},
+];
+// A seek to less than this distance from the live point goes live (s)
+const LIVE_EDGE_SECS = 4;
+let _scrubPos = null;       // virtual position of a VOD or catch-up scrub (s)
+let _liveScrubWall = null;  // virtual position of a live scrub (clock ms)
+// Short presses while a seek runs add up. The app sends 1 seek to the target
+// after the `seeked` event.
+let _stepPos = null;   // VOD and catch-up (s)
+let _stepWall = null;  // live (clock ms)
 
 function _seekRange() {
   // A catch-up through Shaka Player is a VOD playlist: the full programme is
@@ -1686,13 +1691,6 @@ function _seekRange() {
   return {start: 0, end: videoPlayer.duration || 0};
 }
 
-function _seekBy(seconds) {
-  const range = _seekRange();
-  videoPlayer.currentTime = Math.max(
-      range.start, Math.min(range.end - 1, videoPlayer.currentTime + seconds));
-  videoPlayer.play().catch(() => {});
-}
-
 function _getRampSpeed(ramp, heldMs) {
   let speed = ramp[0].speed;
   for (const step of ramp) {
@@ -1704,6 +1702,10 @@ function _getRampSpeed(ramp, heldMs) {
 function _showTrickBadge(text) {
   const el = document.getElementById('pbTrickBadge');
   if (!el) return;
+  if (_trickBadgeTimer) {
+    clearTimeout(_trickBadgeTimer);
+    _trickBadgeTimer = null;
+  }
   el.textContent = text;
   el.style.display = '';
 }
@@ -1713,13 +1715,163 @@ function _hideTrickBadge() {
   if (el) el.style.display = 'none';
 }
 
+/**
+ * Shows a message in the trick badge for 2.5 s.
+ * @param {string} text The message.
+ */
+function _flashTrickBadge(text) {
+  _showTrickBadge(text);
+  _trickBadgeTimer = setTimeout(() => {
+    _trickBadgeTimer = null;
+    if (!_trickHoldDir) _hideTrickBadge();
+  }, 2500);
+}
+
+/** @return {boolean} True when the live player shows a live channel. */
+function _liveTrick() {
+  return livePlayer.active && !vodPlay.active && !catchup;
+}
+
+/**
+ * The clock time of the live playhead. The native pipeline has no buffer,
+ * thus its playhead is at the live point.
+ * @return {number} The clock time (ms).
+ */
+function _livePlayheadWall() {
+  return liveEngineActive() ? liveWallTimeAt(videoPlayer.currentTime || 0) :
+                              Date.now();
+}
+
+/**
+ * The limits of a live scrub in clock time: the buffer, and the archive of an
+ * archive channel. The archive does not have the last seconds. Thus, on the
+ * native pipeline, the scrub starts `ARCHIVE_NATIVE_BEHIND_MS` before the live
+ * point.
+ * @return {{min: number, max: number, bufStart: number}} Clock times (ms).
+ */
+function _liveScrubLimits() {
+  const now = Date.now();
+  let min = now, max = now, bufStart = now;
+  if (liveEngineActive()) {
+    const r = liveBufferRange();
+    bufStart = min = liveWallTimeAt(r.start);
+    max = liveWallTimeAt(r.end);
+  }
+  const ch = channels[currentChannelIndex];
+  if (ch && !liveEngine.hlsWait && channelHasCatchup(ch)) {
+    min = Math.min(min, now - ch.archive * 86400000 + 60000);
+    if (!liveEngineActive()) max = now - ARCHIVE_NATIVE_BEHIND_MS;
+  }
+  return {min, max, bufStart};
+}
+
+/**
+ * Moves the live playhead to a clock time: in the buffer, to the live point,
+ * or into the archive.
+ * @param {number} wall The clock time (ms).
+ */
+function _liveSeekToWall(wall) {
+  const now = Date.now();
+  if (liveEngineActive()) {
+    const r = liveBufferRange();
+    if (wall >= liveWallTimeAt(r.start) - 500) {
+      const t = r.live - (now - wall) / 1000;
+      if (t >= r.live - LIVE_EDGE_SECS) {
+        liveGoLive();
+        return;
+      }
+      try {
+        videoPlayer.currentTime = Math.max(r.start, t);
+      } catch (_) { /* not seekable yet */
+      }
+      videoPlayer.play().catch(() => {});
+      return;
+    }
+  }
+  if (wall < now - 1000 && rewindIntoArchive(wall)) return;
+  videoPlayer.play().catch(() => {});
+}
+
+/** Sends the seek of the short presses that waited for `seeked`. */
+function _flushStep() {
+  if (_stepWall !== null) {
+    const w = _stepWall;
+    _stepWall = null;
+    _liveSeekToWall(w);
+  }
+  if (_stepPos !== null) {
+    const p = _stepPos;
+    _stepPos = null;
+    try {
+      videoPlayer.currentTime = p;
+    } catch (_) { /* not seekable yet */
+    }
+    videoPlayer.play().catch(() => {});
+  }
+}
+
+/** Sends the step seek now, or after the seek that runs at this time. */
+function _queueStep() {
+  if (videoPlayer.seeking)
+    videoPlayer.addEventListener('seeked', _flushStep, {once: true});
+  else
+    _flushStep();
+}
+
+/**
+ * A short press of Left or Right in a player: 3 s on a live channel, 10 s in
+ * VOD and catch-up.
+ * @param {number} sign -1 for Left, 1 for Right.
+ */
+function playerStep(sign) {
+  if (_liveTrick()) {
+    if (liveEngine.hlsWait) return;
+    if (!liveEngineActive()) {
+      // The native pipeline: Left goes into the archive of an archive channel
+      if (sign < 0 && !liveLeftIntoArchive(3))
+        _flashTrickBadge('Rewind is not available on this channel');
+      return;
+    }
+    const lim = _liveScrubLimits();
+    const base = _stepWall !== null ? _stepWall : _livePlayheadWall();
+    const target = Math.max(lim.min, Math.min(lim.max, base + sign * 3000));
+    if (target < lim.bufStart - 500) {
+      _stepWall = null;  // the archive starts at once
+      _liveSeekToWall(target);
+      return;
+    }
+    _stepWall = target;
+    _queueStep();
+    showVodOsd();
+    return;
+  }
+  const range = _seekRange();
+  const end = isFinite(range.end) && range.end > 0 ? range.end - 1 : Infinity;
+  const base = _stepPos !== null ? _stepPos : (videoPlayer.currentTime || 0);
+  _stepPos = Math.max(range.start, Math.min(end, base + sign * 10));
+  _queueStep();
+  showVodOsd();
+}
+
 function _startHold(dir) {
   if (_trickHoldDir) return;
-  // Live with no buffer on an archive channel: the rewind goes to the archive
-  if (dir === 'left' && !liveEngineActive() && liveLeftIntoArchive(10)) return;
+  _stepPos = _stepWall = null;
+  const live = _liveTrick();
+  if (live) {
+    if (liveEngine.hlsWait) return;
+    const lim = _liveScrubLimits();
+    if (lim.max - lim.min < 1000) {
+      _flashTrickBadge(
+          dir === 'left' ? 'Rewind is not available on this channel' :
+                           '● Live');
+      return;
+    }
+    _liveScrubWall = Math.max(lim.min, Math.min(lim.max, _livePlayheadWall()));
+  }
   _trickHoldDir = dir;
   _trickHoldStart = Date.now();
-  videoPlayer.pause();
+  // The native live pipeline keeps playing: it has no buffer to pause in
+  if (!live || liveEngineActive()) videoPlayer.pause();
   // Native speed playback only once the pipeline is attached and has described
   // the file
   if (vodPlay.active && vodPlay.ums && vodPlay.ums.mediaId &&
@@ -1727,54 +1879,43 @@ function _startHold(dir) {
     startNativeRate(dir);
     return;
   }
-  if (vodPlay.active) {
-    _scrubPos = videoPlayer.currentTime || 0;
-    if (vodPlay.osdTimer) {
-      clearTimeout(vodPlay.osdTimer);
-      vodPlay.osdTimer = null;
+  if (!live) _scrubPos = videoPlayer.currentTime || 0;
+  if (vodPlay.osdTimer) {
+    clearTimeout(vodPlay.osdTimer);
+    vodPlay.osdTimer = null;
+  }
+  document.getElementById('vodOsd').classList.add('visible');
+  const ramp = vodPlay.active ? _VOD_SCRUB_RAMP : _LIVE_SCRUB_RAMP;
+  const sign = dir === 'left' ? -1 : 1;
+  const tick = () => {
+    const speed = _getRampSpeed(ramp, Date.now() - _trickHoldStart);
+    _showTrickBadge((sign < 0 ? '◀◀ ' : '▶▶ ') + speed + '×');
+    if (live) {
+      const lim = _liveScrubLimits();
+      _liveScrubWall = Math.max(
+          lim.min, Math.min(lim.max, _liveScrubWall + sign * speed * 100));
+      updateLiveOsd();
+      if (sign > 0 && _liveScrubWall >= lim.max) _stopHold();
+      return;
     }
-    document.getElementById('vodOsd').classList.add('visible');
-    _trickInterval = setInterval(() => {
-      const heldMs = Date.now() - _trickHoldStart;
-      const speed = _getRampSpeed(_VOD_SCRUB_RAMP, heldMs);
+    let lo = 0, hi = Infinity;
+    if (vodPlay.active) {
       const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) ||
           vodPlay.dur || 0;
-      const max = dur ? Math.max(0, dur - 1) : Number.MAX_VALUE;
-      _scrubPos = Math.max(
-          0,
-          Math.min(max, _scrubPos + (dir === 'left' ? -1 : 1) * speed * 0.1));
-      _showTrickBadge((dir === 'left' ? '◀◀ ' : '▶▶ ') + speed + '×');
-      updateVodOsd(_scrubPos);
-      if ((dir === 'right' && dur && _scrubPos >= max) ||
-          (dir === 'left' && _scrubPos <= 0))
-        _stopHold();
-    }, 100);
-    return;
-  }
-  const ramp = dir === 'left' ? _REWIND_RAMP : _FF_RAMP;
-  _trickInterval = setInterval(() => {
-    const heldMs = Date.now() - _trickHoldStart;
-    const speed = _getRampSpeed(ramp, heldMs);
-    const range = _seekRange();
-    if (dir === 'left') {
-      // At the start of the hls.js buffer, the rewind continues in the archive
-      if (liveEngineActive() && !catchup &&
-          videoPlayer.currentTime <= range.start + 0.5) {
-        const target = liveWallTimeAt(range.start);
-        _stopHold();
-        rewindIntoArchive(target);
-        return;
-      }
-      videoPlayer.currentTime =
-          Math.max(range.start, videoPlayer.currentTime + speed * 0.1);
-      _showTrickBadge('◀◀ ' + Math.abs(speed) + '×');
+      if (dur) hi = Math.max(0, dur - 1);
     } else {
-      videoPlayer.currentTime =
-          Math.min(range.end - 1, videoPlayer.currentTime + speed * 0.1);
-      _showTrickBadge('▶▶ ' + speed + '×');
-      if (videoPlayer.currentTime >= range.end - 1) _stopHold();
+      // Catch-up: the rewind stops at the start of the programme
+      const r = _seekRange();
+      lo = r.start;
+      if (isFinite(r.end) && r.end > 0) hi = Math.max(lo, r.end - 1);
     }
-  }, 100);
+    _scrubPos = Math.max(lo, Math.min(hi, _scrubPos + sign * speed * 0.1));
+    updateVodOsd(_scrubPos);
+    if ((sign > 0 && _scrubPos >= hi) || (sign < 0 && _scrubPos <= lo))
+      _stopHold();
+  };
+  _showTrickBadge((sign < 0 ? '◀◀ ' : '▶▶ ') + ramp[0].speed + '×');
+  _trickInterval = setInterval(tick, 100);
 }
 
 function _stopHold() {
@@ -1797,8 +1938,17 @@ function _stopHold() {
     if (vodPlay.active) showVodOsd();
     return;
   }
+  if (_liveScrubWall !== null) {
+    // Live: one seek to the virtual position (the buffer, the live point, or
+    // the archive)
+    const w = _liveScrubWall;
+    _liveScrubWall = null;
+    _liveSeekToWall(w);
+    if (livePlayer.active) showVodOsd();
+    return;
+  }
   if (_scrubPos !== null) {
-    // VOD: one seek to the scrubbed position, then resume
+    // VOD and catch-up: one seek to the scrubbed position, then resume
     const target = _scrubPos;
     _scrubPos = null;
     try {
@@ -1806,10 +1956,23 @@ function _stopHold() {
     } catch (_) { /* not seekable yet */
     }
     videoPlayer.play().catch(() => {});
-    if (vodPlay.active) showVodOsd();
+    if (playerActive()) showVodOsd();
     return;
   }
   videoPlayer.play().catch(() => {});
+}
+
+/**
+ * Stops a hold and the short presses with no seek. Use it when the player
+ * closes or the channel changes.
+ */
+function _cancelHold() {
+  _scrubPos = null;
+  _liveScrubWall = null;
+  _stepPos = null;
+  _stepWall = null;
+  videoPlayer.removeEventListener('seeked', _flushStep);
+  if (_isHolding()) _stopHold();
 }
 
 function _isHolding() {

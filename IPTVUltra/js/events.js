@@ -429,14 +429,9 @@ document.addEventListener('keyup', (e) => {
   if (_isHolding()) {
     _stopHold();
   } else if (dir && held < HOLD_THRESHOLD_MS) {
-    // On an archive channel, a step that goes before the start of the buffer
-    // continues in the archive
-    if (dir === 'left' && liveLeftIntoArchive(3)) return;
-    _seekBy(
-        (dir === 'left' ? -1 : 1) *
-        (vodPlay.active || catchup ?
-             10 :
-             3));  // VOD and catch-up skip 10 s, live 3 s
+    // Live 3 s, VOD and catch-up 10 s. On an archive channel, a step before
+    // the start of the buffer continues in the archive.
+    playerStep(dir === 'left' ? -1 : 1);
   }
   showPlayerControls();
 });

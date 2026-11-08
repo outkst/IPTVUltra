@@ -243,7 +243,10 @@ function updateLiveOsd() {
         `${p.title} · ${formatClock(p.start)} – ${formatClock(p.stop)}`;
     const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) ||
         catchup.dur || 0;
-    const pos = videoPlayer.currentTime || 0;
+    // A scrub or a step that waits shows its virtual position
+    const pos = _scrubPos !== null ? _scrubPos :
+        _stepPos !== null          ? _stepPos :
+                                     (videoPlayer.currentTime || 0);
     const pct = dur ? Math.min(100, pos / dur * 100) : 0;
     document.getElementById('vodBarFill').style.width = pct + '%';
     document.getElementById('vodBarKnob').style.left = pct + '%';
@@ -287,7 +290,18 @@ function updateLiveOsd() {
             currentFilteredChannels.length}`;
     return;
   }
-  const now = getCurrentProgramme(ch.tvgId), next = getNextProgramme(ch.tvgId);
+  // The clock time of the picture: the virtual position during a scrub or a
+  // step that waits, else the playhead. The bar and the program are for that
+  // time.
+  const nowMs = Date.now();
+  const posMs = _liveScrubWall !== null ? _liveScrubWall :
+      _stepWall !== null                ? _stepWall :
+      liveEngineActive() ? liveWallTimeAt(videoPlayer.currentTime || 0) :
+                           nowMs;
+  const progs = epgProgsOf(ch.tvgId) || [];
+  const pi = _epgBinarySearch(progs, posMs);
+  const now = pi >= 0 && progs[pi].stop > posMs ? progs[pi] : null;
+  const next = progs[pi + 1] || null;
   document.getElementById('vodOsdTitle').textContent =
       `${chDisplayNum(ch, currentChannelIndex)}  ${ch.name}`;
   const subBits = [ch.group || '', now ? now.title : ''].filter(Boolean);
@@ -295,20 +309,18 @@ function updateLiveOsd() {
   let pct = 0;
   if (now && now.stop > now.start)
     pct = Math.min(
-        100,
-        Math.max(0, (Date.now() - now.start) / (now.stop - now.start) * 100));
+        100, Math.max(0, (posMs - now.start) / (now.stop - now.start) * 100));
   document.getElementById('vodBarFill').style.width = pct + '%';
   document.getElementById('vodBarKnob').style.left = pct + '%';
-  const behind = liveBehindSecs();
-  document.getElementById('vodTimePos').textContent = behind > 5 ?
-      `⏪ −${fmtClock(behind)} behind live` :
+  const posBehind = Math.max(0, (nowMs - posMs) / 1000);
+  document.getElementById('vodTimePos').textContent = posBehind > 5 ?
+      `⏪ −${fmtClock(posBehind)} behind live · ${formatClock(posMs)}` :
       (now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : 'LIVE');
   document.getElementById('vodTimeRem').textContent = next ?
       `Next: ${next.title} · ${formatClock(next.start)}` :
-      (now ? `${
-                 Math.max(
-                     0, Math.ceil((now.stop - Date.now()) / 60000))} min left` :
+      (now ? `${Math.max(0, Math.ceil((now.stop - posMs) / 60000))} min left` :
              '');
+  const behind = liveBehindSecs();
   const wasBehind = !!document.getElementById('vodOsd').dataset.behind;
   if ((behind > 5) !== wasBehind) {
     document.getElementById('vodOsd').dataset.behind = behind > 5 ? '1' : '';

@@ -47,9 +47,11 @@ async function rewindIntoArchiveTests(page) {
     window.__archive = null;
     return a;
   });
-  const isArchive = a => !!a && a.player && Math.abs(a.stop - a.at) < 2000 &&
+  // A hold moves the virtual position further back than a short press
+  const isArchive = (a, maxMs = 12000) => !!a && a.player &&
+      Math.abs(a.stop - a.at) < 2000 &&
       a.at - (a.start + a.startAt * 1000) >= 9000 &&
-      a.at - (a.start + a.startAt * 1000) < 12000 &&
+      a.at - (a.start + a.startAt * 1000) < maxMs &&
       /\/timeshift\/user\/pass\/\d+\/[\d:-]+\/50\.ts$/.test(a.url);
   await sleep(300);
   await leftKey(50);
@@ -65,7 +67,7 @@ async function rewindIntoArchiveTests(page) {
   const ra2 = await archiveCall();
   check(
       'a hold of Left in the live player of an archive channel also continues in the archive',
-      isArchive(ra2), JSON.stringify(ra2));
+      isArchive(ra2, 20000), JSON.stringify(ra2));
   await page.evaluate(() => catchupBackToLive());
   await sleep(300);
   // During the load of hls.js, no engine is active, but Left does not start
@@ -82,6 +84,26 @@ async function rewindIntoArchiveTests(page) {
   check(
       'Left during the load of hls.js does not start the archive',
       ra3 === null, JSON.stringify(ra3));
+  // No buffer and no archive: a hold of Left shows a message and does not
+  // pause or seek
+  const na = await page.evaluate(async () => {
+    const ch = channels[currentChannelIndex];
+    const archive = ch.archive;
+    ch.archive = 0;
+    _startHold('left');
+    const badge = document.getElementById('pbTrickBadge');
+    const r = {
+      text: badge.textContent,
+      shown: badge.style.display !== 'none',
+      holding: _isHolding()
+    };
+    ch.archive = archive;
+    return r;
+  });
+  check(
+      'no buffer and no archive: Left shows "Rewind is not available", no hold',
+      /not available/.test(na.text) && na.shown && !na.holding,
+      JSON.stringify(na));
 }
 const stats = async () => (await fetch(BASE + '/__stats')).json();
 
@@ -4339,6 +4361,42 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           scu.range.start === 0 && scu.range.end >= 5 &&
           /^H\.264/.test(scu.tech) && !/⏪/.test(scu.tech),
       JSON.stringify({scu0, scu}));
+  // A hold in a catch-up moves a virtual position on the bar. The video
+  // seeks 1 time, on release. Short presses during a seek add up.
+  const scrub = await page.evaluate(async () => {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let seeks = 0;
+    const on = () => seeks++;
+    videoPlayer.currentTime = 1;
+    await sleep(500);
+    videoPlayer.addEventListener('seeking', on);
+    const t0 = videoPlayer.currentTime;
+    _startHold('right');
+    await sleep(300);
+    const during = seeks, virt = _scrubPos;
+    const bar =
+        document.getElementById('vodTimePos').textContent === fmtClock(virt);
+    _stopHold();
+    await sleep(400);
+    const after = seeks, t = videoPlayer.currentTime;
+    seeks = 0;
+    playerStep(-1);
+    playerStep(-1);
+    playerStep(-1);
+    await sleep(1000);
+    videoPlayer.removeEventListener('seeking', on);
+    return {during, after, t0, virt, t, bar, steps: seeks,
+            end: videoPlayer.currentTime};
+  });
+  check(
+      'catch-up hold: no seek while held, 1 seek to the bar position on release',
+      scrub.during === 0 && scrub.after === 1 && scrub.virt > scrub.t0 + 1 &&
+          Math.abs(scrub.t - scrub.virt) < 1 &&
+          scrub.bar,
+      JSON.stringify(scrub));
+  check(
+      '3 quick short presses in a catch-up send 2 seeks, to the sum of the steps',
+      scrub.steps === 2 && scrub.end < 1, JSON.stringify(scrub));
   await page.evaluate(() => {
     channels[1].streamId = 404;
     const now = Date.now();
@@ -5062,6 +5120,22 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           ev.titles.join('|') ===
               'Old Match||LATER VS LATEST|MAIN CARD|SOON VS SOONER|',
       JSON.stringify(ev));
+  // A sport label in lower case goes from the title to the description
+  const evSport = await page.evaluate(() => {
+    const d = new Date(Date.now() + 3600000);
+    const p2 = n => String(n).padStart(2, '0');
+    const when = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${
+        p2(d.getDate())} ${p2(d.getHours())}:00:00`;
+    return ['hockey:  Red vs Blue _ U18 (Home)', 'live:  A vs B _ Cricket']
+        .map(t => parseEventName({name: `(SL 001) | ${t} (${when})`,
+                                  group: 'US| TEST PPV'}))
+        .map(e => e ? `${e.title}#${e.desc}` : null);
+  });
+  check(
+      'event names: a sport label goes to the description, " _ " becomes " · "',
+      evSport[0] === 'Red vs Blue · U18 (Home)#Hockey' &&
+          evSport[1] === 'A vs B · Cricket#',
+      JSON.stringify(evSport));
   check(
       'event group: sorted by start time, finished hidden (Sort, hide finished) or last (Sort), untouched when As listed',
       ev.hide === 'ev3.test,ev4.test,ev2.test,ev1.test,ev5.test' &&
