@@ -429,6 +429,32 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'focused row is rendered and highlighted after scrolling',
       focusedVisible);
 
+  // A channel selection that does not come from the cursor (a pointer click
+  // on a row) moves the cursor to the playing row. Down then starts there.
+  const clickFocus = await page.evaluate(() => {
+    const prev = currentChannelIndex;
+    const row = epgRenderedRows.get(epgFocusedRowIdx + 2);
+    if (!row) return null;
+    row.click();
+    return {prev, focus: epgFocusedRowIdx};
+  });
+  check(
+      'a click on a guide row moves the cursor to that row',
+      !!clickFocus && clickFocus.focus === 42,
+      JSON.stringify(clickFocus));
+  await key('ArrowDown', 40);
+  await sleep(200);
+  const downFocus = await page.evaluate(() => epgFocusedRowIdx);
+  check(
+      'Down after a click starts from the playing row', downFocus === 43,
+      `focus=${downFocus}`);
+  if (clickFocus) {
+    await page.evaluate(prev => {
+      if (prev >= 0) selectChannel(prev);
+    }, clickFocus.prev);
+    await sleep(300);
+  }
+
   // ---------- Catch-up: archive channel, programme cursor into the past, OK
   // plays the timeshift stream ----------
   await page.evaluate(() => {

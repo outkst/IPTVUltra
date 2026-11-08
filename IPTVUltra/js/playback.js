@@ -240,6 +240,14 @@ function selectChannel(index) {
     const filteredIdx = currentFilteredChannels.indexOf(ch);
     if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx))
       epgRenderedRows.get(filteredIdx).classList.add('active');
+    // The cursor goes to the channel that plays. Thus, Up and Down start from
+    // that row also after a pointer click, a long press of OK, or an
+    // alternative source.
+    if (filteredIdx >= 0 && filteredIdx !== epgFocusedRowIdx) {
+      epgFocusedRowIdx = filteredIdx;
+      epgFocusT = 0;
+      updateEPGRowFocus();
+    }
     updateEPGInfoPanel(ch);
   } else {
     // Update the active row in place — no list rebuild
