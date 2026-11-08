@@ -682,6 +682,26 @@ function shakaConfig(secs) {
   };
 }
 let _shakaPolyfilled = false;
+// The text displayer of Shaka Player. Shaka Player 5 has no public method for
+// the text visibility, and selectTextTrack alone left a caption track
+// "hidden" with no cues (seen on the C4, 2026-11-08, also with 3.16.0). With
+// the visibility on before the selection, the track was active, and cues
+// came. Thus, the app makes the displayer, and shakaSelectText sets the
+// visibility.
+let _shakaText = null;
+/**
+ * Selects a text track of Shaka Player, and shows or hides the text.
+ * @param {!Object} p The player.
+ * @param {?Object} track The track, or null for no text.
+ */
+function shakaSelectText(p, track) {
+  try {
+    if (_shakaText && typeof _shakaText.setTextVisibility === 'function')
+      _shakaText.setTextVisibility(!!track);
+  } catch (_) { /* the displayer is not ready */
+  }
+  p.selectTextTrack(track);
+}
 // The app has 1 Shaka Player. A channel change calls load() again on the same
 // player: the player keeps its MediaSource, and the change does not wait for a
 // destroy. The player is detached when a different source takes the <video>
@@ -705,6 +725,12 @@ function shakaPlayer() {
     }
   }
   const player = new shaka.Player();
+  try {
+    player.configure(
+        'textDisplayFactory',
+        p => (_shakaText = new shaka.text.NativeTextDisplayer(p)));
+  } catch (_) { /* the default displayer stays */
+  }
   player.addEventListener('error', e => {
     if (liveEngine.shaka === player) onShakaError(liveEngine.url, e.detail);
   });

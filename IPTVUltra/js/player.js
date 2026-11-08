@@ -1108,7 +1108,7 @@ function applyShakaTrackPrefs() {
                     settings.subLang)) ||
                 null;
       const cur = subs.find(t => t.active) || null;
-      if ((pick && pick.id) !== (cur && cur.id)) p.selectTextTrack(pick);
+      if ((pick && pick.id) !== (cur && cur.id)) shakaSelectText(p, pick);
     }
     if (auds.length > 1 && !liveEngine.audioManual &&
         settings.audioLang !== 'default') {
@@ -1162,7 +1162,7 @@ function activateVodTrack() {
     const p = liveEngine.shaka;
     try {
       if (it.kind === 'sub') {
-        p.selectTextTrack(it.shaka);
+        shakaSelectText(p, it.shaka);
         liveEngine.subManual = true;
       } else {
         p.selectAudioTrack(it.shaka);

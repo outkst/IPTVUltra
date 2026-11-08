@@ -3830,6 +3830,19 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           shk.name === 'Shaka Player' && /hls50/.test(shk.url) && shk.ums &&
           shk.row === 'shaka',
       JSON.stringify(shk));
+  // The app makes the text displayer, thus it can show and hide the text
+  const disp = await page.evaluate(async () => {
+    const t0 = Date.now();
+    while (!_shakaText && Date.now() - t0 < 10000)
+      await new Promise(r => setTimeout(r, 200));
+    if (!_shakaText) return {made: false};
+    shakaSelectText(liveEngine.shaka, null);
+    const off = _shakaText.isTextVisible();
+    return {made: _shakaText instanceof shaka.text.NativeTextDisplayer, off};
+  });
+  check(
+      'Shaka Player uses the text displayer of the app (captions visibility)',
+      disp.made && disp.off === false, JSON.stringify(disp));
   await page
       .waitForFunction(
           () =>
