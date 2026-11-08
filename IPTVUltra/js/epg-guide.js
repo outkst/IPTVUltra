@@ -169,17 +169,35 @@ function fmtTimeshiftStart(ms, tz) {
         p(u.getUTCDate())}:${p(u.getUTCHours())}-${p(u.getUTCMinutes())}`;
   }
 }
+/**
+ * Gives the listing that starts last before the current time, else the first
+ * listing. The clock of the panel can change (daylight saving time). Thus,
+ * the offset sample must be near the current time.
+ * @param {?Array<!Object>} listings The epg_listings of a reply.
+ * @return {?Object}
+ */
+function epgListingNearNow(listings) {
+  if (!Array.isArray(listings) || !listings.length) return null;
+  const now = Date.now() / 1000;
+  let best = listings[0];
+  for (const ep of listings) {
+    const ts = parseInt(ep.start_timestamp);
+    if (ts <= now && ts > parseInt(best.start_timestamp)) best = ep;
+  }
+  return best;
+}
 // Learn the panel's clock from one EPG listing: minutes between its `start`
-// string (read as UTC) and start_timestamp
+// string (read as UTC) and start_timestamp. Each reply gives a new sample, and
+// a different sample replaces the old value (daylight saving time).
 function xtreamNoteEpgOffset(ep) {
-  if (!_xt || typeof _xt.epgOffsetMin === 'number' || !ep || !ep.start) return;
+  if (!_xt || !ep || !ep.start) return;
   const m =
       String(ep.start).match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
   const ts = parseInt(ep.start_timestamp) * 1000;
   if (!m || isNaN(ts)) return;
   const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
   const off = Math.round((asUtc - ts) / 60000);
-  if (Math.abs(off) > 14 * 60) return;
+  if (Math.abs(off) > 14 * 60 || _xt.epgOffsetMin === off) return;
   _xt.epgOffsetMin = off;
   // Remember it with the cached playlist so a cached launch can build catch-up
   // URLs before any EPG fetch
@@ -278,7 +296,7 @@ async function fetchXtreamEpgFull(tvgId) {
     if (!Array.isArray(listings)) return;
     const byStart = new Map();
     for (const p of epgData.get(tvgId) || []) byStart.set(p.start, p);
-    if (listings.length) xtreamNoteEpgOffset(listings[0]);
+    xtreamNoteEpgOffset(epgListingNearNow(listings));
     for (const ep of listings) {
       const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000),
             pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
@@ -301,6 +319,7 @@ async function fetchXtreamEpgFull(tvgId) {
     epgData.delete(tvgId);
     epgData.set(tvgId, progs);
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
+    epgTrimLru();
     const m = _epgFetchMeta.get(tvgId);
     if (!m || m.status !== 'pending')
       _epgFetchMeta.set(tvgId, {at: Date.now(), status: 'done'});
@@ -1094,7 +1113,7 @@ async function fetchXtreamEpgFor(tvgId) {
       if (Array.isArray(listings)) {
         const cutoff = Date.now() -
             2 * 3600000;  // keep a little history for the 1h-back guide window
-        if (listings.length) xtreamNoteEpgOffset(listings[0]);
+        xtreamNoteEpgOffset(epgListingNearNow(listings));
         for (const ep of listings) {
           const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000);
           const pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
@@ -1125,30 +1144,73 @@ async function fetchXtreamEpgFor(tvgId) {
              Date.now() - EPG_CACHE_TTL_MS + 60000,
     status: ok ? 'done' : 'error'
   });
-  if (ok && progs.length)
-    epgPersist(
-        tvgId, Date.now(),
-        epgShiftProgs(progs, -1));  // cache keeps provider time
-  if (empty && epgData.has(tvgId)) {
+  if (!progs.length && epgData.has(tvgId)) {
     onEpgChannelUpdated(tvgId);
     return;
-  }  // keep what we have (stale beats blank)
+  }  // keep what we have (stale beats blank), also after a network error
   if (progs.length) {
+    // The short EPG starts approximately 2 h back. Keep the older programs
+    // (for example, the archive table of fetchXtreamEpgFull).
+    const merged = epgMergeShort(epgData.get(tvgId), progs);
+    epgPersist(
+        tvgId, Date.now(),
+        epgShiftProgs(merged, -1));  // cache keeps provider time
     epgData.delete(
         tvgId);  // re-insert so Map insertion order doubles as LRU order
-    epgData.set(tvgId, progs);
+    epgData.set(tvgId, merged);
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
-    if (epgData.size > EPG_CACHE_MAX) {
-      for (const k of epgData.keys()) {
-        if (epgData.size <= EPG_CACHE_MAX) break;
-        epgData.delete(k);
-        _epgFetchMeta.delete(k);
-      }
-    }
-  } else {
-    epgData.delete(tvgId);
+    epgTrimLru();
   }
   onEpgChannelUpdated(tvgId);
+}
+
+/**
+ * Merges a new short EPG list into the programs that the guide has for a
+ * channel. The function keeps the older programs that stop before the first
+ * program of the new list, and only those in the guide window. A program of
+ * the new list gets the `hasArchive` value of the old program with the same
+ * start.
+ * @param {?Array<!Object>} old The programs in epgData, or null.
+ * @param {!Array<!Object>} progs The new short EPG, sorted by start.
+ * @return {!Array<!Object>} The merged list, sorted by start.
+ */
+function epgMergeShort(old, progs) {
+  if (!old || !old.length) return progs;
+  const first = progs[0].start;
+  const from = Date.now() - epgPastHours() * 3600000;
+  const out = [];
+  for (const p of old) {
+    if (p.start >= first) break;
+    if (p.stop <= first && p.stop > from) out.push(p);
+  }
+  for (const p of progs) {
+    if (p.hasArchive === undefined) {
+      const i = _epgBinarySearch(old, p.start);
+      if (i >= 0 && old[i].start === p.start && old[i].hasArchive !== undefined)
+        p.hasArchive = old[i].hasArchive;
+    }
+    out.push(p);
+  }
+  // Also keep the old programs after the last program of the new list
+  const last = progs[progs.length - 1].stop;
+  for (const p of old)
+    if (p.start >= last) out.push(p);
+  return out;
+}
+
+/**
+ * Removes the least recently used channels from epgData until it has a
+ * maximum of EPG_CACHE_MAX channels. A removed channel also loses its fetch
+ * state and its archive state, thus the guide fetches them again.
+ */
+function epgTrimLru() {
+  if (epgData.size <= EPG_CACHE_MAX) return;
+  for (const k of epgData.keys()) {
+    if (epgData.size <= EPG_CACHE_MAX) break;
+    epgData.delete(k);
+    _epgFetchMeta.delete(k);
+    _epgFullFetched.delete(k);
+  }
 }
 
 // Refresh whatever is on screen for this channel, in place. Completed fetches
