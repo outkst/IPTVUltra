@@ -1551,8 +1551,25 @@ async function avSyncRead() {
   if (!j || !j.settings) throw new Error('no settings');
   return j.settings;
 }
-async function avSyncApply(v) {
-  if (!_hbAvailable || !(v >= 0)) return false;
+// The apply and the restore operations run 1 after the other. The restore
+// keeps _avSyncOrig until its write completes. Thus, an apply that starts
+// during a restore does not read the app value as the initial value.
+let _avSyncQueue = Promise.resolve();
+/**
+ * Puts an AV sync operation in the queue.
+ * @param {function(): !Promise<boolean>} fn The operation.
+ * @return {!Promise<boolean>} The result of the operation.
+ */
+function avSyncQueue(fn) {
+  const p = _avSyncQueue.then(fn);
+  _avSyncQueue = p.catch(() => false);
+  return p;
+}
+function avSyncApply(v) {
+  if (!_hbAvailable || !(v >= 0)) return Promise.resolve(false);
+  return avSyncQueue(() => avSyncApplyNow(v));
+}
+async function avSyncApplyNow(v) {
   if (_avSyncOrig === null) {
     try {
       const s = await avSyncRead();
@@ -1574,15 +1591,22 @@ async function avSyncApply(v) {
     return false;
   }
 }
-async function avSyncRestore() {
-  if (!_avSyncOrig) return;
+function avSyncRestore() {
+  return avSyncQueue(avSyncRestoreNow);
+}
+async function avSyncRestoreNow() {
   const o = _avSyncOrig;
-  _avSyncOrig = null;
+  if (!o) return false;
   try {
     await hbExec(
         lunaSettingsCmd('setSystemSettings', {category: 'sound', settings: o}));
+    // The TV has the initial value again. The next apply reads it again.
+    if (_avSyncOrig === o) _avSyncOrig = null;
+    return true;
   } catch (e) {
+    // Keep the initial value. The TV can have the value of the app.
     diagLog('AV sync: restore failed: ' + e.message);
+    return false;
   }
 }
 function avSyncOnVisibility() {
