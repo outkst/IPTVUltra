@@ -271,18 +271,44 @@ function flushEpgPersist() {
 // Put cached EPG into the live maps for the playlist just applied and refresh
 // whatever is on screen
 async function epgRestoreFromCache(key) {
+  if (!_epgSweepDone) setTimeout(epgSweepCache, 60000);
   const rows = await cacheGetPrefix('epg', key + '|');
   if (_activePlaylistKey !== key || !rows.length) return 0;
   const now = Date.now();
-  let n = 0;
+  const drop = [];  // keys to delete from the store
+  const keep = [];
   for (const {k, v} of rows) {
     const tvgId = String(k).slice(key.length + 1);
     if (!tvgId || !v || !Array.isArray(v.progs) || !v.progs.length ||
-        now - v.at > EPG_PERSIST_MAX_AGE_MS)
+        !(now - v.at <= EPG_PERSIST_MAX_AGE_MS)) {
+      drop.push(k);
       continue;
-    if (_epgFetchMeta.has(tvgId) &&
-        _epgFetchMeta.get(tvgId).status === 'pending')
+    }
+    keep.push({k, tvgId, v});
+  }
+  // The newest entries first. The store keeps only the entries that fit in
+  // epgData.
+  keep.sort((a, b) => b.v.at - a.v.at);
+  for (const r of keep.splice(EPG_CACHE_MAX)) drop.push(r.k);
+  if (drop.length) cacheDeleteKeys('epg', drop);
+  // The restored entries go to the start of the LRU sequence. Thus, the LRU
+  // removes them before the entries that a live fetch gave.
+  const room = Math.max(0, EPG_CACHE_MAX - epgData.size);
+  const restored = [];
+  for (const {tvgId, v} of keep) {
+    if (restored.length >= room) break;
+    const meta = _epgFetchMeta.get(tvgId);
+    if (meta && meta.status === 'pending')
       continue;  // a live fetch is already ahead of us
+    if (meta && meta.status === 'done' && epgData.has(tvgId) && meta.at >= v.at)
+      continue;  // the data in memory is newer
+    restored.push({tvgId, v});
+  }
+  if (!restored.length) return 0;
+  const live = [...epgData];
+  epgData.clear();
+  for (let i = restored.length - 1; i >= 0; i--) {
+    const {tvgId, v} = restored[i];
     epgData.set(tvgId, epgShiftProgs(v.progs, 1));  // cache holds provider time
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
     _epgFetchMeta.set(tvgId, {
@@ -290,15 +316,45 @@ async function epgRestoreFromCache(key) {
       status: 'done'
     });  // past its TTL it is simply re-fetched when visible
     _epgDirtyIds.add(tvgId);
-    n++;
   }
-  for (const k0 of epgData.keys()) {
-    if (epgData.size <= EPG_CACHE_MAX) break;
-    epgData.delete(k0);
-    _epgFetchMeta.delete(k0);
-  }
-  if (n) flushEpgRowUpdates();
-  return n;
+  for (const [k0, v0] of live)
+    if (!epgData.has(k0)) epgData.set(k0, v0);
+  flushEpgRowUpdates();
+  return restored.length;
+}
+// Deletes the entries of the EPG store that are older than
+// EPG_PERSIST_MAX_AGE_MS, for all playlists. The app does this 1 time in a
+// session, after the restore.
+let _epgSweepDone = false;
+function epgSweepCache() {
+  if (_epgSweepDone) return;
+  _epgSweepDone = true;
+  cacheDb().then(db => {
+    if (!db) return;
+    try {
+      const now = Date.now();
+      const cur =
+          db.transaction('epg', 'readwrite').objectStore('epg').openCursor();
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return;
+        const v = c.value;
+        if (!v || !(now - v.at <= EPG_PERSIST_MAX_AGE_MS)) c.delete();
+        c.continue();
+      };
+    } catch (_) { /* cache unavailable */
+    }
+  });
+}
+function cacheDeleteKeys(store, keys) {
+  return cacheDb().then(db => {
+    if (!db) return;
+    try {
+      const st = db.transaction(store, 'readwrite').objectStore(store);
+      for (const k of keys) st.delete(k);
+    } catch (_) { /* cache unavailable */
+    }
+  });
 }
 // Cheap fingerprint of a channel list, to tell whether a refresh changed
 // anything
