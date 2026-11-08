@@ -30,6 +30,7 @@ function extractGroups() {
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   _hiddenGroups = new Set((ps && ps.hiddenGroups) || []);
   _groupOrder = (ps && ps.groupOrder) || [];
+  _searchCache = {query: null, result: null};  // the hidden groups can change
   groupsList = ['favorites', 'all', 'recent'].concat(
       sortGroupNames(allGroupNames().filter(g => !_hiddenGroups.has(g))));
   renderGroupsList();
@@ -430,9 +431,14 @@ function highlightText(text, query) {
   return result;
 }
 
+const SEARCH_CACHE_MS = 30000;
 function searchChannels(query) {
   if (!query.trim()) return [...channels];
-  if (_searchCache.query === query) return _searchCache.result;
+  // The programme titles change with the time and with new EPG data. Thus,
+  // the key has the sizes of the EPG maps and a period of 30 s.
+  const cacheKey = query + '\n' + epgData.size + '|' + xmltvData.size + '|' +
+      Math.floor(Date.now() / SEARCH_CACHE_MS);
+  if (_searchCache.query === cacheKey) return _searchCache.result;
   const terms = query.toLowerCase().split(/\s+/);
   // Matches channel names and groups, and also what is on now: a programme
   // title match (from the EPG already loaded, lazily per channel) ranks just
@@ -474,7 +480,7 @@ function searchChannels(query) {
   const result = scored.filter(s => s.score > 0)
                      .sort((a, b) => b.score - a.score)
                      .map(s => channels[s.idx]);
-  _searchCache = {query, result};
+  _searchCache = {query: cacheKey, result};
   return result;
 }
 
