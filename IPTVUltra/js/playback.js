@@ -3,6 +3,9 @@
  */
 
 // ----- Stall Watchdog -----
+// A frozen picture (the playhead does not move, readyState 3 or 4) gets this
+// number of times the checks of a stall before a reload.
+const STALL_FROZEN_FACTOR = 2;
 function startStallWatchdog() {
   stopStallWatchdog();
   stallLastTime = -1;
@@ -33,18 +36,22 @@ function startStallWatchdog() {
     // the element then keeps readyState 4 (seen on the C4, 2026-10-26)
     const waits = videoPlayer.readyState < 3 ||
         (!!liveEngine.shaka && liveEngine.shaka.isBuffering());
-    if (t === stallLastTime && waits) {
+    // A playhead that does not move with data (readyState 3 or 4) is a frozen
+    // picture. It is not good playback, but it gets more time than a stall.
+    const limit = waits ? STALL_THRESHOLD_CHECKS :
+                          STALL_FROZEN_FACTOR * STALL_THRESHOLD_CHECKS;
+    if (t === stallLastTime) {
       stallCount++;
       _stallGoodChecks = 0;
-      if (stallCount >= STALL_THRESHOLD_CHECKS && bufEnd - t < 2 &&
+      if (stallCount >= limit && bufEnd - t < 2 &&
           Date.now() - _stallBufAt < STALL_ALIVE_MS) {
-        stallCount = STALL_THRESHOLD_CHECKS - 1;  // slow, not dead: wait
-      } else if (stallCount >= STALL_THRESHOLD_CHECKS) {
+        stallCount = limit - 1;  // slow, not dead: wait
+      } else if (stallCount >= limit) {
         stallCount = 0;
         stallLastTime = -1;
         noteStreamFail(
             liveEngineName(),
-            `No progress for ${STALL_THRESHOLD_CHECKS * 2} s (readyState ${
+            `No progress for ${limit * 2} s (readyState ${
                 videoPlayer.readyState}, t=${t.toFixed(1)} s)`,
             '');
         if (_reloadAttempts >= MAX_AUTO_RELOADS) {
