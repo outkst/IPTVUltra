@@ -127,6 +127,28 @@ const SUB_SIZE_OPTIONS = [
 // restart can still be read; entries from earlier runs are flagged `prev`.
 const DIAG_MAX = 50;
 const DIAG_STORE_KEY = 'iptv_diag_log';
+
+/**
+ * Removes the credentials from a URL, a playlist key, or a favorite id, for the
+ * Diagnostics overlay and the log. The function replaces the user name and the
+ * password in the query, in the user info, and in the path of an Xtream
+ * stream (`/live/<user>/<pass>/` and `/<user>/<pass>/<id>`) with `***`.
+ * @param {*} s The text.
+ * @return {string} The text with no credentials.
+ */
+function redactCredentials(s) {
+  return String(s == null ? '' : s)
+      .replace(
+          /([?&](?:username|password|user|pass|pwd|token)=)[^&#\s]*/gi, '$1***')
+      .replace(/(\/\/)[^/@\s]+@/g, '$1***@')
+      .replace(
+          /\/(live|movie|series|timeshift)\/[^/\s]+\/[^/\s]+\//gi,
+          '/$1/***/***/')
+      .replace(
+          /(\/\/[^/\s]+)\/[^/\s*]+\/[^/\s*]+\/(\d+(?:\.\w+)?)(?=$|[?#\s])/g,
+          '$1/***/***/$2')
+      .replace(/^(x:[^|]*\|).+$/, '$1***');
+}
 const _diagLog = (() => {
   try {
     const a = JSON.parse(localStorage.getItem(DIAG_STORE_KEY) || '[]');

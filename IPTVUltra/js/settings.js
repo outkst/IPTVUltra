@@ -639,9 +639,10 @@ function diagLines() {
   L.push(`Memory: ${mem}`);
   L.push(`Agent: ${navigator.userAgent.slice(0, 120)}`);
   L.push('');
-  L.push(`Playlist: ${_activePlaylistKey || 'none'} (${
-      currentPlaylistType ||
-      '-'}) · ${channels.length.toLocaleString()} channels · ${
+  L.push(`Playlist: ${
+      _activePlaylistKey ? redactCredentials(_activePlaylistKey) :
+                           'none'} (${currentPlaylistType || '-'}) · ${
+      channels.length.toLocaleString()} channels · ${
       groupsList.length} groups · ${favoriteIds.size} favorites`);
   L.push(`EPG: ${epgData.size.toLocaleString()} channels cached · queue ${
       typeof _epgQueue !== 'undefined' ?

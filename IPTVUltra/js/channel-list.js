@@ -149,7 +149,7 @@ function noteFavoriteChanges(before, after) {
   const removed = before.filter(id => !after.has(id));
   const name = (id) => {
     const l = _chansByFavId.get(id);
-    return l && l[0] ? l[0].name : id;
+    return l && l[0] ? l[0].name : redactCredentials(id);
   };
   for (const [what, ids] of [['added', added], ['removed', removed]]) {
     if (!ids.length) continue;
