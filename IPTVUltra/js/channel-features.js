@@ -119,6 +119,7 @@ const _RE_EV_AT =
     /@\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\s+(\d{1,2}):(\d\d)\s*([ap]m)?/i;
 const _RE_EV_JUNKSEG =
     /^(?:\d+K EXCLUSIVE|all|[A-Z]{2}: .+ \d+|(?:[A-Z]{2}\s*)?(?:\([^)]*\)\s*)+\d*)$/i;
+const _RE_EV_SPORT = /^([a-z][a-z ]{1,20}):\s+(\S.*)$/;
 const _RE_EV_LABEL =
     /^(?:(?:\S+\s+){0,2}\d{1,3}\S?\s*:|[a-z]+:\s*\d+\s+name:)\s*/i;  // "UFC 02
                                                                      // :", "PDC
@@ -222,8 +223,21 @@ function parseEventName(ch) {
   if (segs.length > 1 && /^(?:[A-Z]{2}|[^:]{1,30}\s\d{1,3})$/.test(segs[0]))
     segs.shift();  // slot label: "CA", "National League 1"
   if (segs.length) segs[0] = segs[0].replace(_RE_EV_LABEL, '') || segs[0];
+  // A sport label in lower case goes to the description: "hockey:  A vs B _
+  // U18" gives the title "A vs B · U18" and the description "Hockey"
+  let sport = '';
+  if (segs.length) {
+    const sm = _RE_EV_SPORT.exec(segs[0]);
+    if (sm) {
+      const s = sm[1].replace(/^flo(?=[a-z]{3})/, '');
+      if (s !== 'live') sport = s.charAt(0).toUpperCase() + s.slice(1);
+      segs[0] = sm[2];
+    }
+    segs[0] = segs[0].replace(/\s+_\s+/g, ' · ').replace(/\s{2,}/g, ' ');
+  }
   const title = segs.length ? segs[0] : name;
-  return {start, stop, title, desc: segs.slice(1).join(' · '), tag};
+  const desc = [sport].concat(segs.slice(1)).filter(Boolean).join(' · ');
+  return {start, stop, title, desc, tag};
 }
 // Parsed once per channel object (names do not change; a playlist refresh
 // brings new objects)
