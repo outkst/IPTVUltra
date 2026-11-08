@@ -1178,6 +1178,47 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       hourRoll.x1 === Math.max(0, hourRoll.x0 - hourRoll.px) &&
           hourRoll.rebuilt,
       JSON.stringify(hourRoll));
+  // A short EPG refresh keeps the earlier programs (archive table) and the
+  // programs after the short list.
+  const merge = await page.evaluate(() => {
+    const now = Date.now(), m = 60000;
+    const old = [
+      {start: now - 300 * m, stop: now - 240 * m, title: 'a', hasArchive: true},
+      {start: now - 60 * m, stop: now, title: 'b', hasArchive: true},
+      {start: now + 600 * m, stop: now + 660 * m, title: 'z'}
+    ];
+    const short = [
+      {start: now - 60 * m, stop: now, title: 'b2'},
+      {start: now, stop: now + 60 * m, title: 'c'}
+    ];
+    const r = epgMergeShort(old, short);
+    return {
+      titles: r.map(p => p.title).join(),
+      arch: r[1].hasArchive === true
+    };
+  });
+  check(
+      'a short EPG refresh keeps the archive programs before and after it',
+      merge.titles === 'a,b2,c,z' && merge.arch, JSON.stringify(merge));
+  // Left after the last program goes to that program
+  const lastLeft = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const progs = ch && epgProgsOf(ch.tvgId);
+    if (!progs || !progs.length) return {skip: true};
+    const last = progs[progs.length - 1];
+    const keepT = epgFocusT, keepX = _epgX;
+    epgFocusT = last.stop + 60000;
+    epgMoveCursor(-1);
+    const p = epgFocusedProg();
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: !!p && p.start === last.start};
+  });
+  check(
+      'Left after the last program of a row goes to that program',
+      lastLeft.skip || lastLeft.ok, JSON.stringify(lastLeft));
 
   // Empty answers under load: an empty epg_listings never replaces data already
   // held and is retried soon
