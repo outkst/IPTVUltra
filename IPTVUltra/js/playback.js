@@ -483,9 +483,12 @@ function reloadStream(auto, cause) {
   if (!isAuto)
     _reloadAttempts = 0;  // a manual reload restores the auto-reload budget
   stopStallWatchdog();
-  const url = catchup && catchup.chIdx === currentChannelIndex ?
-      catchup.url :
-      channels[currentChannelIndex].url;
+  const c = catchup && catchup.chIdx === currentChannelIndex ? catchup : null;
+  // A catch-up continues from the position in the program. Before the
+  // metadata of the stream, the position is not known: keep the last value.
+  if (c && videoPlayer.readyState >= 1 && videoPlayer.currentTime > 0)
+    c.seekTo = videoPlayer.currentTime;
+  const url = c ? c.url : channels[currentChannelIndex].url;
   const wasPlaying = !videoPlayer.paused;
   videoPlayer.pause();
   umsNoteCurrentId();
@@ -497,6 +500,8 @@ function reloadStream(auto, cause) {
     liveUms = null;
   } else
     liveUmsRefresh();
+  // Shaka Player gets the position with its load (loadShakaSource)
+  if (c && !liveEngine.shaka) catchupSeekOnLoad(c);
   if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
   startStallWatchdog();
   const reloading = isAuto ?
