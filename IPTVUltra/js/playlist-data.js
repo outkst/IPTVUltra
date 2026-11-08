@@ -50,17 +50,63 @@ function setLoadSelectedButtonEnabled(enabled) {
   if (loadSelectedBtn) loadSelectedBtn.disabled = !enabled;
 }
 
+const HTML_ESCAPES = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  '\'': '&#39;'
+};
+
+/**
+ * Escapes text for HTML content and for an attribute value in quotes.
+ * @param {*} str The text.
+ * @return {string} The escaped text.
+ */
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/[&<>]/g, function(m) {
-    if (m === '&') return '&amp;';
-    if (m === '<') return '&lt;';
-    if (m === '>') return '&gt;';
-    return m;
-  });
+  return String(str).replace(/[&<>"']/g, m => HTML_ESCAPES[m]);
 }
 
 // ----- Streaming Parser (never hangs) -----
+// An attribute of an #EXTINF line: a name, then a value in double quotes, in
+// single quotes, or with no quotes.
+const _RE_EXTINF_ATTR = /([\w-]+)=(?:"([^"]*)"|'([^']*)'|([^\s,"']*))/g;
+
+/**
+ * Reads an #EXTINF line. A value in quotes can contain a comma, and a value in
+ * double quotes can contain an apostrophe. The name is the text after the
+ * first comma outside quotes.
+ * @param {string} line The #EXTINF line.
+ * @return {{name: ?string, attrs: !Object<string, string>}} The name (null
+ *     when the line has no comma) and the attributes, with names in lower case.
+ */
+function parseExtinf(line) {
+  let quote = '';
+  let comma = -1;
+  for (let k = 8; k < line.length; k++) {
+    const c = line[k];
+    if (quote) {
+      if (c === quote) quote = '';
+    } else if (c === '"' || (c === '\'' && line[k - 1] === '=')) {
+      quote = c;
+    } else if (c === ',') {
+      comma = k;
+      break;
+    }
+  }
+  const head = comma >= 0 ? line.slice(0, comma) : line;
+  const attrs = {};
+  _RE_EXTINF_ATTR.lastIndex = 0;
+  let m;
+  while ((m = _RE_EXTINF_ATTR.exec(head))) {
+    const key = m[1].toLowerCase();
+    if (!(key in attrs))
+      attrs[key] = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+  }
+  return {name: comma >= 0 ? line.slice(comma + 1).trim() : null, attrs};
+}
+
 async function parseM3UStreaming(content) {
   const lines = content.split(/\r?\n/);
   const total = lines.length;
@@ -74,22 +120,19 @@ async function parseM3UStreaming(content) {
       const line = lines[j].trim();
       if (!line) continue;
       if (line.startsWith('#EXTINF:')) {
-        const nameMatch = line.match(/#EXTINF:.*?,(.*)$/);
-        const tvgIdMatch = line.match(/tvg-id=["']([^"']*)["']/i);
-        const tvgLogoMatch = line.match(/tvg-logo=["']([^"']*)["']/i);
-        const groupMatch = line.match(/group-title=["']([^"']*)["']/i);
+        const inf = parseExtinf(line);
         current = {
-          name: nameMatch ? nameMatch[1].trim() : 'Unknown',
-          tvgId: tvgIdMatch ? tvgIdMatch[1] : '',
-          tvgLogo: tvgLogoMatch ? tvgLogoMatch[1] : '',
-          group: groupMatch ? groupMatch[1] : '',
+          name: inf.name === null ? 'Unknown' : copyStr(inf.name),
+          tvgId: copyStr(inf.attrs['tvg-id'] || ''),
+          tvgLogo: copyStr(inf.attrs['tvg-logo'] || ''),
+          group: copyStr((inf.attrs['group-title'] || '').trim()),
           url: ''
         };
       } else if (
           !line.startsWith('#') && current &&
           (line.startsWith('http') || line.startsWith('https') ||
            line.startsWith('//'))) {
-        current.url = line.startsWith('//') ? 'https:' + line : line;
+        current.url = copyStr(line.startsWith('//') ? 'https:' + line : line);
         channelsList.push(current);
         current = null;
       }
@@ -228,18 +271,44 @@ function flushEpgPersist() {
 // Put cached EPG into the live maps for the playlist just applied and refresh
 // whatever is on screen
 async function epgRestoreFromCache(key) {
+  if (!_epgSweepDone) setTimeout(epgSweepCache, 60000);
   const rows = await cacheGetPrefix('epg', key + '|');
   if (_activePlaylistKey !== key || !rows.length) return 0;
   const now = Date.now();
-  let n = 0;
+  const drop = [];  // keys to delete from the store
+  const keep = [];
   for (const {k, v} of rows) {
     const tvgId = String(k).slice(key.length + 1);
     if (!tvgId || !v || !Array.isArray(v.progs) || !v.progs.length ||
-        now - v.at > EPG_PERSIST_MAX_AGE_MS)
+        !(now - v.at <= EPG_PERSIST_MAX_AGE_MS)) {
+      drop.push(k);
       continue;
-    if (_epgFetchMeta.has(tvgId) &&
-        _epgFetchMeta.get(tvgId).status === 'pending')
+    }
+    keep.push({k, tvgId, v});
+  }
+  // The newest entries first. The store keeps only the entries that fit in
+  // epgData.
+  keep.sort((a, b) => b.v.at - a.v.at);
+  for (const r of keep.splice(EPG_CACHE_MAX)) drop.push(r.k);
+  if (drop.length) cacheDeleteKeys('epg', drop);
+  // The restored entries go to the start of the LRU sequence. Thus, the LRU
+  // removes them before the entries that a live fetch gave.
+  const room = Math.max(0, EPG_CACHE_MAX - epgData.size);
+  const restored = [];
+  for (const {tvgId, v} of keep) {
+    if (restored.length >= room) break;
+    const meta = _epgFetchMeta.get(tvgId);
+    if (meta && meta.status === 'pending')
       continue;  // a live fetch is already ahead of us
+    if (meta && meta.status === 'done' && epgData.has(tvgId) && meta.at >= v.at)
+      continue;  // the data in memory is newer
+    restored.push({tvgId, v});
+  }
+  if (!restored.length) return 0;
+  const live = [...epgData];
+  epgData.clear();
+  for (let i = restored.length - 1; i >= 0; i--) {
+    const {tvgId, v} = restored[i];
     epgData.set(tvgId, epgShiftProgs(v.progs, 1));  // cache holds provider time
     epgIdMap.set(tvgId.toLowerCase(), tvgId);
     _epgFetchMeta.set(tvgId, {
@@ -247,22 +316,55 @@ async function epgRestoreFromCache(key) {
       status: 'done'
     });  // past its TTL it is simply re-fetched when visible
     _epgDirtyIds.add(tvgId);
-    n++;
   }
-  for (const k0 of epgData.keys()) {
-    if (epgData.size <= EPG_CACHE_MAX) break;
-    epgData.delete(k0);
-    _epgFetchMeta.delete(k0);
-  }
-  if (n) flushEpgRowUpdates();
-  return n;
+  for (const [k0, v0] of live)
+    if (!epgData.has(k0)) epgData.set(k0, v0);
+  flushEpgRowUpdates();
+  return restored.length;
+}
+// Deletes the entries of the EPG store that are older than
+// EPG_PERSIST_MAX_AGE_MS, for all playlists. The app does this 1 time in a
+// session, after the restore.
+let _epgSweepDone = false;
+function epgSweepCache() {
+  if (_epgSweepDone) return;
+  _epgSweepDone = true;
+  cacheDb().then(db => {
+    if (!db) return;
+    try {
+      const now = Date.now();
+      const cur =
+          db.transaction('epg', 'readwrite').objectStore('epg').openCursor();
+      cur.onsuccess = () => {
+        const c = cur.result;
+        if (!c) return;
+        const v = c.value;
+        if (!v || !(now - v.at <= EPG_PERSIST_MAX_AGE_MS)) c.delete();
+        c.continue();
+      };
+    } catch (_) { /* cache unavailable */
+    }
+  });
+}
+function cacheDeleteKeys(store, keys) {
+  return cacheDb().then(db => {
+    if (!db) return;
+    try {
+      const st = db.transaction(store, 'readwrite').objectStore(store);
+      for (const k of keys) st.delete(k);
+    } catch (_) { /* cache unavailable */
+    }
+  });
 }
 // Cheap fingerprint of a channel list, to tell whether a refresh changed
 // anything
 function channelListSignature(list) {
   let h = 0;
   for (const c of list) {
-    const s = c.url + '|' + c.name + '|' + c.group;
+    // A tvgId from applyEpgNameFallback is not from the provider.
+    const s = c.url + '|' + c.name + '|' + normGroupName(c.group) + '|' +
+        (c.tvgIdFromName ? '' : c.tvgId || '') + '|' + (c.num || '') + '|' +
+        (c.archive || '') + '|' + (c.tvgLogo || '');
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return list.length + ':' + h;
@@ -270,10 +372,22 @@ function channelListSignature(list) {
 // Swap in a refreshed list without disturbing the user: same channel keeps
 // playing, same group stays
 function replaceChannelList(parsed) {
-  const playingUrl = currentChannelIndex >= 0 && channels[currentChannelIndex] ?
-      channels[currentChannelIndex].url :
-      null;
+  const old = channels;
+  const focusList = currentFilteredChannels;
+  const focusCh = focusList[epgMode ? epgFocusedRowIdx : stdFocusIdx] || null;
   channels = parsed;
+  // Keep the tvgIds that applyEpgNameFallback found by name (M3U).
+  if (currentPlaylistType === 'm3u') {
+    const byUrl = new Map();
+    for (const c of old)
+      if (c.tvgIdFromName && c.url) byUrl.set(c.url, c.tvgId);
+    if (byUrl.size)
+      for (const c of parsed)
+        if (!c.tvgId && byUrl.has(c.url)) {
+          c.tvgId = byUrl.get(c.url);
+          c.tvgIdFromName = true;
+        }
+  }
   buildChannelIndexMap();
   if (currentPlaylistType === 'xtream') {
     _xtStreamIdByTvgId = new Map();
@@ -281,12 +395,37 @@ function replaceChannelList(parsed) {
       if (!_xtStreamIdByTvgId.has(ch.tvgId))
         _xtStreamIdByTvgId.set(ch.tvgId, ch.streamId);
   }
-  currentChannelIndex =
-      playingUrl ? channels.findIndex(c => c.url === playingUrl) : -1;
-  if (lastChannelIndex >= channels.length) lastChannelIndex = -1;
+  // The indexes of the old list go to the same channel in the new list: by
+  // the URL, else by the favorite id.
+  const mapCh = (ch) => {
+    if (!ch) return -1;
+    if (ch.url && _chanByUrl.has(ch.url)) return _chanByUrl.get(ch.url);
+    const l = _chansByFavId.get(favIdOf(ch, -1));
+    return l && l.length ? channelIndexMap.get(l[0]) : -1;
+  };
+  const mapIdx = (i) => (i >= 0 ? mapCh(old[i]) : -1);
+  currentChannelIndex = mapIdx(currentChannelIndex);
+  lastChannelIndex = mapIdx(lastChannelIndex);
+  _altOrigin = mapIdx(_altOrigin);
+  _altTried = new Set([..._altTried].map(mapIdx).filter(i => i >= 0));
+  if (catchup) {
+    catchup.chIdx = mapIdx(catchup.chIdx);
+    if (catchup.chIdx < 0) catchup = null;
+  }
   extractGroups();
   validateCurrentGroup();
   refreshCurrentView();
+  const fi =
+      focusCh ? currentFilteredChannels.indexOf(channels[mapCh(focusCh)]) : -1;
+  if (fi >= 0 && vodMode === 'live') {
+    if (epgMode) {
+      epgFocusedRowIdx = fi;
+      updateEPGRowFocus();
+    } else {
+      stdFocusIdx = fi;
+      updateStdChannelFocus();
+    }
+  }
   if (currentChannelIndex >= 0 && epgMode)
     updateEPGInfoPanel(channels[currentChannelIndex]);
 }
@@ -353,13 +492,27 @@ function fmtAge(ts) {
   return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} days ago`;
 }
 
+/**
+ * Gives the HLS URL of an Xtream live channel, with the user name and the
+ * password in URL encoding.
+ * @param {string} base The server address, with no slash at the end.
+ * @param {string} username The user name.
+ * @param {string} password The password.
+ * @param {*} streamId The stream ID.
+ * @return {string} The URL.
+ */
+function xtreamLiveUrl(base, username, password, streamId) {
+  return `${base}/live/${encodeURIComponent(username)}/${
+      encodeURIComponent(password)}/${streamId}.m3u8`;
+}
+
 // ----- Loading playlists -----
 // Everything after a channel list is available (parsed fresh or read from the
 // cache)
 function applyM3UChannels(parsed, url, epgUrl, fromCache) {
   channels = parsed;
   buildChannelIndexMap();
-  localStorage.setItem('last_m3u_url', url);
+  storageSet('last_m3u_url', url);
   updateStartStatus(
       `Loaded ${channels.length.toLocaleString()} channels${
           fromCache ? ' (cached)' : ''}!`,

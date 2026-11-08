@@ -12,8 +12,14 @@ function loadSavedPlaylists() {
   renderSavedPlaylists();
 }
 function savePlaylistsToStorage() {
-  localStorage.setItem('iptv_playlists', JSON.stringify(savedPlaylists));
+  const ok = storageSet('iptv_playlists', JSON.stringify(savedPlaylists));
   renderSavedPlaylists();
+  if (!ok) {
+    diagLog('Saved playlists: the storage is full, the save failed');
+    updateStartStatus(
+        'The TV storage is full. The playlists are not saved.', true);
+  }
+  return ok;
 }
 function addPlaylist(url, name, epgUrl) {
   if (!url) return;
@@ -38,11 +44,13 @@ function addPlaylist(url, name, epgUrl) {
 }
 function removePlaylist(idx) {
   savedPlaylists.splice(idx, 1);
-  savePlaylistsToStorage();
   if (selectedPlaylistId === idx) {
     selectedPlaylistId = null;
     setLoadSelectedButtonEnabled(false);
+  } else if (selectedPlaylistId !== null && selectedPlaylistId > idx) {
+    selectedPlaylistId--;  // the selected item moved up by 1
   }
+  savePlaylistsToStorage();  // also renders the list with the new selection
   updateFocusableElements();
   focusElement(0);
 }
