@@ -1072,10 +1072,45 @@ const CAPTION_TRACK = /^(CC\d|svc\d+)$/;
  * Moves the active cues of a caption track to the bottom center.
  * @param {!TextTrack} track The caption track.
  */
+// True when the previous caption ended a sentence
+let _capSentenceEnd = true;
+/**
+ * Changes a caption in capital letters to sentence case: "THE FIRST DOWN. A
+ * BIG RUN." gives "The first down. A big run." A caption with small letters
+ * does not change. The tags of the cue (<c.white>, <i>) do not change.
+ * @param {string} text The text of the cue.
+ * @return {string}
+ */
+function captionSentenceCase(text) {
+  const plain = String(text).replace(/<[^>]*>/g, '');
+  const letters = plain.replace(/[^A-Za-z]/g, '');
+  if (letters.length >= 3 &&
+      letters.replace(/[^A-Z]/g, '').length / letters.length >= 0.8) {
+    let start = _capSentenceEnd;
+    text = String(text).replace(/(<[^>]*>)|([^<]+)/g, (m, tag, txt) => {
+      if (tag) return tag;
+      let r = '';
+      for (const ch of txt.toLowerCase()) {
+        if (/[a-z]/.test(ch)) {
+          r += start ? ch.toUpperCase() : ch;
+          start = false;
+        } else {
+          r += ch;
+          if (/[.!?>]/.test(ch)) start = true;  // ">>" is a new speaker
+        }
+      }
+      // The word "I" ("I", "I'm", "I'll")
+      return r.replace(/(^|[^a-z'])i(?=$|[^a-z])/g, '$1I');
+    });
+  }
+  _capSentenceEnd = /[.!?]["')\]]*\s*$/.test(plain);
+  return text;
+}
 function fixCaptionCues(track) {
   for (const c of Array.from(track.activeCues || [])) {
     if (c.iptvFixed || typeof c.snapToLines !== 'boolean') continue;
     c.iptvFixed = true;
+    if (settings.capCase !== 'asis') c.text = captionSentenceCase(c.text);
     c.snapToLines = true;
     c.line = 'auto';
     c.position = 'auto';
@@ -1568,11 +1603,15 @@ const CAPTION_BGS = {
   translucent: 'rgba(0,0,0,0.5)',
   solid: '#000'
 };
+// Hard edges with no blur, like the subtitle renderer of the TV (uniform,
+// right_drop_shadow, raised)
 const CAPTION_EDGES = {
   none: 'none',
-  outline: '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000',
-  shadow: '3px 3px 4px #000',
-  raised: '-1px -1px 0 rgba(255,255,255,0.6), 2px 2px 0 #000'
+  outline: '-2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000, ' +
+      '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, ' +
+      '1.5px 1.5px 0 #000',
+  shadow: '2px 2px 0 #000, 3px 3px 0 rgba(0,0,0,0.6)',
+  raised: '-1px -1px 0 rgba(255,255,255,0.45), 1px 1px 0 #000, 2px 2px 0 #000'
 };
 /**
  * Gives the CSS rule for the cues of a <track> from the subtitle settings.

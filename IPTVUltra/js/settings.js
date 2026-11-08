@@ -441,6 +441,18 @@ function settingsRows() {
       }
     },
     {
+      id: 'capCase',
+      type: 'choice',
+      label: 'Caption letters',
+      sub: 'Live captions in capital letters',
+      options: CAPTION_CASE_OPTIONS,
+      get: () => settings.capCase,
+      set: v => {
+        settings.capCase = v;
+        saveSettings();
+      }
+    },
+    {
       id: 'autoNext',
       type: 'toggle',
       label: 'Auto-play next episode',

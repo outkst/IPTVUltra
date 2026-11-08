@@ -4358,8 +4358,21 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /color: rgba\(255,255,0,0\.7\)/.test(scss.after) &&
           /background-color: #000/.test(scss.after) &&
           /font-size: 100%/.test(scss.after) &&
-          /text-shadow: 3px 3px 4px #000/.test(scss.after) && scss.back,
+          /text-shadow: 2px 2px 0 #000/.test(scss.after) && scss.back,
       JSON.stringify(scss));
+  // Captions in capital letters show in sentence case
+  const capc = await page.evaluate(() => {
+    _capSentenceEnd = true;
+    return [
+      captionSentenceCase('<c.white>THE FIRST DOWN. A BIG RUN</c>'),
+      captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.')
+    ];
+  });
+  check(
+      'captions in capital letters show in sentence case; tags stay',
+      capc[0] === '<c.white>The first down. A big run</c>' &&
+          capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.',
+      JSON.stringify(capc));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
       scue.line === 'auto' && scue.snap && scue.position === 'auto' &&

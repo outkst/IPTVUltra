@@ -87,6 +87,7 @@ const DEFAULT_SETTINGS = {
   subOpacity: 85,
   subBg: 'translucent',
   subEdge: 'outline',
+  capCase: 'sentence',
   subAuto: false,
   liveBuffer: 5,
   liveEngine: 'shaka',
@@ -250,6 +251,10 @@ const SUB_EDGE_OPTIONS = [
   {v: 'none', label: 'None'}, {v: 'outline', label: 'Outline'},
   {v: 'shadow', label: 'Shadow'}, {v: 'raised', label: 'Raised'}
 ];
+// Broadcast captions (CEA-608) are often all capital letters
+const CAPTION_CASE_OPTIONS = [
+  {v: 'sentence', label: 'Sentence case'}, {v: 'asis', label: 'As broadcast'}
+];
 const SUB_EDGE_UMS = {
   none: 'none',
   outline: 'uniform',
@@ -319,7 +324,8 @@ function loadSettings() {
     out.audioLang = DEFAULT_SETTINGS.audioLang;
   for (const [k, opts] of [
            ['subSize', SUB_SIZE_OPTIONS], ['subColor', SUB_COLOR_OPTIONS],
-           ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS]])
+           ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS],
+           ['capCase', CAPTION_CASE_OPTIONS]])
     if (!opts.some(o => o.v === out[k])) out[k] = DEFAULT_SETTINGS[k];
   if (!(st.schema >= 3)) {
     out.subAuto = false;
