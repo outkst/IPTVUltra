@@ -1607,9 +1607,10 @@ const CAPTION_BGS = {
 // right_drop_shadow, raised)
 const CAPTION_EDGES = {
   none: 'none',
-  outline: '-2px 0 0 #000, 2px 0 0 #000, 0 -2px 0 #000, 0 2px 0 #000, ' +
-      '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, ' +
-      '1.5px 1.5px 0 #000',
+  // The uniform edge of the renderer is approximately 1 px (photo of the user,
+  // 2026-11-09). An edge of 2 px made the letters touch.
+  outline: '-1px 0 0 #000, 1px 0 0 #000, 0 -1px 0 #000, 0 1px 0 #000, ' +
+      '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
   shadow: '2px 2px 0 #000, 3px 3px 0 rgba(0,0,0,0.6)',
   raised: '-1px -1px 0 rgba(255,255,255,0.45), 1px 1px 0 #000, 2px 2px 0 #000'
 };
