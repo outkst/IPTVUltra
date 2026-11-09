@@ -266,8 +266,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_clip(self):
-        data = open(CLIP, 'rb').read()
+    def send_clip(self, path=CLIP, ctype='video/mp4'):
+        data = open(path, 'rb').read()
         rng = self.headers.get('Range')
         start, end = 0, len(data) - 1
         if rng and rng.startswith('bytes='):
@@ -282,7 +282,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         else:
             self.send_response(200)
         self.send_header('Accept-Ranges', 'bytes')
-        self.send_header('Content-Type', 'video/mp4')
+        self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(end - start + 1))
         self.end_headers()
         self.wfile.write(data[start:end + 1])
@@ -450,6 +450,13 @@ class H(http.server.SimpleHTTPRequestHandler):
             with lock:
                 stats['media_requests'] = stats.get('media_requests', 0) + 1
                 stats['last_media'] = u.path
+            if u.path.endswith('.webm'):
+                # The ID 901 has audio data only in the first second, as
+                # provider files with audio tracks and no sound
+                name = 'noaudio.webm' if u.path.endswith(
+                    '/901.webm') else 'audio.webm'
+                return self.send_clip(os.path.join(os.path.dirname(CLIP), name),
+                                      'video/webm')
             return self.send_clip()
         if u.path == '/xmltv.php':
             # The provider sends its file with Content-Encoding gzip

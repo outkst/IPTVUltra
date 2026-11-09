@@ -659,6 +659,7 @@ const vodPlay = {
   nextEp: null,
   nextFocus: 'play',
   ended: false,
+  noAudio: false,  // the file has audio tracks with no data (vodAudioCheck)
   subManual: false,
   audioManual: false,
   tracksFocus: 0,

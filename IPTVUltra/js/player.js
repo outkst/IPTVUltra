@@ -72,6 +72,7 @@ function startVodPlayback(p) {
       (saved && saved.dur) || 0;
   vodPlay.saveAt = 0;
   vodPlay.ended = false;
+  vodPlay.noAudio = false;
   vodPlay.subManual = false;
   vodPlay.audioManual = false;
   closeVodTracks();
@@ -137,6 +138,10 @@ function startVodPlayback(p) {
     setTimeout(() => {
       if (vodPlay.active && loadToken === _vodLoadToken) applyVodTrackPrefs();
     }, 4000);  // some files announce tracks late
+    setTimeout(() => {
+      if (vodPlay.active && loadToken === _vodLoadToken)
+        vodAudioCheck(url, loadToken);
+    }, AUDIO_CHECK_DELAY_MS);
     videoPlayer.play().catch(() => {});
   });
   statusArea.innerText = `▶️ ${vodPlay.title}`;
@@ -1821,4 +1826,242 @@ function onVodError() {
   stopVodPlayback(true);
   showEPGToast(`${title}: ${msg}`, 'error', 'Playback Error');
   hideEPGToast(7000);
+}
+
+// ── Audio data check (MKV and WebM) ─────────────────────────────
+// Some provider files have audio tracks with almost no data. Measured
+// 2026-11-09: 3 audio packets and 720 video packets in 30 s, and no sound on
+// the TV. The media service and the TV log gave the same messages as for a
+// correct file. Thus, the app reads the track list and a part of the file
+// with range requests, and counts the blocks of each track. On the C4, the
+// provider accepted the range requests while the episode played.
+const AUDIO_CHECK_DELAY_MS = 8000;  // after the start, not to slow the load
+const AUDIO_CHECK_HEAD_BYTES = 256 * 1024;
+const AUDIO_CHECK_PART_BYTES = 3 * 1024 * 1024;
+const AUDIO_CHECK_PART_AT = 0.4;   // position of the part in the file
+const AUDIO_CHECK_MIN_VIDEO = 24;  // video blocks for a usable result
+const _EBML_SEGMENT = 0x18538067, _EBML_TRACKS = 0x1654AE6B,
+      _EBML_CLUSTER = 0x1F43B675;
+const _audioCheckResults = new Map();  // url -> 'ok' | 'none' | null
+
+/**
+ * Reads an EBML variable-length integer.
+ * @param {!Uint8Array} b The bytes.
+ * @param {number} p The position of the first byte.
+ * @param {boolean} isId True for an element ID (the length marker stays).
+ * @return {?{v: number, n: number}} The value (-1 for an unknown size) and
+ *     the number of bytes, or null if the bytes stop or are not valid.
+ */
+function ebmlVint(b, p, isId) {
+  if (p >= b.length) return null;
+  const first = b[p];
+  let n = 1;
+  while (n <= 8 && !(first & (0x80 >> (n - 1)))) n++;
+  if (n > 8 || p + n > b.length) return null;
+  let v = isId ? first : first & (0xFF >> n);
+  let allOnes = v === (0xFF >> n);
+  for (let i = 1; i < n; i++) {
+    v = v * 256 + b[p + i];
+    if (b[p + i] !== 0xFF) allOnes = false;
+  }
+  return {v: !isId && allOnes ? -1 : v, n};
+}
+
+/**
+ * Reads 1 element header (the ID and the size).
+ * @param {!Uint8Array} b The bytes.
+ * @param {number} p The position of the element.
+ * @return {?{id: number, size: number, data: number}} The ID, the size of
+ *     the data (-1 if unknown), and the position of the data.
+ */
+function ebmlElement(b, p) {
+  const id = ebmlVint(b, p, true);
+  if (!id) return null;
+  const size = ebmlVint(b, p + id.n, false);
+  if (!size) return null;
+  return {id: id.v, size: size.v, data: p + id.n + size.n};
+}
+
+/**
+ * Finds the tracks in the start of a Matroska file.
+ * @param {!Uint8Array} b The first bytes of the file.
+ * @return {?Map<number, number>} Track number -> track type (1 video,
+ *     2 audio, 17 subtitles), or null if the track list is not in the bytes.
+ */
+function mkvTracks(b) {
+  const hdr = ebmlElement(b, 0);
+  if (!hdr || hdr.id !== 0x1A45DFA3 || hdr.size < 0) return null;
+  const seg = ebmlElement(b, hdr.data + hdr.size);
+  if (!seg || seg.id !== _EBML_SEGMENT) return null;
+  let p = seg.data;
+  while (p < b.length) {
+    const e = ebmlElement(b, p);
+    if (!e || e.size < 0 || e.id === _EBML_CLUSTER) return null;
+    if (e.id === _EBML_TRACKS) {
+      if (e.data + e.size > b.length) return null;
+      const tracks = new Map();
+      for (let q = e.data; q < e.data + e.size;) {
+        const t = ebmlElement(b, q);
+        if (!t || t.size < 0) return null;
+        if (t.id === 0xAE) {  // TrackEntry
+          let num = 0, type = 0;
+          for (let r = t.data; r < t.data + t.size;) {
+            const f = ebmlElement(b, r);
+            if (!f || f.size < 0) return null;
+            if (f.id === 0xD7 || f.id === 0x83) {
+              let v = 0;
+              for (let i = 0; i < f.size; i++) v = v * 256 + b[f.data + i];
+              if (f.id === 0xD7)
+                num = v;
+              else
+                type = v;
+            }
+            r = f.data + f.size;
+          }
+          if (num) tracks.set(num, type);
+        }
+        q = t.data + t.size;
+      }
+      return tracks;
+    }
+    p = e.data + e.size;
+  }
+  return null;
+}
+
+/**
+ * Counts the blocks of each track in the clusters of a part of a Matroska
+ * file. The part can start and stop in the middle of a cluster.
+ * @param {!Uint8Array} b The bytes of the part.
+ * @return {!Map<number, number>} Track number -> number of blocks.
+ */
+function mkvBlockCounts(b) {
+  const counts = new Map();
+  const add = p => {
+    const t = ebmlVint(b, p, false);
+    if (t) counts.set(t.v, (counts.get(t.v) || 0) + 1);
+  };
+  let p = 0;
+  while (p + 4 < b.length) {
+    // The next cluster: its ID, then a Timestamp element as first child. A
+    // match in the data of a block does not have that.
+    if (b[p] !== 0x1F || b[p + 1] !== 0x43 || b[p + 2] !== 0xB6 ||
+        b[p + 3] !== 0x75) {
+      p++;
+      continue;
+    }
+    const c = ebmlElement(b, p);
+    if (!c || b[c.data] !== 0xE7) {
+      p++;
+      continue;
+    }
+    const end = c.size < 0 ? b.length : Math.min(b.length, c.data + c.size);
+    for (let q = c.data; q < end;) {
+      const e = ebmlElement(b, q);
+      if (!e || e.size < 0) break;
+      if (e.id === 0xA3) {  // SimpleBlock
+        add(e.data);
+      } else if (e.id === 0xA0) {  // BlockGroup
+        const ge = Math.min(b.length, e.data + e.size);
+        for (let r = e.data; r < ge;) {
+          const g = ebmlElement(b, r);
+          if (!g || g.size < 0) break;
+          if (g.id === 0xA1) add(g.data);  // Block
+          r = g.data + g.size;
+        }
+      }
+      q = e.data + e.size;
+    }
+    p = c.size < 0 ? b.length : c.data + c.size;
+  }
+  return counts;
+}
+
+/**
+ * Gives the result of the block counts.
+ * @param {!Map<number, number>} tracks Track number -> track type.
+ * @param {!Map<number, number>} counts Track number -> number of blocks.
+ * @return {?string} 'none' if the audio tracks have almost no blocks, 'ok',
+ *     or null if the part has too few video blocks or the file has no audio
+ *     track.
+ */
+function audioDataVerdict(tracks, counts) {
+  let video = 0, audio = -1;
+  tracks.forEach((type, num) => {
+    const n = counts.get(num) || 0;
+    if (type === 1) video += n;
+    if (type === 2) audio = Math.max(audio, n);
+  });
+  if (audio < 0 || video < AUDIO_CHECK_MIN_VIDEO) return null;
+  // A correct file has more audio blocks than video blocks (AAC at 48 kHz:
+  // 47 each second), or a quarter with lacing.
+  return audio * 20 < video ? 'none' : 'ok';
+}
+
+/**
+ * Reads a range of a file.
+ * @param {string} url The file.
+ * @param {number} start The first byte.
+ * @param {number} end The last byte.
+ * @return {!Promise<?{bytes: !Uint8Array, total: number}>} The bytes and the
+ *     size of the file, or null if the server does not send a range.
+ */
+async function fetchRange(url, start, end) {
+  const ctl = new AbortController();
+  const res = await fetch(
+      url, {headers: {Range: `bytes=${start}-${end}`}, signal: ctl.signal});
+  if (res.status !== 206) {
+    ctl.abort();  // never the full file
+    return null;
+  }
+  const m = /\/(\d+)\s*$/.exec(res.headers.get('Content-Range') || '');
+  return {
+    bytes: new Uint8Array(await res.arrayBuffer()),
+    total: m ? Number(m[1]) : 0
+  };
+}
+
+/**
+ * Examines the audio data of a Matroska or WebM file.
+ * @param {string} url The file.
+ * @return {!Promise<?string>} 'none', 'ok', or null (no result).
+ */
+async function audioDataOf(url) {
+  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1);
+  if (!head || !head.total) return null;
+  const tracks = mkvTracks(head.bytes);
+  if (!tracks) return null;
+  const start = Math.floor(head.total * AUDIO_CHECK_PART_AT);
+  const end = Math.min(head.total - 1, start + AUDIO_CHECK_PART_BYTES - 1);
+  const part = await fetchRange(url, start, end);
+  if (!part) return null;
+  return audioDataVerdict(tracks, mkvBlockCounts(part.bytes));
+}
+
+/**
+ * Shows a message when the playing file has no audio data. The result of
+ * each URL is kept for the session.
+ * @param {string} url The file that plays.
+ * @param {number} token The load token of the title.
+ */
+async function vodAudioCheck(url, token) {
+  if (!/\.(mkv|webm)$/i.test(url.split('?')[0])) return;
+  let r = _audioCheckResults.get(url);
+  if (r === undefined) {
+    try {
+      r = await audioDataOf(url);
+    } catch (_) {
+      r = null;
+    }
+    _audioCheckResults.set(url, r);
+  }
+  if (!vodPlay.active || token !== _vodLoadToken) return;
+  vodPlay.noAudio = r === 'none';
+  if (!vodPlay.noAudio) return;
+  diagLog(`No audio data in the file: ${vodPlay.title}`);
+  showEPGToast(
+      'The audio tracks of this file have no sound data. ' +
+          'The provider sent the video without sound.',
+      'error', 'No audio');
+  hideEPGToast(10000);
 }

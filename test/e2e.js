@@ -3897,6 +3897,44 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       svod.active && !svod.shaka &&
           /\/movie\/user\/pass\/1\.mp4$/.test(svod.src) && !svod.teardown,
       JSON.stringify(svod));
+  // Audio data check: the mock file 901 has audio data only in the first
+  // second (as provider files with no sound), 902 has correct audio data
+  const noaud = await page.evaluate(async () => {
+    const xt = _xt;
+    _xt = xt || {base: 'http://localhost:8765', user: 'user', pass: 'pass'};
+    const toast = () => document.getElementById('epgToast')
+                            .classList.contains('epg-toast--visible') ?
+        document.getElementById('epgToastTitle').textContent :
+        '';
+    const run = async (id, stale) => {
+      hideEPGToast();
+      startVodPlayback(
+          {kind: 'movie', item: {id, name: 'Movie ' + id, ext: 'webm'}});
+      await new Promise(r => setTimeout(r, AUDIO_CHECK_DELAY_MS + 2500));
+      const o = {noAudio: vodPlay.noAudio, toast: toast()};
+      if (stale) {
+        // A result for a title that does not play any more: no message
+        await vodAudioCheck(stale, _vodLoadToken - 1);
+        o.staleToast = toast();
+        o.staleNoAudio = vodPlay.noAudio;
+      }
+      stopVodPlayback(false);
+      return o;
+    };
+    const bad = await run(901);
+    const good = await run(902, vodStreamUrl(901, 'webm'));
+    const out = {bad, good, log: _diagLog.slice(-3).map(d => d.msg)};
+    hideEPGToast();
+    _xt = xt;
+    return out;
+  });
+  check(
+      'a WebM file with no audio data shows "No audio"; a correct file does not',
+      noaud.bad.noAudio && noaud.bad.toast === 'No audio' &&
+          !noaud.good.noAudio && !noaud.good.toast && !noaud.good.staleToast &&
+          !noaud.good.staleNoAudio &&
+          noaud.log.some(m => /No audio data in the file: Movie 901/.test(m)),
+      JSON.stringify(noaud));
   // The fixture ends with #EXT-X-ENDLIST and has PLAYLIST-TYPE:VOD, like the
   // first playlist of a cold relay; the response filter removes both
   check(
