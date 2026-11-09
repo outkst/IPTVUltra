@@ -31,8 +31,9 @@ function normGroupName(group) {
   const g = group == null ? '' : String(group).trim();
   if (g === 'favorites' || g === 'all' || g === 'recent')
     return g[0].toUpperCase() + g.slice(1);
-  // The key of a saved search starts with "ss:"
-  if (/^ss:/i.test(g)) return 'SS: ' + g.slice(3);
+  // The key of a saved search starts with "ss:" (lower case only). The result
+  // must not change when the function runs again on its own result.
+  if (g.startsWith('ss:')) return 'SS:' + g.slice(3);
   return g;
 }
 /**
@@ -310,7 +311,9 @@ const _RE_UT_LABEL = /^[^:|]{1,30}?\d{1,4}\s*:\s*(\S.*)$/;
 const _RE_UT_DATE = /\s*-\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d\d)\s*$/;
 const _RE_UT_YEAR = /^((?:19|20)\d\d)\s+/;
 const _untimedCache = new WeakMap();
-let _untimedEvents = new Map();  // tvgId -> {title, note}
+// Channel -> {title, note}. The key is the channel, not the tvg-id: event
+// channels can share 1 EPG id, and each one has its own title.
+let _untimedEvents = new WeakMap();
 /**
  * Reads the title of an event name that has no usable time.
  * @param {!Object} ch The channel.
@@ -340,25 +343,24 @@ function parseUntimedName(ch) {
 }
 /**
  * The title of an untimed event for a channel, if the channel has no EPG.
- * @param {string} tvgId
+ * @param {?Object} ch The channel.
  * @return {?{title: string, note: string}}
  */
-function untimedEventOf(tvgId) {
-  return (tvgId && _untimedEvents.get(tvgId)) || null;
+function untimedEventOf(ch) {
+  return (ch && _untimedEvents.get(ch)) || null;
 }
 function buildEventProgs() {
   _eventProgs = new Map();
-  _untimedEvents = new Map();
+  _untimedEvents = new WeakMap();
   for (const ch of channels) {
     const ev = eventOf(ch);
-    if (!ev && ch.tvgId && !_untimedEvents.has(ch.tvgId) &&
-        _RE_UT_GROUP.test(ch.group || '')) {
+    if (!ev && ch.tvgId && _RE_UT_GROUP.test(ch.group || '')) {
       let u = _untimedCache.get(ch);
       if (u === undefined) {
         u = parseUntimedName(ch);
         _untimedCache.set(ch, u);
       }
-      if (u) _untimedEvents.set(ch.tvgId, u);
+      if (u) _untimedEvents.set(ch, u);
     }
     if (ev && ch.tvgId && !_eventProgs.has(ch.tvgId))
       _eventProgs.set(ch.tvgId, [{

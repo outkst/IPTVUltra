@@ -5359,6 +5359,89 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
           ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
       JSON.stringify(ss));
+  // Corrections of the code review (2026-11-09)
+  const rv = await page.evaluate(async () => {
+    const out = {};
+    // A group name does not change when the function runs again
+    const g1 = normGroupName('ss: Sports');
+    out.group = [g1, normGroupName(g1), normGroupName('SS: News')];
+    // A new channel list with the same length gives a new match
+    const s = {id: 'rv', terms: ['News']};
+    const r1 = savedSearchChannels(s);
+    const keep = channels;
+    channels = channels.slice();
+    const r2 = savedSearchChannels(s);
+    out.cacheNew = r1 !== r2 && savedSearchChannels(s) === r2;
+    channels = keep;
+    _ssCache = null;
+    // Back in the editor goes to the list when the list opened it
+    savedSearches().push({id: 'rv', name: 'Rv', terms: ['News']});
+    openSavedSearchList();
+    ssEd.listFocus = savedSearches().length - 1;
+    ssListActivate();
+    const inEdit = ssEd.mode === 'edit' && ssEd.id === 'rv';
+    savedSearchBack();
+    out.back = [inEdit, ssEd.mode, ssOpen];
+    savedSearchBack();
+    out.back.push(ssOpen);
+    savedSearches().pop();
+    ssSaveAll();
+    // Event channels with 1 tvg-id keep their own titles
+    const ev = n => ({
+      name: `Xyz (XY) ${n}: 2025 Team ${n} vs B - Hockey - 22/10 15:00`,
+      group: 'US| TEST PPV',
+      tvgId: 'shared.ppv'
+    });
+    const evs = [ev(1), ev(2)];
+    channels = evs;
+    buildEventProgs();
+    out.untimed = evs.map(c => (untimedEventOf(c) || {}).title);
+    channels = keep;
+    buildEventProgs();
+    // The EPG clock offset changes only after 3 replies with the new value
+    const xt = _xt;
+    _xt = {epgOffsetMin: 0};
+    const ts = Math.floor(Date.now() / 60000) * 60;
+    const listing = off => ({
+      start_timestamp: String(ts),
+      start: new Date((ts + off * 60) * 1000)
+                 .toISOString()
+                 .replace('T', ' ')
+                 .slice(0, 19)
+    });
+    const offs = [];
+    for (const o of [60, 0, 60, 0, 60, 60, 60]) {
+      xtreamNoteEpgOffset(listing(o));
+      offs.push(_xt.epgOffsetMin);
+    }
+    out.offs = offs.join();
+    _xt = xt;
+    // A failed save does not change the saved playlist in memory
+    const p = savedPlaylists.find(x => x.type === 'xtream');
+    if (p) {
+      const before = JSON.stringify(p);
+      const set = storageSet;
+      storageSet = () => false;
+      addXtreamPlaylist(p.url, p.username, 'other-pass', 'Other name');
+      storageSet = set;
+      out.saveKept = JSON.stringify(p) === before;
+      updateStartStatus('Ready', false, false, false, 0);
+    }
+    // A range request reads only a range reply of the requested size
+    const base = 'http://localhost:8765';
+    const r = await fetchRange(base + '/movie/user/pass/1.mp4', 0, 99);
+    out.range = r && r.bytes.length === 100 && r.total > 100;
+    out.noRange = await fetchRange(base + '/xmltv.xml', 0, 99);
+    return out;
+  });
+  check(
+      'review fixes: group name, cache, editor Back, event titles, offset, save',
+      rv.group.join('|') === 'SS: Sports|SS: Sports|SS: News' && rv.cacheNew &&
+          rv.back.join() === 'true,list,true,false' &&
+          rv.untimed[0] !== rv.untimed[1] && /Team 1/.test(rv.untimed[0]) &&
+          rv.offs === '0,0,0,0,0,0,60' && rv.saveKept !== false &&
+          rv.range && rv.noRange === null,
+      JSON.stringify(rv));
   // An event name with no usable time gives a title with no time
   const ut = await page.evaluate(() => [
     'Xyz (XY) 25: 2025 A vs B - Field Hockey - 22/10 15:00',

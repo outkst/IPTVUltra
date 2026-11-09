@@ -332,7 +332,7 @@ function loadVodAll(mode) {
         await new Promise(r => setTimeout(r, 0));
       }
     }
-    if (_xt !== xt) throw new Error('playlist changed');
+    vodCheckPlaylist(xt);  // a stale error: the screens ignore it
     const recent = out.slice().sort((a, b) => b.added - a.added).slice(0, 60);
     if (mode === 'movies') {
       vodAll = out;

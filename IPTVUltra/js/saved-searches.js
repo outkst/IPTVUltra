@@ -22,7 +22,7 @@ const SS_NEW_KEY = 'ss:+';
 const SS_LOOKAHEAD_MS = 24 * 3600000;
 const SS_CACHE_MS = 60000;
 const SS_MAX_TERMS = 20;
-let _ssCache = null;   // {key, at, result, nowCount}
+let _ssCache = null;   // {key, list, at, result, nowCount}
 let _ssMarkRe = null;  // marks the matching programs in the guide
 
 /** @return {!Array<!Object>} The saved searches of the active playlist. */
@@ -117,7 +117,7 @@ function ssMatch(re) {
       }
     }
     if (rank < 0) {
-      const u = untimedEventOf(ch.tvgId);
+      const u = untimedEventOf(ch);
       if (re.test(ch.name) || re.test(ch.group || '') ||
           (u && re.test(u.title)))
         rank = 2;
@@ -135,14 +135,22 @@ function ssMatch(re) {
  * @return {!Array<!Object>}
  */
 function savedSearchChannels(s) {
-  const key = s.id + '\n' + s.terms.join('\n') + '\n' + channels.length + '|' +
-      _hiddenGroups.size;
-  if (_ssCache && _ssCache.key === key &&
+  // A new channel list is a new array (also with the same length), and the
+  // key has the names of the hidden groups, not only their number.
+  const key = s.id + '\n' + s.terms.join('\n') + '\n' +
+      [..._hiddenGroups].sort().join('\n');
+  if (_ssCache && _ssCache.key === key && _ssCache.list === channels &&
       Date.now() - _ssCache.at < SS_CACHE_MS)
     return _ssCache.result;
   const re = ssCompile(s.terms);
   const m = re ? ssMatch(re) : {result: [], nowCount: 0};
-  _ssCache = {key, at: Date.now(), result: m.result, nowCount: m.nowCount};
+  _ssCache = {
+    key,
+    list: channels,
+    at: Date.now(),
+    result: m.result,
+    nowCount: m.nowCount
+  };
   return m.result;
 }
 
@@ -188,6 +196,7 @@ const ssEd = {
   btn: 0,       // 0 Save, 1 Cancel, 2 Delete
   editing: -1,  // the row of the open input, -1 = none
   listFocus: 0,
+  fromList: false,    // the editor came from the list (Back goes to it)
   counts: new Map(),  // term (lower case) -> number of channels
   sum: null           // {key, m}: the match of all terms
 };
@@ -196,11 +205,13 @@ const ssEd = {
  * Opens the editor for a saved search.
  * @param {?Object} s The search, or null for a new search.
  * @param {!Array<string>=} prefill The terms of a new search.
+ * @param {boolean=} fromList True when the list opens the editor.
  */
-function openSavedSearchEditor(s, prefill) {
+function openSavedSearchEditor(s, prefill, fromList) {
   if (!_activePlaylistKey || _activePlaylistKey === 'm:demo') return;
   if (settingsOpen) closeSettings();
   ssEd.mode = 'edit';
+  ssEd.fromList = !!fromList;
   ssEd.id = s ? s.id : null;
   ssEd.name = s ? s.name : '';
   ssEd.terms = s ? s.terms.slice() : ssCleanTerms(prefill || []);
@@ -222,7 +233,26 @@ function openSavedSearchList() {
   ssEd.mode = 'list';
   ssEd.editing = -1;
   ssEd.listFocus = 0;
+  ssEd.fromList = false;
   ssShow();
+}
+
+/**
+ * Leaves the editor: back to the list when the list opened it, else the
+ * overlay closes.
+ */
+function ssLeaveEditor() {
+  if (ssEd.mode !== 'edit' || !ssEd.fromList) {
+    closeSavedSearchEditor();
+    return;
+  }
+  ssEd.mode = 'list';
+  ssEd.fromList = false;
+  ssEd.editing = -1;
+  if (_isTextInput(document.activeElement)) document.activeElement.blur();
+  // The list has the searches and the row "+ New saved search"
+  ssEd.listFocus = Math.min(ssEd.listFocus, savedSearches().length);
+  ssRender();
 }
 
 function ssShow() {
@@ -477,7 +507,7 @@ function ssActivateButton() {
   if (ssEd.btn === 0)
     ssSaveEditor();
   else if (ssEd.btn === 1)
-    closeSavedSearchEditor();
+    ssLeaveEditor();
   else
     ssDeleteEditor();
 }
@@ -519,7 +549,7 @@ function ssDeleteEditor() {
   if (i < 0) return;
   const key = SS_PREFIX + ssEd.id;
   all.splice(i, 1);
-  closeSavedSearchEditor();
+  ssLeaveEditor();
   ssSaveAll();
   if (currentGroup === key) {
     currentGroup = 'all';
@@ -531,7 +561,7 @@ function ssDeleteEditor() {
 function ssListActivate() {
   const all = savedSearches();
   const s = all[ssEd.listFocus];
-  openSavedSearchEditor(s || null);
+  openSavedSearchEditor(s || null, undefined, true);
 }
 
 /**
@@ -623,7 +653,7 @@ function savedSearchBack() {
     ssCancelEdit();
     return;
   }
-  closeSavedSearchEditor();
+  ssLeaveEditor();
 }
 
 /**

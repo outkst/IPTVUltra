@@ -25,9 +25,16 @@ function addPlaylist(url, name, epgUrl) {
   if (!url) return;
   const existing = savedPlaylists.find(p => p.url === url);
   if (existing) {
+    const before = {...existing};
     existing.name = name || existing.name;
     existing.epgUrl = epgUrl !== undefined ? epgUrl : (existing.epgUrl || '');
-    if (!savePlaylistsToStorage()) return;  // the error message stays
+    if (!savePlaylistsToStorage()) {
+      // The entry in memory stays the same as the saved entry. The error
+      // message stays, and the fields keep the text for a new attempt.
+      Object.assign(existing, before);
+      renderSavedPlaylists();
+      return;
+    }
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
   } else {
@@ -35,6 +42,7 @@ function addPlaylist(url, name, epgUrl) {
         {name: name || url.substring(0, 40), url, epgUrl: epgUrl || ''});
     if (!savePlaylistsToStorage()) {
       savedPlaylists.pop();  // the fields keep the text for a new attempt
+      renderSavedPlaylists();
       return;
     }
     updateStartStatus(`Playlist saved!`, false, true, false, 0);

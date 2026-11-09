@@ -328,7 +328,7 @@ function updateLiveOsd() {
   const next = progs[pi + 1] || null;
   document.getElementById('vodOsdTitle').textContent =
       `${chDisplayNum(ch, currentChannelIndex)}  ${ch.name}`;
-  const untimed = now ? null : untimedEventOf(ch.tvgId);
+  const untimed = now ? null : untimedEventOf(ch);
   const subBits = [
     ch.group || '',
     now         ? now.title :
@@ -2010,15 +2010,30 @@ async function fetchRange(url, start, end) {
   const ctl = new AbortController();
   const res = await fetch(
       url, {headers: {Range: `bytes=${start}-${end}`}, signal: ctl.signal});
-  if (res.status !== 206) {
-    ctl.abort();  // never the full file
+  // Only the requested range: never the full file, and never more bytes than
+  // requested (a TV has little memory)
+  const m = /^bytes\s+(\d+)-(\d+)\/(\d+)\s*$/.exec(
+      res.headers.get('Content-Range') || '');
+  if (res.status !== 206 || !m || Number(m[1]) !== start ||
+      Number(m[2]) > end || !res.body) {
+    ctl.abort();
     return null;
   }
-  const m = /\/(\d+)\s*$/.exec(res.headers.get('Content-Range') || '');
-  return {
-    bytes: new Uint8Array(await res.arrayBuffer()),
-    total: m ? Number(m[1]) : 0
-  };
+  const max = end - start + 1;
+  const bytes = new Uint8Array(max);
+  const reader = res.body.getReader();
+  let n = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    if (n + value.length > max) {
+      ctl.abort();
+      return null;
+    }
+    bytes.set(value, n);
+    n += value.length;
+  }
+  return {bytes: bytes.subarray(0, n), total: Number(m[3])};
 }
 
 /**

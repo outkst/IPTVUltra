@@ -19,10 +19,17 @@ function addXtreamPlaylist(serverUrl, username, password, name, epgUrl) {
       p => p.type === 'xtream' && p.url === serverUrl &&
           p.username === username);
   if (existing) {
+    const before = {...existing};
     existing.name = name || existing.name;
     existing.password = password;
     if (epgUrl !== undefined) existing.epgUrl = epgUrl;
-    if (!savePlaylistsToStorage()) return;  // the error message stays
+    if (!savePlaylistsToStorage()) {
+      // The entry in memory stays the same as the saved entry. The error
+      // message stays, and the fields keep the text for a new attempt.
+      Object.assign(existing, before);
+      renderSavedPlaylists();
+      return;
+    }
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
   } else {
@@ -44,6 +51,7 @@ function addXtreamPlaylist(serverUrl, username, password, name, epgUrl) {
     });
     if (!savePlaylistsToStorage()) {
       savedPlaylists.pop();  // the fields keep the text for a new attempt
+      renderSavedPlaylists();
       return;
     }
     updateStartStatus('Xtream playlist saved!', false, true, false, 0);
@@ -225,10 +233,24 @@ function epgListingOffset(ep) {
   const off = Math.round((asUtc - ts) / 60000);
   return Math.abs(off) > 14 * 60 ? null : off;
 }
+// The number of replies in sequence with the same new offset before the
+// offset changes. A panel that merges EPG sources can give 2 offsets that
+// alternate; one reply must not change the offset (and write the cache).
+const EPG_OFFSET_CONFIRM = 3;
 function xtreamNoteEpgOffset(ep) {
   if (!_xt) return;
   const off = epgListingOffset(ep);
-  if (off === null || _xt.epgOffsetMin === off) return;
+  if (off === null) return;
+  if (_xt.epgOffsetMin === off) {
+    _xt.epgOffsetCand = null;
+    return;
+  }
+  if (_xt.epgOffsetMin != null) {  // the first sample sets the value at once
+    const c = _xt.epgOffsetCand;
+    _xt.epgOffsetCand = c && c.off === off ? {off, n: c.n + 1} : {off, n: 1};
+    if (_xt.epgOffsetCand.n < EPG_OFFSET_CONFIRM) return;
+  }
+  _xt.epgOffsetCand = null;
   _xt.epgOffsetMin = off;
   // Remember it with the cached playlist so a cached launch can build catch-up
   // URLs before any EPG fetch
@@ -632,7 +654,7 @@ function epgProgsHtml(ch) {
               day: 'numeric',
               month: 'short'
             })} ${formatClock(ev.start)}`) :
-        escapeHtml(epgPlaceholderText(ch.tvgId));
+        escapeHtml(epgPlaceholderText(ch.tvgId, ch));
     const cls = label === 'Loading ...' ? 'epg-prog-placeholder loading' :
                                           'epg-prog-placeholder';
     parts.push(
@@ -1006,8 +1028,8 @@ function updateEPGInfoPanel(ch) {
     desc.textContent = curr.desc || '';
     if (nowPlayingLabel) nowPlayingLabel.style.display = '';
   } else {
-    const placeholder = epgPlaceholderText(ch.tvgId);
-    const u = untimedEventOf(ch.tvgId);
+    const placeholder = epgPlaceholderText(ch.tvgId, ch);
+    const u = untimedEventOf(ch);
     time.textContent = '';
     title.textContent = placeholder;
     desc.textContent = u ? u.note : '';
@@ -1105,8 +1127,8 @@ function epgNeedsFetch(tvgId) {
 }
 
 // Placeholder text for a guide row / info panel that has no programme blocks
-function epgPlaceholderText(tvgId) {
-  const u = untimedEventOf(tvgId);
+function epgPlaceholderText(tvgId, ch) {
+  const u = untimedEventOf(ch);
   if (u) return u.title;
   if (_xt) {
     if (!tvgId || !_xtStreamIdByTvgId.has(tvgId))
@@ -1190,14 +1212,16 @@ function pumpEpgQueue() {
       return;
     }
     _epgPrefetchActive = false;
+    // The status line of the playing channel replaces the progress text, also
+    // when some favorites have no guide data
+    if (currentChannelIndex >= 0 && channels[currentChannelIndex])
+      statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
     if (left.length) {
       hideEPGToast(0);
       return;
     }
     showEPGToast('Favorites guide ready', 'success');
     hideEPGToast(2500);
-    if (currentChannelIndex >= 0 && channels[currentChannelIndex])
-      statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
   }
 }
 
