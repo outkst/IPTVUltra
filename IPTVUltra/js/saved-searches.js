@@ -13,13 +13,17 @@
 // - A term matches at the start of a word: "Pitt" matches "Pittsburgh", but
 //   not "Spitting". A term can have spaces ("Pittsburgh Penguins").
 // - The fields are the channel name, the group, the title of an event name
-//   with no time, and the titles of the programs from now to
-//   SS_LOOKAHEAD_MS later.
-// - Sequence: a matching program that is on now, then a later matching
-//   program (by start time), then a match in the name or the group.
+//   with no time, and the titles of the programs that are on now or that
+//   start in the next SS_LOOKAHEAD_MS (60 min, the user, 2026-11-09).
+// - Sequence: a matching program that is on now, then a matching program
+//   that starts in the next 60 min (by start time), then a match in the
+//   name or the group.
+// - In the guide, only a matching program that is on now or that starts in
+//   the next 60 min gets the mark (`ss-match`). The minute tick adds and
+//   removes the mark (epgTickRowBlocks).
 const SS_PREFIX = 'ss:';
 const SS_NEW_KEY = 'ss:+';
-const SS_LOOKAHEAD_MS = 24 * 3600000;
+const SS_LOOKAHEAD_MS = 60 * 60000;
 const SS_CACHE_MS = 60000;
 const SS_MAX_TERMS = 20;
 let _ssCache = null;   // {key, list, at, result, nowCount}
@@ -164,11 +168,25 @@ function ssUpdateMark() {
 }
 
 /**
- * @param {!Object} p A program.
- * @return {boolean} True when the program matches the open saved search.
+ * @param {number} start The start of a program (ms).
+ * @param {number} stop The stop of a program (ms).
+ * @param {number} now The current time (ms).
+ * @return {boolean} True when the program is on now, or starts in the next
+ *     SS_LOOKAHEAD_MS.
  */
-function ssProgMatches(p) {
-  return !!_ssMarkRe && !!p.title && _ssMarkRe.test(p.title);
+function ssInWindow(start, stop, now) {
+  return stop > now && start < now + SS_LOOKAHEAD_MS;
+}
+
+/**
+ * @param {!Object} p A program.
+ * @param {number=} now The current time (ms).
+ * @return {boolean} True when the program matches the open saved search, and
+ *     it is on now or starts in the next SS_LOOKAHEAD_MS.
+ */
+function ssProgMatches(p, now = Date.now()) {
+  return !!_ssMarkRe && !!p.title && ssInWindow(p.start, p.stop, now) &&
+      _ssMarkRe.test(p.title);
 }
 
 /** Saves the searches of the playlist, and shows the new group list. */

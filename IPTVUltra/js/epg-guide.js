@@ -635,7 +635,7 @@ function epgProgsHtml(ch) {
     const cls = (isNow ? ' now-playing' : '') +
         (isPast ? (progIsCatchup(ch, p, now) ? ' past catchup' : ' past') :
                   '') +
-        (ssProgMatches(p) ? ' ss-match' : '');
+        (ssProgMatches(p, now) ? ' ss-match' : '');
     parts.push(
         `<div class="epg-prog-block${cls}" data-start="${p.start}" data-stop="${
             p.stop}" style="left:${sx}px;width:${w}px">` +
@@ -1904,6 +1904,8 @@ function startEpgTick() {
  * Updates the time classes of each `.epg-prog-block` in 1 rendered row. When
  * a program stops, its element gets `past` (and `catchup` if the archive has
  * it). When a program goes out of the archive, its element loses `catchup`.
+ * The mark of the open saved search (`ss-match`) is only on a matching
+ * program that is on now or that starts in the next 60 min.
  * @param {!Element} el The row.
  * @param {?Object} ch The channel of the row.
  * @param {number} now The current time in ms.
@@ -1915,6 +1917,13 @@ function epgTickRowBlocks(el, ch, now) {
     const b = blocks[i], cl = b.classList;
     const start = +b.dataset.start, stop = +b.dataset.stop;
     cl.toggle('now-playing', start <= now && stop > now);
+    if (!_ssMarkRe || !ssInWindow(start, stop, now)) {
+      cl.remove('ss-match');
+    } else if (!cl.contains('ss-match')) {
+      const t = b.getElementsByClassName('epg-prog-title')[0];
+      if (t && ssProgMatches({title: t.textContent, start, stop}, now))
+        cl.add('ss-match');
+    }
     if (stop > now) continue;
     if (!cl.contains('past')) {
       // Find the program for its hasArchive value.

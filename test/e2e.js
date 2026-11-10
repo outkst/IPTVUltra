@@ -5301,14 +5301,17 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const ss = await page.evaluate(() => {
     const now = Date.now(), H = 3600000;
     const pick = channels.filter(c => c.tvgId && !_hiddenGroups.has(c.group))
-                     .slice(10, 14);
+                     .slice(10, 15);
     const saved = pick.map(c => ({c, name: c.name, progs: epgData.get(c.tvgId)}));
     const prog = (a, b, title) => ({start: now + a * H, stop: now + b * H, title});
     epgData.set(pick[0].tvgId, [prog(-0.5, 1, 'Steelers at Ravens')]);
-    epgData.set(pick[1].tvgId, [prog(-0.5, 1, 'News'),
-                                prog(1, 2, 'Penguins Hockey')]);
+    epgData.set(pick[1].tvgId, [prog(-0.5, 0.5, 'News'),
+                                prog(0.5, 1.5, 'Penguins Hockey')]);
     pick[2].name = 'Pittsburgh News';
     epgData.set(pick[3].tvgId, [prog(-0.5, 1, 'Spitting Image')]);
+    // A match that starts later than 60 min: not in the list
+    epgData.set(pick[4].tvgId, [prog(-0.5, 1.5, 'News'),
+                                prog(1.5, 2.5, 'Steelers Postgame')]);
     const before = savedSearches().length;
     savedSearches().push({id: 'e2e', name: 'Pgh', terms: ['Pitt', 'Penguins',
                                                           'Steelers']});
@@ -5320,9 +5323,25 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const list = currentFilteredChannels.slice();
     const order = pick.map(c => list.indexOf(c));
     const header = document.getElementById('channelsHeaderTitle').textContent;
-    const mark = ssProgMatches({title: 'Steelers at Ravens'}) &&
-        !ssProgMatches({title: 'Spitting Image'});
+    const mark = ssProgMatches(prog(-0.5, 1, 'Steelers at Ravens')) &&
+        ssProgMatches(prog(0.5, 1.5, 'Penguins Hockey')) &&
+        !ssProgMatches(prog(-0.5, 1, 'Spitting Image')) &&
+        !ssProgMatches(prog(1.5, 2.5, 'Steelers Postgame')) &&
+        !ssProgMatches(prog(-2, -1, 'Steelers Pregame'));
     const html = epgProgsHtml(pick[0]);
+    // The minute tick adds the mark when a program goes into the 60 min
+    const row = document.createElement('div');
+    const p2 = prog(1.5, 2.5, 'Steelers Postgame');
+    row.innerHTML = `<div class="epg-prog-block" data-start="${
+        p2.start}" data-stop="${p2.stop}"><span class="epg-prog-title">${
+        p2.title}</span></div>`;
+    const blk = row.firstChild;
+    epgTickRowBlocks(row, null, now);
+    const tick = [blk.classList.contains('ss-match')];
+    epgTickRowBlocks(row, null, now + H);
+    tick.push(blk.classList.contains('ss-match'));
+    epgTickRowBlocks(row, null, now + 3 * H);
+    tick.push(blk.classList.contains('ss-match'));
     // The editor: start with the text of the search box, add a term, save
     openSavedSearchEditor(null, ['Pirates']);
     const ed1 = {open: ssOpen, terms: ssEd.terms.join(), name: ssEd.name};
@@ -5345,13 +5364,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     renderGroupsList();
     refreshCurrentView();
     return {keys, order, header, mark, block: /ss-match/.test(html), ed1, ed2,
-            after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e')};
+            after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e'),
+            tick: tick.join()};
   });
   check(
-      'saved search: below All Channels, any term, word start, program now first',
+      'saved search: below All, any term, word start, now, then 60 min, then name',
       ss.keys === 'favorites,all,ss:e2e,ss:+,recent' && ss.order[0] === 0 &&
           ss.order[1] === 1 && ss.order[2] === 2 && ss.order[3] === -1 &&
-          /Pgh/.test(ss.header) && ss.mark && ss.block,
+          ss.order[4] === -1 && /Pgh/.test(ss.header) && ss.mark && ss.block &&
+          ss.tick === 'false,true,false',
       JSON.stringify(ss));
   check(
       'saved search editor: prefill, add a term, save opens the new search',
