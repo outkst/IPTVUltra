@@ -792,6 +792,37 @@ function epgMaxPan() {
       0,
       EPG_WIN_HOURS * 60 * EPG_PX_PER_MIN - Math.max(1, _epgViewW - EPG_CH_W));
 }
+/**
+ * @return {number} The pan that puts the current time at 1/3 of the visible
+ *     program area.
+ */
+function epgNowPan() {
+  if (!_epgViewW) epgMeasureViewport();
+  const nowOffsetPx =
+      (_epgWinStart ? (Date.now() - _epgWinStart) : 0) / 60000 * EPG_PX_PER_MIN;
+  const visibleW = Math.max(1, _epgViewW - EPG_CH_W);
+  return Math.max(
+      0, Math.min(epgMaxPan(), Math.floor(nowOffsetPx - visibleW / 3)));
+}
+
+/**
+ * Moves the guide timeline and the program cursor to the current time. The
+ * focused row does not change. The app calls it when it comes back from a
+ * different app.
+ */
+function epgReturnToNow() {
+  if (currentPlaylistType !== 'xtream' || !epgMode || vodMode !== 'live')
+    return;
+  // The timers stop while the app is hidden. The tick makes the hour window
+  // and the time classes of the rows correct first.
+  epgMinuteTick();
+  epgFocusT = 0;
+  if (!_epgPanSet || !_epgWinStart) return;  // the first render pans to now
+  _epgX = epgNowPan();
+  epgApplyPan();
+  updateEPGBlockFocus();
+}
+
 function epgApplyPan() {
   const so = document.getElementById('epgScrollOuter');
   if (!so) return;
@@ -932,12 +963,8 @@ function refreshEPGRows() {
     } else {
       _epgPanSet = true;
       requestAnimationFrame(() => {
-        const nowOffsetPx = (_epgWinStart ? (Date.now() - _epgWinStart) : 0) /
-            60000 * EPG_PX_PER_MIN;
         epgMeasureViewport();
-        const visibleW = Math.max(1, _epgViewW - EPG_CH_W);
-        _epgX = Math.max(
-            0, Math.min(epgMaxPan(), Math.floor(nowOffsetPx - visibleW / 3)));
+        _epgX = epgNowPan();
         epgApplyPan();
       });
     }

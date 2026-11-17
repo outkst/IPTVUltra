@@ -734,7 +734,7 @@ function renderVodCats() {
   if (pinnedDiv) pinnedDiv.innerHTML = '';
   const cats = (vodMode === 'movies' ? vodCats : seriesCats) || [];
   const hdr = document.querySelector('.groups-header span');
-  if (hdr) hdr.textContent = '📁 Categories';
+  if (hdr) hdr.textContent = 'Categories';
   const mk = (icon, label, list, catId) => {
     const d =
         el('div',
@@ -745,8 +745,8 @@ function renderVodCats() {
                     ''));
     d.dataset.list = list;
     if (catId) d.dataset.catId = catId;
-    d.innerHTML = `<span class="group-folder">${icon}</span><span>${
-        escapeHtml(label)}</span>`;
+    d.innerHTML = (icon ? `<span class="group-folder">${icon}</span>` : '') +
+        `<span>${escapeHtml(label)}</span>`;
     d.onclick = () => {
       vodNav.zone = 'cats';
       openVodList(list, catId);
@@ -762,7 +762,7 @@ function renderVodCats() {
   }
   for (const c of cats) {
     if (c.adult && !settings.showAdult) continue;
-    groupsListDiv.appendChild(mk('📁', c.name, 'cat', c.id));
+    groupsListDiv.appendChild(mk('', c.name, 'cat', c.id));
   }
   updateVodCatFocus(false);
 }

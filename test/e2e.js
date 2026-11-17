@@ -1267,6 +1267,22 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Left after the last program of a row goes to that program',
       lastLeft.skip || lastLeft.ok, JSON.stringify(lastLeft));
+  // Back from a different app: the timeline and the cursor go to the time now
+  const backNow = await page.evaluate(() => {
+    const keepT = epgFocusT;
+    _epgX = 0;
+    epgApplyPan();
+    epgFocusT = Date.now() - 6 * 3600000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    const r = {x: _epgX, want: epgNowPan(), t: epgFocusT};
+    epgFocusT = keepT;
+    updateEPGBlockFocus();
+    return r;
+  });
+  check(
+      'a return from a different app pans the guide to the time now',
+      backNow.x > 0 && backNow.x === backNow.want && backNow.t === 0,
+      JSON.stringify(backNow));
 
   // Empty answers under load: an empty epg_listings never replaces data already
   // held and is retried soon
@@ -5380,6 +5396,59 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
           ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
       JSON.stringify(ss));
+  // The window of each saved search (hours), and no folder icons
+  const ssh = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const c = channels.find(x => x.tvgId && !_hiddenGroups.has(x.group));
+    const keep = epgData.get(c.tvgId);
+    epgData.set(c.tvgId, [
+      {start: now - H, stop: now + 2 * H, title: 'News'},
+      {start: now + 2 * H, stop: now + 3 * H, title: 'Zyxwv Final'}
+    ]);
+    const before = savedSearches().length;
+    const s = {id: 'hr', name: 'Hr', terms: ['Zyxwv'], hours: 1};
+    savedSearches().push(s);
+    const in1 = savedSearchChannels(s).includes(c);
+    s.hours = 3;
+    const in3 = savedSearchChannels(s).includes(c);
+    currentGroup = 'ss:hr';
+    renderGroupsList();
+    refreshCurrentView();
+    const mark3 = /ss-match/.test(epgProgsHtml(c));
+    // The editor: the window row, Left changes 3 h to 2 h, Save keeps it
+    openSavedSearchEditor(s, undefined, false);
+    const ed = {hours: ssEd.hours, row: ssHoursRow() === ssBtnRow() - 1};
+    ssEd.focus = ssHoursRow();
+    handleSavedSearchKey(
+        {key: 'ArrowLeft', keyCode: 37, preventDefault() {}});
+    ed.text = document.querySelector('#ssList .ss-hours').textContent;
+    ssEd.focus = ssBtnRow();
+    ssEd.btn = 0;
+    ssActivateButton();
+    const saved = savedSearches().find(x => x.id === 'hr').hours;
+    const in2 = savedSearchChannels(s).includes(c);
+    const icons = [...document.querySelectorAll('#groupsList .group-item')]
+                      .filter(d => d.querySelector('.group-folder')).length;
+    const head = document.querySelector('.groups-header span').textContent;
+    // Clean up
+    getPlaylistState(_activePlaylistKey).savedSearches =
+        savedSearches().slice(0, before);
+    if (keep) epgData.set(c.tvgId, keep);
+    else epgData.delete(c.tvgId);
+    ssSaveAll();
+    currentGroup = 'all';
+    renderGroupsList();
+    refreshCurrentView();
+    return {in1, in3, mark3, ed, saved, in2, icons, head: head.trim()};
+  });
+  check(
+      'saved search: window of 1 to 24 h for each search, set in the editor',
+      !ssh.in1 && ssh.in3 && ssh.mark3 && ssh.ed.hours === 3 && ssh.ed.row &&
+          /2 h/.test(ssh.ed.text) && ssh.saved === 2 && ssh.in2,
+      JSON.stringify(ssh));
+  check(
+      'group bar: no folder icon on the groups or on the heading',
+      ssh.icons === 0 && ssh.head === 'Groups', JSON.stringify(ssh));
   // Corrections of the code review (2026-11-09)
   const rv = await page.evaluate(async () => {
     const out = {};

@@ -375,8 +375,8 @@ function renderGroupsList() {
     return;
   }
   const hdrSpan = document.querySelector('.groups-header span');
-  if (hdrSpan && hdrSpan.textContent !== '📁 Groups')
-    hdrSpan.textContent = '📁 Groups';
+  if (hdrSpan && hdrSpan.textContent !== 'Groups')
+    hdrSpan.textContent = 'Groups';
   const pinnedDiv = document.getElementById('groupsPinned');
   groupsListDiv.innerHTML = '';
   if (pinnedDiv) pinnedDiv.innerHTML = '';
@@ -384,7 +384,7 @@ function renderGroupsList() {
   for (const group of groupsList) {
     const div = document.createElement('div');
     div.className = 'group-item' + (currentGroup === group ? ' active' : '');
-    let folderIcon = '📁';
+    let folderIcon = '';  // provider groups have no icon
     let displayName = group;
     if (group === 'favorites') {
       folderIcon = '⭐';
@@ -406,15 +406,15 @@ function renderGroupsList() {
       displayName = escapeHtml(s ? s.name : '');
       div.classList.add('ss-group');
     } else {
-      folderIcon = '📁';
       displayName = escapeHtml(group);
     }
     if (currentSearchQuery && !isPinnedGroup(group) &&
         group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
       displayName = highlightText(group, currentSearchQuery);
     }
-    div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${
-                        displayName}</span>` +
+    div.innerHTML =
+        (folderIcon ? `<span class="group-folder">${folderIcon}</span>` : '') +
+        `<span>${displayName}</span>` +
         (isSavedSearchKey(group) && group !== SS_NEW_KEY ?
              '<span class="ss-edit" title="Edit">✎</span>' :
              '');

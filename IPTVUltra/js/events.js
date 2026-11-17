@@ -342,6 +342,10 @@ if (videoPlayer.audioTracks) {
   });
 }
 document.addEventListener('keydown', handleRemoteNav);
+// Back from a different app: the guide shows the current time
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) epgReturnToNow();
+});
 
 // OK in the player acts on release: a long press in the live player switches
 // to the last-viewed channel, a short press on the bar toggles pause

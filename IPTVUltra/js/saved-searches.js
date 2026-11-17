@@ -5,7 +5,7 @@
 
 // ----- Saved keyword searches -----
 // Each playlist keeps its searches in the playlist state (`ps.savedSearches`,
-// a list of {id, name, terms}). A search is a pinned group with the key
+// a list of {id, name, terms, hours}). A search is a pinned group with the key
 // `ss:<id>`. The key `ss:+` is the row "+ New saved search".
 //
 // Rules (decided by the user, 2026-11-08):
@@ -14,20 +14,32 @@
 //   not "Spitting". A term can have spaces ("Pittsburgh Penguins").
 // - The fields are the channel name, the group, the title of an event name
 //   with no time, and the titles of the programs that are on now or that
-//   start in the next SS_LOOKAHEAD_MS (60 min, the user, 2026-11-09).
+//   start in the window of the search. Each search has its own window
+//   (`hours`, a value of SS_HOURS, default 1 h; the user, 2026-11-14).
 // - Sequence: a matching program that is on now, then a matching program
-//   that starts in the next 60 min (by start time), then a match in the
-//   name or the group.
+//   that starts in the window (by start time), then a match in the name or
+//   the group.
 // - In the guide, only a matching program that is on now or that starts in
-//   the next 60 min gets the mark (`ss-match`). The minute tick adds and
-//   removes the mark (epgTickRowBlocks).
+//   the window gets the mark (`ss-match`). The minute tick adds and removes
+//   the mark (epgTickRowBlocks).
 const SS_PREFIX = 'ss:';
 const SS_NEW_KEY = 'ss:+';
-const SS_LOOKAHEAD_MS = 60 * 60000;
+const SS_HOURS = [1, 2, 3, 6, 12, 24];
+const SS_DEFAULT_HOURS = 1;
 const SS_CACHE_MS = 60000;
 const SS_MAX_TERMS = 20;
 let _ssCache = null;   // {key, list, at, result, nowCount}
 let _ssMarkRe = null;  // marks the matching programs in the guide
+let _ssMarkMs = SS_DEFAULT_HOURS * 3600000;  // the window of the mark
+
+/**
+ * @param {?Object} s A saved search.
+ * @return {number} The window of the search in hours (a value of SS_HOURS).
+ */
+function ssHoursOf(s) {
+  const h = s && +s.hours;
+  return SS_HOURS.includes(h) ? h : SS_DEFAULT_HOURS;
+}
 
 /** @return {!Array<!Object>} The saved searches of the active playlist. */
 function savedSearches() {
@@ -92,11 +104,13 @@ function ssCompile(terms) {
 /**
  * Finds the channels that match an expression, in the sequence of the rules.
  * @param {!RegExp} re
+ * @param {number} hours The window: a program that starts in the next hours
+ *     can match.
  * @return {{result: !Array<!Object>, nowCount: number}} The channels, and the
  *     number of channels with a matching program on now.
  */
-function ssMatch(re) {
-  const now = Date.now(), end = now + SS_LOOKAHEAD_MS;
+function ssMatch(re, hours) {
+  const now = Date.now(), end = now + hours * 3600000;
   const items = [];
   let nowCount = 0;
   for (let i = 0; i < channels.length; i++) {
@@ -141,13 +155,14 @@ function ssMatch(re) {
 function savedSearchChannels(s) {
   // A new channel list is a new array (also with the same length), and the
   // key has the names of the hidden groups, not only their number.
-  const key = s.id + '\n' + s.terms.join('\n') + '\n' +
+  const hours = ssHoursOf(s);
+  const key = s.id + '\n' + hours + '\n' + s.terms.join('\n') + '\n' +
       [..._hiddenGroups].sort().join('\n');
   if (_ssCache && _ssCache.key === key && _ssCache.list === channels &&
       Date.now() - _ssCache.at < SS_CACHE_MS)
     return _ssCache.result;
   const re = ssCompile(s.terms);
-  const m = re ? ssMatch(re) : {result: [], nowCount: 0};
+  const m = re ? ssMatch(re, hours) : {result: [], nowCount: 0};
   _ssCache = {
     key,
     list: channels,
@@ -165,24 +180,25 @@ function savedSearchChannels(s) {
 function ssUpdateMark() {
   const s = currentSearchQuery ? null : savedSearchOf(currentGroup);
   _ssMarkRe = s ? ssCompile(s.terms) : null;
+  _ssMarkMs = ssHoursOf(s) * 3600000;
 }
 
 /**
  * @param {number} start The start of a program (ms).
  * @param {number} stop The stop of a program (ms).
  * @param {number} now The current time (ms).
- * @return {boolean} True when the program is on now, or starts in the next
- *     SS_LOOKAHEAD_MS.
+ * @return {boolean} True when the program is on now, or starts in the window
+ *     of the open saved search.
  */
 function ssInWindow(start, stop, now) {
-  return stop > now && start < now + SS_LOOKAHEAD_MS;
+  return stop > now && start < now + _ssMarkMs;
 }
 
 /**
  * @param {!Object} p A program.
  * @param {number=} now The current time (ms).
  * @return {boolean} True when the program matches the open saved search, and
- *     it is on now or starts in the next SS_LOOKAHEAD_MS.
+ *     it is on now or starts in the window of the search.
  */
 function ssProgMatches(p, now = Date.now()) {
   return !!_ssMarkRe && !!p.title && ssInWindow(p.start, p.stop, now) &&
@@ -201,15 +217,16 @@ function ssSaveAll() {
 // - 'list': the saved searches of the playlist (Settings > Manage saved
 //   searches). OK edits, ◀ ▶ move, "+ New saved search" adds.
 // - 'edit': 1 search. Rows: the name, 1 row for each term with its match
-//   count, "+ Add term", and the buttons Save, Cancel, and Delete. OK on a
-//   text row opens the keyboard of the TV (an <input>). Red deletes the
-//   focused term.
+//   count, "+ Add term", the window ("Programs starting within", ◀ ▶ or OK
+//   change it), and the buttons Save, Cancel, and Delete. OK on a text row
+//   opens the keyboard of the TV (an <input>). Red deletes the focused term.
 let ssOpen = false;
 const ssEd = {
   mode: 'edit',
   id: null,  // null = a new search
   name: '',
   terms: [],
+  hours: SS_DEFAULT_HOURS,
   focus: 0,
   btn: 0,       // 0 Save, 1 Cancel, 2 Delete
   editing: -1,  // the row of the open input, -1 = none
@@ -233,6 +250,7 @@ function openSavedSearchEditor(s, prefill, fromList) {
   ssEd.id = s ? s.id : null;
   ssEd.name = s ? s.name : '';
   ssEd.terms = s ? s.terms.slice() : ssCleanTerms(prefill || []);
+  ssEd.hours = ssHoursOf(s);
   ssEd.focus = 0;
   ssEd.btn = 0;
   ssEd.editing = -1;
@@ -292,16 +310,37 @@ function closeSavedSearchEditor() {
   if (_isTextInput(document.activeElement)) document.activeElement.blur();
 }
 
-// Edit-mode rows: 0 = name, 1..n = terms, n + 1 = "+ Add term", n + 2 =
-// buttons
+// Edit-mode rows: 0 = name, 1..n = terms, n + 1 = "+ Add term", n + 2 = the
+// window, n + 3 = buttons
 function ssRowCount() {
-  return ssEd.terms.length + 3;
+  return ssEd.terms.length + 4;
 }
 function ssAddRow() {
   return ssEd.terms.length + 1;
 }
-function ssBtnRow() {
+function ssHoursRow() {
   return ssEd.terms.length + 2;
+}
+function ssBtnRow() {
+  return ssEd.terms.length + 3;
+}
+
+/**
+ * Changes the window of the editor to the previous or next value of SS_HOURS.
+ * @param {number} dir -1 or 1.
+ * @param {boolean=} wrap True: after the last value comes the first (OK).
+ */
+function ssStepHours(dir, wrap) {
+  const i = SS_HOURS.indexOf(ssEd.hours);
+  let j = (i < 0 ? 0 : i) + dir;
+  if (wrap)
+    j = (j + SS_HOURS.length) % SS_HOURS.length;
+  else
+    j = Math.max(0, Math.min(SS_HOURS.length - 1, j));
+  if (SS_HOURS[j] === ssEd.hours) return;
+  ssEd.hours = SS_HOURS[j];
+  ssEd.counts.clear();
+  ssRender();
 }
 
 /**
@@ -313,7 +352,7 @@ function ssTermCount(term) {
   const k = term.toLowerCase();
   if (!ssEd.counts.has(k)) {
     const re = ssCompile([term]);
-    ssEd.counts.set(k, re ? ssMatch(re).result.length : 0);
+    ssEd.counts.set(k, re ? ssMatch(re, ssEd.hours).result.length : 0);
   }
   return ssEd.counts.get(k);
 }
@@ -324,10 +363,10 @@ function ssTermCount(term) {
  * @return {?{result: !Array<!Object>, nowCount: number}}
  */
 function ssEditorMatch() {
-  const key = ssEd.terms.join('\n').toLowerCase();
+  const key = ssEd.hours + '\n' + ssEd.terms.join('\n').toLowerCase();
   if (ssEd.sum && ssEd.sum.key === key) return ssEd.sum.m;
   const re = ssCompile(ssEd.terms);
-  const m = re ? ssMatch(re) : null;
+  const m = re ? ssMatch(re, ssEd.hours) : null;
   ssEd.sum = {key, m};
   return m;
 }
@@ -354,7 +393,8 @@ function ssRender() {
           `<div class="settings-label"><div class="settings-name">➕ New saved search</div></div>` :
           `<div class="settings-label"><div class="settings-name">🔎 ${
               escapeHtml(r.s.name)}</div><div class="settings-sub">${
-              escapeHtml(r.s.terms.join(' · '))}</div></div>`;
+              escapeHtml(r.s.terms.join(
+                  ' · '))} · within ${ssHoursOf(r.s)} h</div></div>`;
       row.addEventListener('click', () => {
         ssEd.listFocus = i;
         ssListActivate();
@@ -369,7 +409,7 @@ function ssRender() {
   hint.textContent = ssEd.editing >= 0 ?
       'Type the text · OK done · Back cancel' :
       'OK edit · Red delete term · ◀ ▶ buttons · Back cancel';
-  const addRow = ssAddRow(), btnRow = ssBtnRow();
+  const addRow = ssAddRow(), hoursRow = ssHoursRow(), btnRow = ssBtnRow();
   for (let i = 0; i < ssRowCount(); i++) {
     const row = document.createElement('div');
     const focused = i === ssEd.focus;
@@ -390,6 +430,17 @@ function ssRender() {
       row.innerHTML = `<div class="settings-label ss-value"></div>`;
       row.querySelector('.ss-value')
           .appendChild(ssField(i, '', '+ Add term', true));
+    } else if (i === hoursRow) {
+      row.classList.add('ss-hours');
+      row.innerHTML =
+          `<div class="settings-label"><div class="settings-name">Programs starting within</div>` +
+          `<div class="settings-sub">Programs on now always match</div></div>` +
+          `<div class="settings-value"><span class="settings-val">◀ ${
+              ssEd.hours} h ▶</span></div>`;
+      row.addEventListener('click', () => {
+        ssEd.focus = i;
+        ssStepHours(1, true);
+      });
     } else {
       row.classList.add('ss-btns');
       const names = ['Save', 'Cancel'].concat(ssEd.id ? ['Delete'] : []);
@@ -409,7 +460,7 @@ function ssRender() {
         });
       });
     }
-    if (i < btnRow)
+    if (i < hoursRow)
       row.addEventListener('click', () => {
         ssEd.focus = i;
         ssStartEdit(i);
@@ -481,7 +532,7 @@ function ssField(row, value, placeholder, isAdd) {
  * @param {number} row
  */
 function ssStartEdit(row) {
-  if (row >= ssBtnRow()) return;
+  if (row >= ssHoursRow()) return;
   ssEd.editing = row;
   ssRender();
 }
@@ -543,8 +594,9 @@ function ssSaveEditor() {
   if (s) {
     s.name = name;
     s.terms = terms;
+    s.hours = ssEd.hours;
   } else {
-    s = {id: Date.now().toString(36), name, terms};
+    s = {id: Date.now().toString(36), name, terms, hours: ssEd.hours};
     all.push(s);
   }
   closeSavedSearchEditor();
@@ -640,6 +692,9 @@ function handleSavedSearchKey(e) {
     ssEd.focus =
         Math.max(0, Math.min(ssRowCount() - 1, ssEd.focus + (up ? -1 : 1)));
     ssRender();
+  } else if ((left || right) && ssEd.focus === ssHoursRow()) {
+    e.preventDefault();
+    ssStepHours(left ? -1 : 1);
   } else if ((left || right) && ssEd.focus === btnRow) {
     e.preventDefault();
     const nb = ssEd.id ? 3 : 2;
@@ -649,6 +704,8 @@ function handleSavedSearchKey(e) {
     e.preventDefault();
     if (ssEd.focus === btnRow)
       ssActivateButton();
+    else if (ssEd.focus === ssHoursRow())
+      ssStepHours(1, true);
     else
       ssStartEdit(ssEd.focus);
   } else if (red) {
