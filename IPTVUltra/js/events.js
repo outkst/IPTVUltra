@@ -476,7 +476,14 @@ function zapChannel(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
   const cur = playingListIndex(list);
-  const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+  let next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+  // Skip the rows of the stream that plays: in a group of versions, CH+ and
+  // CH- go to a different stream
+  for (let n = 0; n < list.length && cur >= 0; n++) {
+    const i = getChannelIndex(list[next]);
+    if (!isPlayingIdx(i) && bestVersionOf(i) !== currentChannelIndex) break;
+    next = (next + dir + list.length) % list.length;
+  }
   if (epgMode) {
     epgFocusedRowIdx = next;
     updateEPGRowFocus();

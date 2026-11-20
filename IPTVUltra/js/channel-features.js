@@ -599,7 +599,9 @@ function alternateSources(idx) {
   return out;
 }
 let _altOrigin = -1;  // the channel the user actually chose
-let _bestFrom = -1;   // the selected channel when a better version of it plays
+let _bestFrom = -1;
+let _bestIdx = -1;  // the best version that bestVersionOf gave for _bestFrom //
+                    // the selected channel when a better version of it plays
 const _bestFailed = new Set();  // versions that failed in this session
 let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
@@ -612,8 +614,7 @@ function tryAlternateSource(msg) {
   if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active || catchup)
     return false;
   // A best version that fails is not selected again in this session
-  if (_bestFrom >= 0 && currentChannelIndex >= 0 &&
-      currentChannelIndex !== _bestFrom)
+  if (_bestIdx >= 0 && currentChannelIndex === _bestIdx)
     _bestFailed.add(currentChannelIndex);
   // The selected channel is first: the app can play a better version of it
   const alts = [_altOrigin].concat(alternateSources(_altOrigin));

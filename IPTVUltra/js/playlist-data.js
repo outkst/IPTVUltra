@@ -424,6 +424,7 @@ function replaceChannelList(parsed) {
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
   _bestFrom = currentChannelIndex >= 0 ? mapIdx(_bestFrom) : -1;
+  _bestIdx = _bestFrom >= 0 ? mapIdx(_bestIdx) : -1;
   const failed = [..._bestFailed].map(mapIdx).filter(i => i >= 0);
   _bestFailed.clear();
   for (const i of failed) _bestFailed.add(i);
@@ -431,6 +432,8 @@ function replaceChannelList(parsed) {
   let catchupGone = false;
   if (catchup) {
     catchup.chIdx = mapIdx(catchup.chIdx);
+    catchup.liveIdx = mapIdx(catchup.liveIdx);
+    catchup.bestFrom = mapIdx(catchup.bestFrom);
     catchupGone = catchup.chIdx < 0;
   }
   // Open UI keeps indexes of the previous list: close it
@@ -441,11 +444,24 @@ function replaceChannelList(parsed) {
     _rowOk = null;
   }
   if (catchupGone) {
-    // The archive channel is not in the new list: stop the archive
-    catchup = null;
-    // In Movies or Series, no live stream starts (setVodMode reloads it)
-    if (currentChannelIndex >= 0 && vodMode === 'live' && !vodPlay.active)
-      selectChannel(currentChannelIndex);
+    // The archive channel is not in the new list: stop the archive. If its
+    // live version is in the list, go back to it (not in Movies or Series:
+    // setVodMode reloads the channel).
+    const live = catchup.liveIdx;
+    if (live >= 0 && vodMode === 'live' && !vodPlay.active) {
+      currentChannelIndex = live;
+      catchup.chIdx = live;
+      catchupBackToLive();
+    } else {
+      catchup = null;
+      if (live >= 0)
+        currentChannelIndex = live;
+      else {
+        liveEngineDestroy();
+        videoPlayer.removeAttribute('src');
+        videoPlayer.load();
+      }
+    }
   }
   extractGroups();
   validateCurrentGroup();

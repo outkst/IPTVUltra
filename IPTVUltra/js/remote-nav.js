@@ -249,6 +249,15 @@ function handleRemoteNav(e) {
         right = k === 'ArrowRight' || kc === 39;
   const enter = k === 'Enter' || kc === 13;
 
+  // An auto-repeat of OK or of a colour key does nothing. Else a hold acts
+  // again each 100 ms: the Versions menu that a long press opens takes the next
+  // repeat as OK, a toggle in Settings flips, and Red changes the channel again
+  // and again. The player and the guide and list rows act on the release.
+  if (e.repeat && (enter || (kc >= 403 && kc <= 406))) {
+    e.preventDefault();
+    return;
+  }
+
   // The confirm dialog owns the remote while it is open
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
     if (left || up) {

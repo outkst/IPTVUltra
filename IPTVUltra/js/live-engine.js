@@ -1854,8 +1854,8 @@ function _liveScrubLimits() {
     bufStart = min = now - Math.max(0, r.live - r.start) * 1000;
     max = now - Math.max(0, r.live - r.end) * 1000;
   }
-  const ch = channels[currentChannelIndex];
-  if (ch && !liveEngine.hlsWait && channelHasCatchup(ch)) {
+  const ai = archiveChannelIdx(), ch = ai >= 0 ? channels[ai] : null;
+  if (ch && !liveEngine.hlsWait) {
     min = Math.min(min, now - ch.archive * 86400000 + 60000);
     if (!liveEngineActive()) max = now - ARCHIVE_NATIVE_BEHIND_MS;
   }

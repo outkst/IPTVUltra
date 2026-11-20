@@ -349,7 +349,7 @@ async function fetchXtreamEpgFull(tvgId) {
     const listings = data && data.epg_listings;
     // An empty or bad answer is not data: a later Left asks again
     if (!Array.isArray(listings) || !listings.length) {
-      _epgFullFetched.delete(tvgId);
+      setTimeout(() => _epgFullFetched.delete(tvgId), EPG_EMPTY_RETRY_MS);
       return;
     }
     const byStart = new Map();
@@ -420,8 +420,11 @@ function startCatchup(chIdx, prog, startAt) {
   // A catch-up of the playing channel (also the channel that you selected,
   // when its better version plays) is not a channel change. The end of the
   // catch-up goes back to the version that played.
-  const sameCh = isPlayingIdx(chIdx);
-  const liveIdx = sameCh ? currentChannelIndex : chIdx;
+  // During a catch-up, the live version is in catchup.liveIdx.
+  const prevLive = catchup && channels[catchup.liveIdx] ? catchup.liveIdx :
+                                                          currentChannelIndex;
+  const sameCh = isPlayingIdx(chIdx) || chIdx === prevLive;
+  const liveIdx = sameCh ? prevLive : chIdx;
   if (currentChannelIndex >= 0 && !sameCh) {
     lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
         _altOrigin :
@@ -434,7 +437,10 @@ function startCatchup(chIdx, prog, startAt) {
   _reloadAttempts = 0;
   catchup = {
     chIdx,
-    liveIdx,
+    // The live version to go back to: the version that played (with the
+    // channel that you selected), or -1 (the best version of chIdx)
+    liveIdx: sameCh ? liveIdx : -1,
+    bestFrom: sameCh ? (catchup ? catchup.bestFrom : _bestFrom) : -1,
     prog,
     url: catchupUrl(ch, prog),
     dur: (prog.stop - prog.start) / 1000,
@@ -467,11 +473,12 @@ function startCatchup(chIdx, prog, startAt) {
   else
     showVodOsd();
 }
-function catchupBackToLive() {
-  if (!catchup) return;
-  const idx = channels[catchup.liveIdx] ? catchup.liveIdx : catchup.chIdx;
-  catchup = null;
+// Loads the version that plays again (the return from Movies or Series). The
+// channel that you selected stays.
+function reloadLiveChannel() {
+  const idx = currentChannelIndex;
   if (!channels[idx]) return;
+  const from = _bestFrom, best = _bestIdx, origin = _altOrigin;
   _returningLive = true;
   _selectingExact = true;
   try {
@@ -479,6 +486,36 @@ function catchupBackToLive() {
   } finally {
     _returningLive = false;
     _selectingExact = false;
+  }
+  _bestFrom = from;
+  _bestIdx = best;
+  _altOrigin = origin;
+  noteSelectedChannel();
+  markPlayingRows();
+}
+function catchupBackToLive() {
+  if (!catchup) return;
+  const c = catchup;
+  catchup = null;
+  const exact = !!channels[c.liveIdx];
+  const idx = exact ? c.liveIdx : c.chIdx;
+  if (!channels[idx]) return;
+  _returningLive = true;
+  _selectingExact = exact;
+  try {
+    selectChannel(idx);
+  } finally {
+    _returningLive = false;
+    _selectingExact = false;
+  }
+  // The version that played before the catch-up, with the channel that you
+  // selected
+  if (exact && c.bestFrom >= 0 && channels[c.bestFrom] && c.bestFrom !== idx) {
+    _bestFrom = c.bestFrom;
+    _bestIdx = idx;
+    _altOrigin = c.bestFrom;
+    noteSelectedChannel();
+    markPlayingRows();
   }
 }
 
@@ -519,8 +556,15 @@ function archiveProgAt(ch, ms, now) {
 // Start the archive of the channel that plays, at `targetMs`. The result is
 // `false` if the channel has no archive for that time. Then the function does
 // no action.
+// The channel whose archive a rewind uses: the version that plays, else the
+// channel that you selected (`_bestFrom`), or -1
+function archiveChannelIdx() {
+  for (const i of [currentChannelIndex, _bestFrom])
+    if (i >= 0 && channels[i] && channelHasCatchup(channels[i])) return i;
+  return -1;
+}
 function rewindIntoArchive(targetMs) {
-  const idx = currentChannelIndex;
+  const idx = archiveChannelIdx();
   const ch = idx >= 0 ? channels[idx] : null;
   if (!ch || catchup || vodPlay.active || !channelHasCatchup(ch)) return false;
   const now = Date.now();
@@ -1102,13 +1146,17 @@ function updateEPGInfoPanel(ch) {
   }
 }
 
+// The character of a numeric entity. A value that is not a code point stays
+// as text (String.fromCodePoint throws a RangeError).
+function xmlCodePoint(match, cp) {
+  return cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : match;
+}
 function unescapeXml(s) {
   if (!s || s.indexOf('&') === -1) return s;
   return s
       .replace(
-          /&#x([0-9A-Fa-f]+);/g,
-          (_, h) => String.fromCodePoint(parseInt(h, 16)))
-      .replace(/&#([0-9]+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+          /&#x([0-9A-Fa-f]+);/g, (m, h) => xmlCodePoint(m, parseInt(h, 16)))
+      .replace(/&#([0-9]+);/g, (m, d) => xmlCodePoint(m, parseInt(d, 10)))
       .replace(/&amp;/g, '&')
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')

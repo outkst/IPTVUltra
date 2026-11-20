@@ -5757,6 +5757,46 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           bv.active && bv.isPlaying && bv.player && bv.last && bv.failed &&
           bv.exact && bv.off && bv.noReload,
       JSON.stringify(bv));
+  // A hold of OK on a guide row opens Versions, and the auto-repeat keydowns
+  // do not select a version. CH+ skips the rows of the stream that plays.
+  const vr = await page.evaluate(async () => {
+    const ev = (type, repeat) => {
+      const e = new KeyboardEvent(type, {
+        key: 'Enter',
+        keyCode: 13,
+        repeat: !!repeat,
+        bubbles: true,
+        cancelable: true
+      });
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const out = {};
+    selectChannel(1);
+    epgFocusedRowIdx = currentFilteredChannels.indexOf(channels[31]);
+    updateEPGRowFocus();
+    ev('keydown');
+    await sleep(500);
+    for (let i = 0; i < 5; i++) {
+      await sleep(100);
+      ev('keydown', true);
+    }
+    out.open = versionsOpen;
+    ev('keyup');
+    out.stillOpen = versionsOpen && currentChannelIndex === 1;
+    closeVersions();
+    selectChannel(31);
+    const list = currentFilteredChannels;
+    out.order = [30, 31, 32].map(i => list.indexOf(channels[i])).join();
+    zapChannel(1);
+    out.zap = currentChannelIndex;
+    return out;
+  });
+  check(
+      'a hold of OK keeps Versions open; CH+ skips the rows of the stream that plays',
+      vr.open && vr.stillOpen && vr.zap !== 32 && vr.zap !== 31,
+      JSON.stringify(vr));
   // A hold of OK in the live player changes to the previous channel while you
   // hold the key. The release does not pause.
   const okHold = await page.evaluate(async () => {

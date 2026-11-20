@@ -194,6 +194,19 @@ function toggleLivePause() {
 }
 
 // ----- Video Control -----
+// Saves the channel that you selected and the previous channel in the playlist
+// data: the next start selects the best version again, the cursor finds the
+// row, and the previous channel (long press of OK, Red) stays.
+function noteSelectedChannel() {
+  if (!_activePlaylistKey || currentChannelIndex < 0) return;
+  const ps = getPlaylistState(_activePlaylistKey);
+  const sel = channels[_bestFrom] || channels[currentChannelIndex];
+  if (!sel) return;
+  ps.lastChannel = {url: sel.url, tvgId: sel.tvgId || ''};
+  const prev = channels[lastChannelIndex];
+  if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
+  savePlaylistState();
+}
 function selectChannel(index) {
   if (!channels[index]) return;
   // A selection of a channel plays its best measured version (Settings, "Best
@@ -208,10 +221,18 @@ function selectChannel(index) {
   }
   // The selection plays already (a different row of the same stream): no
   // reload. The provider counts the previous connection for approximately 15 s.
-  if (better >= 0 && index === currentChannelIndex && !catchup &&
-      !vodPlay.active && vodMode === 'live') {
-    _bestFrom = picked;
+  // Also the row of the version that plays, when a different row selected it.
+  const userPick = !_selectingAlt && !_selectingExact && !_returningLive;
+  if (userPick && index === currentChannelIndex &&
+      (better >= 0 || _bestFrom >= 0) && !catchup && !vodPlay.active &&
+      vodMode === 'live') {
+    surfCancel();
+    _bestFrom = better >= 0 ? picked : -1;
+    _bestIdx = better >= 0 ? index : -1;
     _altOrigin = picked;
+    _altTried = new Set([index]);
+    noteRecentChannel(channels[picked]);
+    noteSelectedChannel();
     markPlayingRows();
     if (livePlayer.active) showVodOsd();
     return;
@@ -221,13 +242,16 @@ function selectChannel(index) {
   _cancelHold();   // a seek of the previous channel must not go to this one
   catchup = null;  // any channel selection returns to live
   surfCancel();
-  if (_selectingAlt || _returningLive) {
-    // fallback to another source of the same channel, or the end of a
-    // catch-up: not a channel change for history purposes
+  if (_selectingAlt) {
+    // fallback to another source of the same channel: not a channel change for
+    // history purposes. The selected channel stays the selected row.
+    if (_altOrigin >= 0 && _altOrigin !== index && channels[_altOrigin])
+      _bestFrom = _altOrigin;
   } else {
-    // A retry of the selection, or a version of it from the Versions menu, is
-    // not a channel change
-    const sameSel = isPlayingIdx(picked) ||
+    // A retry of the selection, a version of it from the Versions menu, or the
+    // end of a catch-up is not a channel change
+    const sameSel = _returningLive || isPlayingIdx(picked) ||
+        picked === _altOrigin ||
         (_selectingExact && _altOrigin >= 0 &&
          versionsOf(_altOrigin).includes(picked));
     if (!sameSel && currentChannelIndex >= 0)
@@ -235,6 +259,7 @@ function selectChannel(index) {
           _altOrigin :
           currentChannelIndex;
     _bestFrom = better >= 0 ? picked : -1;
+    _bestIdx = better >= 0 ? index : -1;
     _altOrigin = picked;
     _altTried = new Set([index]);
     noteRecentChannel(channels[picked]);
@@ -263,19 +288,7 @@ function selectChannel(index) {
   channelInfoTag.innerText = `📺 ${ch.name}`;
   channelInfoTag.style.visibility = '';
   statusArea.innerText = `▶️ ${ch.name}`;
-  if (_activePlaylistKey) {
-    const ps = getPlaylistState(_activePlaylistKey);
-    // The channel that you selected: the next start selects its best version
-    // again, and the cursor finds its row
-    const sel =
-        _bestFrom >= 0 && channels[_bestFrom] ? channels[_bestFrom] : ch;
-    ps.lastChannel = {url: sel.url, tvgId: sel.tvgId || ''};
-    // The previous channel stays after a restart of the app (long press of OK,
-    // Red)
-    const prev = channels[lastChannelIndex];
-    if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
-    savePlaylistState();
-  }
+  noteSelectedChannel();
   if (better >= 0) {
     const t = streamTechOf(ch, index);
     showEPGToast(
@@ -676,6 +689,7 @@ function goToHomeScreen() {
   currentChannelIndex = -1;
   lastChannelIndex = -1;
   _bestFrom = -1;
+  _bestIdx = -1;
   _bestFailed.clear();
   currentSearchQuery = '';
   selectedPlaylistId = null;

@@ -477,9 +477,11 @@ function setEpisodeWatched(item, ep, seasons, on, noSave) {
   let at = Date.now();
   if (on && !noSave) {
     const latest = lastEpisodeEntry(item.id), flat = seriesEpisodeIds(seasons);
-    if (latest && latest.epId !== ep.id &&
-        flat.indexOf(latest.epId) > flat.indexOf(ep.id))
-      at = (latest.at || at) - 1;
+    const lp = latest ? flat.indexOf(latest.epId) : -1,
+          ep0 = flat.indexOf(ep.id);
+    // The offset keeps the series order among the marks
+    if (latest && latest.epId !== ep.id && ep0 >= 0 && lp > ep0)
+      at = (latest.at || at) - (lp - ep0);
   }
   if (!on)
     delete vodProgress[key];
@@ -617,14 +619,20 @@ function continueWatchingItems(mode) {
 // so that Continue Watching keeps its titles. The entries that start with
 // `keepPrefix` (the series that you mark) stay.
 function pruneVodProgress(keepPrefix) {
-  const keys = Object.keys(vodProgress)
-                   .filter(k => !(keepPrefix && k.startsWith(keepPrefix)));
-  const over = Object.keys(vodProgress).length - VOD_PROGRESS_MAX;
+  const all = Object.keys(vodProgress);
+  const over = all.length - VOD_PROGRESS_MAX;
   if (over <= 0) return;
   const w = k => (vodProgress[k].watched ? 0 : 1);
-  keys.sort(
-      (a, b) =>
-          w(a) - w(b) || (vodProgress[a].at || 0) - (vodProgress[b].at || 0));
+  const byAge = (a, b) =>
+      w(a) - w(b) || (vodProgress[a].at || 0) - (vodProgress[b].at || 0);
+  const kept = keepPrefix ? all.filter(k => k.startsWith(keepPrefix)) : [];
+  // A series with more entries than half of the limit keeps only its newest
+  // half: the other titles also keep entries
+  const keepMax = Math.floor(VOD_PROGRESS_MAX / 2);
+  const keep = new Set(
+      kept.sort((a, b) => (vodProgress[b].at || 0) - (vodProgress[a].at || 0))
+          .slice(0, keepMax));
+  const keys = all.filter(k => !keep.has(k)).sort(byAge);
   for (let i = 0; i < Math.min(over, keys.length); i++)
     delete vodProgress[keys[i]];
 }
@@ -705,8 +713,8 @@ function setVodMode(mode) {
     renderGroupsList();
     refreshCurrentView();
     if (prev !== 'live' && currentChannelIndex >= 0)
-      selectChannel(currentChannelIndex);  // live streams cannot resume; reload
-                                           // the channel
+      reloadLiveChannel();  // live streams cannot resume; reload
+                            // the channel
     return;
   }
   if (prev === 'live') {
@@ -722,6 +730,12 @@ function setVodMode(mode) {
   ev.style.display = 'none';
   vv.style.display = 'flex';
   vodNav.detail = null;
+  // The lists and the search box of the previous mode do not stay
+  vodNav.zone = 'cats';
+  vodNav.items = [];
+  vodNav.baseItems = [];
+  const si = document.getElementById('vodSearchInput');
+  if (si && document.activeElement === si) si.blur();
   document.getElementById('vodDetails').style.display = 'none';
   // The categories show Home, Favorites, and "Search all" before the load
   // completes. If you opened a list or typed meanwhile, the load does not go
