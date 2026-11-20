@@ -214,6 +214,13 @@ function noteSelectedChannel() {
   if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
   savePlaylistState();
 }
+// True while the live stream plays with no error: a selection of the channel
+// that plays does not need to load it again
+function playingStreamHealthy() {
+  return currentChannelIndex >= 0 && !catchup && !vodPlay.active &&
+      vodMode === 'live' && !!stallWatchdogTimer && !_errRetryTimer &&
+      !videoPlayer.error && !videoPlayer.ended;
+}
 // The previous channel is never the channel that plays. If a change made it
 // that channel, the value from before the change comes back (or -1).
 // True when the source had no end (duration Infinity) at its metadata: a live
@@ -255,9 +262,7 @@ function selectChannel(index) {
   // Only when the stream plays: a stream with an error loads again.
   const userPick = !_selectingAlt && !_selectingExact && !_returningLive;
   if (userPick && index === currentChannelIndex &&
-      (better >= 0 || _bestFrom >= 0) && !catchup && !vodPlay.active &&
-      vodMode === 'live' && stallWatchdogTimer && !_errRetryTimer &&
-      !videoPlayer.error && !videoPlayer.ended) {
+      (better >= 0 || _bestFrom >= 0) && playingStreamHealthy()) {
     surfCancel();
     // A different channel row that plays the same stream: the previous
     // selection becomes the previous channel

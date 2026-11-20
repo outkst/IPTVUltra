@@ -751,7 +751,7 @@ function setVodMode(mode) {
   loadVodCats(mode)
       .then(() => {
         if (vodMode === mode && _vodListOpens === opens &&
-            vodNav.zone !== 'search')
+            !(vodNav.query || '').trim())
           openVodList('home');
       })
       .catch(err => {

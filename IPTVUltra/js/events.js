@@ -354,6 +354,7 @@ let _enterPressTime = 0;
 let _enterDown = false;
 let _enterLongTimer = 0;
 let _enterLongDone = false;
+let _enterOsdHeld = false;  // the push stopped the banner timer
 const LONG_PRESS_MS = 600;
 // Capture phase: runs before handleRemoteNav, so a press that opens the player
 // (Play on a details page, OK on a guide row) is not also taken as a player OK
@@ -369,6 +370,13 @@ document.addEventListener('keydown', (e) => {
   _enterDown = true;
   _enterLongDone = false;
   _enterPressTime = Date.now();
+  // The banner timer does not hide the banner (and its button focus or surf
+  // preview) during the push. The release starts the timer again.
+  if (vodPlay.osdTimer) {
+    clearTimeout(vodPlay.osdTimer);
+    vodPlay.osdTimer = null;
+    _enterOsdHeld = true;
+  }
   clearTimeout(_enterLongTimer);
   _enterLongTimer =
       livePlayer.active ? setTimeout(enterLongPress, LONG_PRESS_MS) : 0;
@@ -397,8 +405,16 @@ function clearEnterPress() {
 document.addEventListener('keyup', (e) => {
   if (!_enterDown) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  const long = _enterLongDone;
+  const long = _enterLongDone, osdHeld = _enterOsdHeld;
+  _enterOsdHeld = false;
   clearEnterPress();
+  // The banner timer starts again after the action of the release
+  if (osdHeld)
+    setTimeout(() => {
+      if (playerActive() && !vodPlay.osdTimer &&
+          document.getElementById('vodOsd').classList.contains('visible'))
+        showVodOsd();
+    }, 0);
   if (!_inPlayerMode()) return;
   e.preventDefault();
   if (long) return;  // the hold changed the channel

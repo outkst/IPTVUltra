@@ -550,7 +550,7 @@ function surfTune() {
   if (!ch) return;
   const idx = getChannelIndex(ch);
   if (idx < 0) return;
-  if (isPlayingIdx(idx)) {
+  if (isPlayingIdx(idx) && playingStreamHealthy()) {
     showVodOsd();
     return;
   }
@@ -1044,8 +1044,7 @@ function commitDigits() {
   }, 1500);
   // The number of the channel that plays does not load the stream again (the
   // provider counts the previous connection for approximately 15 s)
-  if (isPlayingIdx(idx) && !catchup && stallWatchdogTimer && !_errRetryTimer &&
-      !videoPlayer.error && !videoPlayer.ended) {
+  if (isPlayingIdx(idx) && playingStreamHealthy()) {
     surfCancel();
     if (livePlayer.active) showVodOsd();
   } else

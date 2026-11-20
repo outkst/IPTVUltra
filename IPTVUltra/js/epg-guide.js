@@ -2069,8 +2069,22 @@ function epgMinuteTick() {
       scheduleEpgFetchForVisible();  // re-queues rows whose cached EPG passed
                                      // its TTL
     }
-    if (currentChannelIndex >= 0 && channels[currentChannelIndex])
-      updateEPGInfoPanel(channels[currentChannelIndex]);
+    if (currentChannelIndex >= 0 && channels[currentChannelIndex]) {
+      const cur = channels[currentChannelIndex];
+      // epgNeedsFetch stops a request that is not necessary (for example
+      // while its XMLTV list has programs)
+      if (cur.tvgId) queueEpgFetch([cur.tvgId], true);
+      updateEPGInfoPanel(cur);
+    }
+    // A row whose XMLTV list stopped in the last minute shows the provider
+    // programs
+    for (const [idx] of epgRenderedRows) {
+      const ch = currentFilteredChannels[idx];
+      const x = ch && ch.tvgId ? xmltvProgsOf(ch.tvgId) : null;
+      if (x && x.length && x[x.length - 1].stop <= now &&
+          x[x.length - 1].stop > now - 60000)
+        onEpgChannelUpdated(ch.tvgId);
+    }
   } else if (currentPlaylistType === 'm3u') {
     // Refresh the "now" line of visible channel rows in place
     for (const [idx, el] of renderedItems) {
