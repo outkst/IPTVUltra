@@ -6,7 +6,7 @@
 // ── playback ─────────────────────────────────────────────────
 function _inPlayerMode() {
   return playerActive() && !settingsOpen && !diagOpen && !versionsOpen &&
-      !ssOpen &&
+      !ssOpen && !catsOpen && !vodSortOpen &&
       !(confirmDialog && !confirmDialog.classList.contains('hidden'));
 }
 function showPlayerControls() {
@@ -1422,6 +1422,13 @@ function reapplySubtitlePrefs() {
   } else if (liveUms) {
     liveUms.subManual = false;
     applyLiveTrackPrefs(liveUms);
+  } else if (liveEngine.shaka || liveEngine.hls) {
+    // Shaka Player and hls.js have no media service (liveUms is null)
+    liveEngine.subManual = false;
+    if (liveEngine.shaka)
+      applyShakaTrackPrefs();
+    else
+      applyHlsTrackPrefs();
   }
 }
 // Live: same subtitle/audio language preferences as VOD, applied to the live

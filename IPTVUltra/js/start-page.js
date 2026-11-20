@@ -88,6 +88,7 @@ function renderSavedPlaylists() {
   savedPlaylists.forEach((p, idx) => {
     const div = document.createElement('div');
     div.className = 'saved-item';
+    div.tabIndex = 0;  // the arrow keys can give it the focus
     if (idx === selectedPlaylistId) div.style.background = '#2a3a70';
     div.onclick = () => {
       document.querySelectorAll('.saved-item')

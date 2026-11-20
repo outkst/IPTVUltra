@@ -361,9 +361,11 @@ const LONG_PRESS_MS = 600;
 document.addEventListener('keydown', (e) => {
   if (!_inPlayerMode()) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  // The auto-repeat of a hold. A press that is not a repeat starts again, also
-  // when the app did not get the release of the previous press.
-  if (_enterDown && e.repeat) return;
+  // An auto-repeat never starts a press: the press can start outside the
+  // player (OK on Play, or on a row of an overlay that closes on keydown). A
+  // press that is not a repeat starts again, also when the app did not get the
+  // release of the previous press.
+  if (e.repeat) return;
   _enterDown = true;
   _enterLongDone = false;
   _enterPressTime = Date.now();
@@ -433,9 +435,11 @@ document.addEventListener('keydown', (e) => {
   _holdKeyDir = isLeft ? 'left' : 'right';
   _holdKeyStart = Date.now();
   showPlayerControls();
-  const capturedDir = _holdKeyDir;
+  const capturedDir = _holdKeyDir, pressAt = _holdKeyStart;
   setTimeout(() => {
-    if (_holdKeyDir === capturedDir) _startHold(capturedDir);
+    // Only the same press: not the second tap of a quick double tap
+    if (_holdKeyDir === capturedDir && _holdKeyStart === pressAt)
+      _startHold(capturedDir);
   }, HOLD_THRESHOLD_MS);
 }, true);
 

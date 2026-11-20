@@ -347,7 +347,11 @@ async function fetchXtreamEpgFull(tvgId) {
     const data = await resp.json();
     if (_xt !== xt) return;
     const listings = data && data.epg_listings;
-    if (!Array.isArray(listings)) return;
+    // An empty or bad answer is not data: a later Left asks again
+    if (!Array.isArray(listings) || !listings.length) {
+      _epgFullFetched.delete(tvgId);
+      return;
+    }
     const byStart = new Map();
     for (const p of epgData.get(tvgId) || []) byStart.set(p.start, p);
     xtreamNoteEpgOffset(epgListingNearNow(listings));
@@ -413,7 +417,12 @@ function startCatchup(chIdx, prog, startAt) {
     clearTimeout(_errRetryTimer);
     _errRetryTimer = null;
   }
-  if (currentChannelIndex >= 0 && currentChannelIndex !== chIdx) {
+  // A catch-up of the playing channel (also the channel that you selected,
+  // when its better version plays) is not a channel change. The end of the
+  // catch-up goes back to the version that played.
+  const sameCh = isPlayingIdx(chIdx);
+  const liveIdx = sameCh ? currentChannelIndex : chIdx;
+  if (currentChannelIndex >= 0 && !sameCh) {
     lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
         _altOrigin :
         currentChannelIndex;
@@ -425,6 +434,7 @@ function startCatchup(chIdx, prog, startAt) {
   _reloadAttempts = 0;
   catchup = {
     chIdx,
+    liveIdx,
     prog,
     url: catchupUrl(ch, prog),
     dur: (prog.stop - prog.start) / 1000,
@@ -449,10 +459,7 @@ function startCatchup(chIdx, prog, startAt) {
   channelInfoTag.style.visibility = '';
   statusArea.innerText = `⏪ ${prog.title}`;
   if (epgMode) {
-    for (const [, el] of epgRenderedRows) el.classList.remove('active');
-    const fi = currentFilteredChannels.indexOf(ch);
-    if (fi >= 0 && epgRenderedRows.has(fi))
-      epgRenderedRows.get(fi).classList.add('active');
+    markPlayingRows();
     updateEPGInfoPanel(ch);
   }
   if (!livePlayer.active)
@@ -462,9 +469,17 @@ function startCatchup(chIdx, prog, startAt) {
 }
 function catchupBackToLive() {
   if (!catchup) return;
-  const idx = catchup.chIdx;
+  const idx = channels[catchup.liveIdx] ? catchup.liveIdx : catchup.chIdx;
   catchup = null;
-  if (channels[idx]) selectChannel(idx);  // the same channel: no best version
+  if (!channels[idx]) return;
+  _returningLive = true;
+  _selectingExact = true;
+  try {
+    selectChannel(idx);
+  } finally {
+    _returningLive = false;
+    _selectingExact = false;
+  }
 }
 
 // ── Rewind into the archive ─────────────────────────────────────
@@ -495,7 +510,9 @@ function archiveProgAt(ch, ms, now) {
   const p = progs.find(x => !x.fromName && x.start <= ms && ms < x.stop);
   if (p) {
     if (p.hasArchive === false && p.stop <= now) return null;
-    return {start: p.start, stop: Math.min(p.stop, now), title: p.title};
+    const r = {start: p.start, stop: Math.min(p.stop, now), title: p.title};
+    if (p.tsOff !== undefined) r.tsOff = p.tsOff;  // the clock of the listing
+    return r;
   }
   return {start: Math.floor(ms / 60000) * 60000, stop: now, title: 'Archive'};
 }
@@ -2202,12 +2219,15 @@ function applyXtreamChannels(
                    // in as EPG loads
   perfMark('guide-rendered');
   statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
-  if (channels.length) setTimeout(selectInitialChannel, 500);
+  const key = _activePlaylistKey;  // a different playlist can open meanwhile
+  if (channels.length)
+    setTimeout(() => {
+      if (_activePlaylistKey === key) selectInitialChannel();
+    }, 500);
   // EPG is fetched lazily per visible row (see "Xtream lazy EPG"): cached
   // entries first, then favorites in the background
   startEpgTick();
   xmltvStart();
-  const key = _activePlaylistKey;
   epgRestoreFromCache(key).then(n => {
     perfMark(`epg-cache-restored(${n})`);
     if (_activePlaylistKey === key) setTimeout(prefetchFavoritesEpg, 800);

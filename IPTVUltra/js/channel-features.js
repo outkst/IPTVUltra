@@ -454,6 +454,15 @@ function swapToPreviousChannel() {
   moveCursorToChannel(channels[idx]);
   return true;
 }
+// Mark the rendered rows of the playing channel (guide or channel list): the
+// version that plays and the channel that you selected
+function markPlayingRows() {
+  const rows = epgMode ? epgRenderedRows : renderedItems;
+  for (const [fi, el] of rows) {
+    const ch = currentFilteredChannels[fi];
+    el.classList.toggle('active', !!ch && isPlayingIdx(getChannelIndex(ch)));
+  }
+}
 // True when the channel at `idx` plays, also when the app plays a better
 // version of it (`_bestFrom`)
 function isPlayingIdx(idx) {
@@ -595,12 +604,17 @@ const _bestFailed = new Set();  // versions that failed in this session
 let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
     false;  // selectChannel() called by the fallback (not a user choice)
+let _returningLive = false;   // selectChannel() after a catch-up
 let _selectingExact = false;  // selectChannel() plays this version, not the
                               // best version
 function tryAlternateSource(msg) {
-  if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active) return false;
+  // A catch-up that fails is not a failure of the live stream
+  if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active || catchup)
+    return false;
   // A best version that fails is not selected again in this session
-  if (currentChannelIndex >= 0) _bestFailed.add(currentChannelIndex);
+  if (_bestFrom >= 0 && currentChannelIndex >= 0 &&
+      currentChannelIndex !== _bestFrom)
+    _bestFailed.add(currentChannelIndex);
   // The selected channel is first: the app can play a better version of it
   const alts = [_altOrigin].concat(alternateSources(_altOrigin));
   const next = alts.find(i => !_altTried.has(i) && channels[i]);
@@ -921,7 +935,7 @@ function handleVersionsKey(e) {
 let _rowOk = null;  // { timer, fired, short }
 function rowOkPress(e, idx, shortAct) {
   e.preventDefault();
-  if (_rowOk && e.repeat) return;          // auto-repeat while the key is held
+  if (e.repeat) return;  // auto-repeat: also a hold that started elsewhere
   if (_rowOk) clearTimeout(_rowOk.timer);  // a release we never saw
   const st = {fired: false, short: shortAct};
   st.timer = setTimeout(() => {

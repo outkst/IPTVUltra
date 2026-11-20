@@ -131,6 +131,10 @@ async function parseM3UStreaming(content) {
           group: copyStr((inf.attrs['group-title'] || '').trim()),
           url: ''
         };
+      } else if (line.startsWith('#EXTGRP:')) {
+        // The group of the next channel, when its #EXTINF has no group-title
+        if (current && !current.group)
+          current.group = copyStr(line.slice(8).trim());
       } else if (
           !line.startsWith('#') && current &&
           (line.startsWith('http') || line.startsWith('https') ||
@@ -419,8 +423,10 @@ function replaceChannelList(parsed) {
   currentChannelIndex = mapIdx(currentChannelIndex);
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
-  _bestFrom = mapIdx(_bestFrom);
-  _bestFailed.clear();  // the indexes of the old list
+  _bestFrom = currentChannelIndex >= 0 ? mapIdx(_bestFrom) : -1;
+  const failed = [..._bestFailed].map(mapIdx).filter(i => i >= 0);
+  _bestFailed.clear();
+  for (const i of failed) _bestFailed.add(i);
   _altTried = new Set([..._altTried].map(mapIdx).filter(i => i >= 0));
   let catchupGone = false;
   if (catchup) {
@@ -437,7 +443,9 @@ function replaceChannelList(parsed) {
   if (catchupGone) {
     // The archive channel is not in the new list: stop the archive
     catchup = null;
-    if (currentChannelIndex >= 0) selectChannel(currentChannelIndex);
+    // In Movies or Series, no live stream starts (setVodMode reloads it)
+    if (currentChannelIndex >= 0 && vodMode === 'live' && !vodPlay.active)
+      selectChannel(currentChannelIndex);
   }
   extractGroups();
   validateCurrentGroup();
@@ -562,9 +570,17 @@ function applyM3UChannels(parsed, url, epgUrl, fromCache) {
   renderChannelList();
   perfMark('list-rendered');
   statusArea.innerText = `✅ ${channels.length.toLocaleString()} channels`;
-  if (channels.length) setTimeout(selectInitialChannel, 500);
+  // The timers do nothing when a different playlist opened meanwhile
+  const key = _activePlaylistKey;
+  if (channels.length)
+    setTimeout(() => {
+      if (_activePlaylistKey === key) selectInitialChannel();
+    }, 500);
   // Start EPG load in background after playlist is ready
-  if (epgUrl) setTimeout(() => loadEPG(epgUrl), 1500);
+  if (epgUrl)
+    setTimeout(() => {
+      if (_activePlaylistKey === key) loadEPG(epgUrl);
+    }, 1500);
 }
 async function loadM3UFromUrl(url, epgUrl = '') {
   if (isLoading) return;

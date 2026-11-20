@@ -481,6 +481,7 @@ function liveEngineDestroy(keepShaka = false) {
   _shakaLoad = null;
   shakaReleaseRequests();
   liveEngine.hlsWait = '';
+  liveEngine.nativeWait = '';
   liveEngine.url = '';
   liveEngine.tech = '';
   liveEngine.placeholder = false;
@@ -501,8 +502,12 @@ function afterLiveTeardown(fn) {
  * @param {string} url The URL.
  */
 function setNativeSrc(url) {
+  liveEngine.nativeWait = url;
   afterLiveTeardown(() => {
-    if (liveEngineActive()) return;  // an engine took the element meanwhile
+    // A different source (an engine, VOD, the start page) took the element
+    // meanwhile: liveEngineDestroy() cleared the URL
+    if (liveEngine.nativeWait !== url || liveEngineActive()) return;
+    liveEngine.nativeWait = '';
     videoPlayer.src = url;
     videoPlayer.load();
   });

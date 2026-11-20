@@ -5727,6 +5727,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     out.player = livePlayer.active;
     exitLivePlayer();
     out.last = lastChannelIndex === 1;
+    // A new selection of the same row does not load the stream again
+    const load = loadLiveSource;
+    let loads = 0;
+    loadLiveSource = function() {
+      loads++;
+      return load.apply(this, arguments);
+    };
+    selectChannel(31);
+    loadLiveSource = load;
+    out.noReload = loads === 0 && currentChannelIndex === 32;
     // A version that failed is not selected again
     _bestFailed.add(32);
     out.failed = bestVersionOf(31) === -1;
@@ -5735,7 +5745,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     openVersions(31);
     versionsFocus = _versionsRows.findIndex(r => r.i === 31);
     versionsWatch();
-    out.exact = currentChannelIndex === 31;
+    out.exact = currentChannelIndex === 31 && lastChannelIndex === 1;
     settings.bestVersion = false;
     out.off = bestVersionOf(31) === -1;
     settings.bestVersion = true;
@@ -5745,7 +5755,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'best version: a selection plays the best measured version, the row stays active',
       bv.best && bv.playing === 'Vers' && bv.toast === 'Best version' &&
           bv.active && bv.isPlaying && bv.player && bv.last && bv.failed &&
-          bv.exact && bv.off,
+          bv.exact && bv.off && bv.noReload,
       JSON.stringify(bv));
   // A hold of OK in the live player changes to the previous channel while you
   // hold the key. The release does not pause.

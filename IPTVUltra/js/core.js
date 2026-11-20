@@ -613,7 +613,8 @@ const vodByCat = new Map(),
       seriesByCat = new Map();        // category id -> items (session cache)
 let vodAll = null, seriesAll = null;  // full catalogs once fetched
 let vodRecent = null, seriesRecent = null;  // newest 60 of the full catalog
-let _vodAllLoading = null;  // { mode, p } while a full fetch is in flight
+let _vodAllLoading = {};  // mode → promise while a full fetch is in flight
+let _vodListOpens = 0;    // counts the calls of openVodList
 const vodInfoCache = new Map(), seriesInfoCache = new Map();
 let vodFavs = loadJson(
     'iptv_vod_favorites',

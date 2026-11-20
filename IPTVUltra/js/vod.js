@@ -313,7 +313,7 @@ async function loadVodCategory(mode, catId) {
 function loadVodAll(mode) {
   const have = mode === 'movies' ? vodAll : seriesAll;
   if (have) return Promise.resolve(have);
-  if (_vodAllLoading && _vodAllLoading.mode === mode) return _vodAllLoading.p;
+  if (_vodAllLoading[mode]) return _vodAllLoading[mode];
   const xt = _xt;
   const p = (async () => {
     const resp = await fetch(
@@ -343,14 +343,11 @@ function loadVodAll(mode) {
     }
     return out;
   })();
-  _vodAllLoading = {mode, p};
-  p.then(
-      () => {
-        if (_vodAllLoading && _vodAllLoading.p === p) _vodAllLoading = null;
-      },
-      () => {
-        if (_vodAllLoading && _vodAllLoading.p === p) _vodAllLoading = null;
-      });
+  _vodAllLoading[mode] = p;
+  const done = () => {
+    if (_vodAllLoading[mode] === p) delete _vodAllLoading[mode];
+  };
+  p.then(done, done);
   return p;
 }
 function adultCatIds(mode) {
@@ -475,6 +472,15 @@ function episodeIsLast(seasons, ep) {
 }
 function setEpisodeWatched(item, ep, seasons, on, noSave) {
   const key = progressKeyFor('episode', ep.id, item.id);
+  // A mark on an episode before the newest entry of the series does not move
+  // "Play" and Continue Watching back to that episode
+  let at = Date.now();
+  if (on && !noSave) {
+    const latest = lastEpisodeEntry(item.id), flat = seriesEpisodeIds(seasons);
+    if (latest && latest.epId !== ep.id &&
+        flat.indexOf(latest.epId) > flat.indexOf(ep.id))
+      at = (latest.at || at) - 1;
+  }
   if (!on)
     delete vodProgress[key];
   else {
@@ -488,7 +494,7 @@ function setEpisodeWatched(item, ep, seasons, on, noSave) {
       rating: item.rating || 0,
       pos: dur,
       dur,
-      at: Date.now(),
+      at,
       watched: true,
       seriesId: item.id,
       season: ep.season,
@@ -499,7 +505,7 @@ function setEpisodeWatched(item, ep, seasons, on, noSave) {
     };
   }
   if (noSave) return;
-  pruneVodProgress();
+  pruneVodProgress(`${_activePlaylistKey || '_'}|e:${item.id}:`);
   saveJson('iptv_vod_progress', vodProgress);
 }
 function setSeasonWatched(item, season, seasons, on) {
@@ -507,17 +513,22 @@ function setSeasonWatched(item, season, seasons, on) {
   // Entries get ascending 'at' in series order, so the newest entry is the last
   // episode marked and Continue Watching / "Play" resume after it (or drop the
   // series when that was the final episode)
-  const flat = [];
-  for (const s of seasons)
-    for (const ep of s.episodes) flat.push(ep.id);
-  const base = Date.now() - flat.length;
+  const flat = seriesEpisodeIds(seasons);
+  // When the newest entry of the series is after this season, the marks stay
+  // older than that entry
+  const latest = lastEpisodeEntry(item.id);
+  const lastPos =
+      Math.max(-1, ...season.episodes.map(ep => flat.indexOf(ep.id)));
+  const base = latest && flat.indexOf(latest.epId) > lastPos ?
+      (latest.at || Date.now()) - flat.length - 1 :
+      Date.now() - flat.length;
   for (const ep of season.episodes) {
     setEpisodeWatched(item, ep, seasons, on, true);
     if (on)
       vodProgress[progressKeyFor('episode', ep.id, item.id)].at =
           base + flat.indexOf(ep.id);
   }
-  pruneVodProgress();
+  pruneVodProgress(`${_activePlaylistKey || '_'}|e:${item.id}:`);
   saveJson('iptv_vod_progress', vodProgress);
 }
 // The episode after the episode with the ID epId, or null.
@@ -602,12 +613,27 @@ function continueWatchingItems(mode) {
   out.sort((a, b) => b._resume.at - a._resume.at);
   return out;
 }
-function pruneVodProgress() {
-  const keys = Object.keys(vodProgress);
-  if (keys.length <= VOD_PROGRESS_MAX) return;
-  keys.sort((a, b) => (vodProgress[a].at || 0) - (vodProgress[b].at || 0));
-  for (let i = 0; i < keys.length - VOD_PROGRESS_MAX; i++)
+// Keeps VOD_PROGRESS_MAX entries. Watched entries go first (the oldest first),
+// so that Continue Watching keeps its titles. The entries that start with
+// `keepPrefix` (the series that you mark) stay.
+function pruneVodProgress(keepPrefix) {
+  const keys = Object.keys(vodProgress)
+                   .filter(k => !(keepPrefix && k.startsWith(keepPrefix)));
+  const over = Object.keys(vodProgress).length - VOD_PROGRESS_MAX;
+  if (over <= 0) return;
+  const w = k => (vodProgress[k].watched ? 0 : 1);
+  keys.sort(
+      (a, b) =>
+          w(a) - w(b) || (vodProgress[a].at || 0) - (vodProgress[b].at || 0));
+  for (let i = 0; i < Math.min(over, keys.length); i++)
     delete vodProgress[keys[i]];
+}
+// The IDs of the episodes of a series, in series order
+function seriesEpisodeIds(seasons) {
+  const flat = [];
+  for (const s of seasons || [])
+    for (const ep of s.episodes) flat.push(ep.id);
+  return flat;
 }
 
 // ── mode switch & layout ─────────────────────────────────────
@@ -621,7 +647,7 @@ function resetVodState(showSwitch) {
   seriesAll = null;
   vodRecent = null;
   seriesRecent = null;
-  _vodAllLoading = null;
+  _vodAllLoading = {};
   vodInfoCache.clear();
   seriesInfoCache.clear();
   vodNav.screen = 'home';
@@ -697,9 +723,15 @@ function setVodMode(mode) {
   vv.style.display = 'flex';
   vodNav.detail = null;
   document.getElementById('vodDetails').style.display = 'none';
+  // The categories show Home, Favorites, and "Search all" before the load
+  // completes. If you opened a list or typed meanwhile, the load does not go
+  // back to Home.
+  const opens = _vodListOpens;
   loadVodCats(mode)
       .then(() => {
-        if (vodMode === mode) openVodList('home');
+        if (vodMode === mode && _vodListOpens === opens &&
+            vodNav.zone !== 'search')
+          openVodList('home');
       })
       .catch(err => {
         if (vodMode === mode && !err.stale) {
@@ -782,6 +814,7 @@ function updateVodCatFocus(scroll) {
 }
 
 async function openVodList(list, catId, query = '') {
+  _vodListOpens++;
   vodNav.list = list;
   vodNav.catId = catId || null;
   vodNav.focus = 0;
@@ -927,7 +960,7 @@ function renderVodHome() {
     sec.appendChild(strip);
     home.appendChild(sec);
   });
-  if (!all && !(_vodAllLoading && _vodAllLoading.mode === vodMode)) {
+  if (!all && !_vodAllLoading[vodMode]) {
     const mode = vodMode;
     loadVodAll(mode)
         .then(() => {

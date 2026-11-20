@@ -196,35 +196,48 @@ function toggleLivePause() {
 // ----- Video Control -----
 function selectChannel(index) {
   if (!channels[index]) return;
+  // A selection of a channel plays its best measured version (Settings, "Best
+  // version automatically"). A retry of the selection (`_bestFrom`) gets the
+  // best version again, or the selected channel if that version failed.
+  const picked = index;
+  let better = -1;
+  if (!_selectingAlt && !_selectingExact &&
+      (index !== currentChannelIndex || index === _bestFrom)) {
+    better = bestVersionOf(index);
+    if (better >= 0) index = better;
+  }
+  // The selection plays already (a different row of the same stream): no
+  // reload. The provider counts the previous connection for approximately 15 s.
+  if (better >= 0 && index === currentChannelIndex && !catchup &&
+      !vodPlay.active && vodMode === 'live') {
+    _bestFrom = picked;
+    _altOrigin = picked;
+    markPlayingRows();
+    if (livePlayer.active) showVodOsd();
+    return;
+  }
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
   _cancelHold();   // a seek of the previous channel must not go to this one
   catchup = null;  // any channel selection returns to live
   surfCancel();
-  // A selection of a different channel plays its best measured version
-  // (Settings, "Best version automatically")
-  const picked = index;
-  let better = -1;
-  if (!_selectingAlt && !_selectingExact) {
-    if (_bestFrom >= 0 && index === _bestFrom)
-      index = currentChannelIndex;  // it plays as its better version: reload
-    else if (index !== currentChannelIndex) {
-      better = bestVersionOf(index);
-      if (better >= 0) index = better;
-    }
-  }
-  if (_selectingAlt) {
-    // fallback to another source of the same channel: not a channel change for
-    // history purposes
+  if (_selectingAlt || _returningLive) {
+    // fallback to another source of the same channel, or the end of a
+    // catch-up: not a channel change for history purposes
   } else {
-    if (currentChannelIndex >= 0 && currentChannelIndex !== index)
+    // A retry of the selection, or a version of it from the Versions menu, is
+    // not a channel change
+    const sameSel = isPlayingIdx(picked) ||
+        (_selectingExact && _altOrigin >= 0 &&
+         versionsOf(_altOrigin).includes(picked));
+    if (!sameSel && currentChannelIndex >= 0)
       lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
           _altOrigin :
           currentChannelIndex;
-    if (!isPlayingIdx(picked)) _bestFrom = better >= 0 ? picked : -1;
-    _altOrigin = _bestFrom >= 0 ? _bestFrom : index;
+    _bestFrom = better >= 0 ? picked : -1;
+    _altOrigin = picked;
     _altTried = new Set([index]);
-    noteRecentChannel(channels[index]);
+    noteRecentChannel(channels[picked]);
   }
   const cause = _selectingAlt       ? 'alternative source' :
       currentChannelIndex === index ? 'same channel again' :
@@ -252,7 +265,11 @@ function selectChannel(index) {
   statusArea.innerText = `▶️ ${ch.name}`;
   if (_activePlaylistKey) {
     const ps = getPlaylistState(_activePlaylistKey);
-    ps.lastChannel = {url: ch.url, tvgId: ch.tvgId || ''};
+    // The channel that you selected: the next start selects its best version
+    // again, and the cursor finds its row
+    const sel =
+        _bestFrom >= 0 && channels[_bestFrom] ? channels[_bestFrom] : ch;
+    ps.lastChannel = {url: sel.url, tvgId: sel.tvgId || ''};
     // The previous channel stays after a restart of the app (long press of OK,
     // Red)
     const prev = channels[lastChannelIndex];
@@ -268,10 +285,8 @@ function selectChannel(index) {
   }
   if (epgMode) {
     // Don't rebuild the EPG grid — just update active row highlighting in-place
-    for (const [, el] of epgRenderedRows) el.classList.remove('active');
+    markPlayingRows();
     const filteredIdx = playingListIndex(currentFilteredChannels);
-    if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx))
-      epgRenderedRows.get(filteredIdx).classList.add('active');
     // The cursor goes to the channel that plays. Thus, Up and Down start from
     // that row also after a pointer click or a long press of OK. An
     // alternative source after a failure moves the cursor only if the cursor
@@ -287,12 +302,11 @@ function selectChannel(index) {
     updateEPGInfoPanel(ch);
   } else {
     // Update the active row in place — no list rebuild
-    for (const [, el] of renderedItems) el.classList.remove('active');
+    markPlayingRows();
     const fi = playingListIndex(currentFilteredChannels);
     if (fi >= 0) {
       stdFocusIdx = fi;
       stdFocusZone = 'channels';
-      if (renderedItems.has(fi)) renderedItems.get(fi).classList.add('active');
     }
     updateStdChannelFocus();
     updateStdGroupFocus(false);
