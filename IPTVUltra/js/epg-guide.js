@@ -413,8 +413,14 @@ function startCatchup(chIdx, prog, startAt) {
     clearTimeout(_errRetryTimer);
     _errRetryTimer = null;
   }
-  if (currentChannelIndex >= 0 && currentChannelIndex !== chIdx)
-    lastChannelIndex = currentChannelIndex;
+  if (currentChannelIndex >= 0 && currentChannelIndex !== chIdx) {
+    lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
+        _altOrigin :
+        currentChannelIndex;
+    _altOrigin = chIdx;
+    _altTried = new Set([chIdx]);
+    _bestFrom = -1;
+  }
   currentChannelIndex = chIdx;
   _reloadAttempts = 0;
   catchup = {
@@ -458,7 +464,7 @@ function catchupBackToLive() {
   if (!catchup) return;
   const idx = catchup.chIdx;
   catchup = null;
-  if (channels[idx]) selectChannel(idx);
+  if (channels[idx]) selectChannel(idx);  // the same channel: no best version
 }
 
 // ── Rewind into the archive ─────────────────────────────────────
@@ -540,7 +546,7 @@ function enterEPGMode() {
   placeLiveNotice();
   // Start focus cursor at the currently playing channel
   if (currentChannelIndex >= 0) {
-    const idx = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+    const idx = playingListIndex(currentFilteredChannels);
     epgFocusedRowIdx = idx >= 0 ? idx : 0;
   } else {
     epgFocusedRowIdx = 0;
@@ -669,7 +675,7 @@ function epgProgsHtml(ch) {
 function buildEPGRow(i) {
   const ch = currentFilteredChannels[i];
   const origIdx = getChannelIndex(ch);
-  const isActive = origIdx === currentChannelIndex;
+  const isActive = isPlayingIdx(origIdx);
 
   const row = document.createElement('div');
   row.className = 'epg-row' + (isActive ? ' active' : '') +

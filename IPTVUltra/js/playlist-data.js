@@ -419,6 +419,8 @@ function replaceChannelList(parsed) {
   currentChannelIndex = mapIdx(currentChannelIndex);
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
+  _bestFrom = mapIdx(_bestFrom);
+  _bestFailed.clear();  // the indexes of the old list
   _altTried = new Set([..._altTried].map(mapIdx).filter(i => i >= 0));
   let catchupGone = false;
   if (catchup) {

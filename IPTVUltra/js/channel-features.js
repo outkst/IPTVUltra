@@ -444,17 +444,39 @@ function arrangeEventGroup(list) {
 // ----- Red (or a long press on OK) flips between the two most recent channels
 function swapToPreviousChannel() {
   if (lastChannelIndex < 0 || !channels[lastChannelIndex] ||
-      lastChannelIndex === currentChannelIndex)
+      isPlayingIdx(lastChannelIndex)) {
+    showEPGToast('No previous channel', 'success', 'Channel');
+    hideEPGToast(2500);
     return false;
+  }
   const idx = lastChannelIndex;
   selectChannel(idx);
   moveCursorToChannel(channels[idx]);
   return true;
 }
+// True when the channel at `idx` plays, also when the app plays a better
+// version of it (`_bestFrom`)
+function isPlayingIdx(idx) {
+  return idx >= 0 &&
+      (idx === currentChannelIndex || (_bestFrom >= 0 && idx === _bestFrom));
+}
+// The position of the playing channel in a list. When the app plays a better
+// version of the channel that you selected, it is the position of the selected
+// channel, so that the cursor stays on that row.
+function playingListIndex(list) {
+  if (currentChannelIndex < 0) return -1;
+  if (_bestFrom >= 0 && channels[_bestFrom]) {
+    const i = list.indexOf(channels[_bestFrom]);
+    if (i >= 0) return i;
+  }
+  return list.indexOf(channels[currentChannelIndex]);
+}
 // Put the guide / list cursor on a channel after a selection that did not come
 // from the cursor
 function moveCursorToChannel(ch) {
-  const fi = currentFilteredChannels.indexOf(ch);
+  let fi = currentFilteredChannels.indexOf(ch);
+  if (fi < 0 && channels[currentChannelIndex] === ch)
+    fi = playingListIndex(currentFilteredChannels);
   if (fi < 0) return;
   if (epgMode) {
     epgFocusedRowIdx = fi;
@@ -480,9 +502,7 @@ function surfStep(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
   if (!surf.active) {
-    const cur = currentChannelIndex >= 0 ?
-        list.indexOf(channels[currentChannelIndex]) :
-        -1;
+    const cur = playingListIndex(list);
     surf.idx = cur < 0 ? 0 : cur;
     surf.active = true;
     document.getElementById('vodOsd').classList.add('surf');
@@ -512,7 +532,7 @@ function surfTune() {
   if (!ch) return;
   const idx = getChannelIndex(ch);
   if (idx < 0) return;
-  if (idx === currentChannelIndex) {
+  if (isPlayingIdx(idx)) {
     showVodOsd();
     return;
   }
@@ -569,17 +589,24 @@ function alternateSources(idx) {
   _altSources.set(idx, out);
   return out;
 }
-let _altOrigin = -1;        // the channel the user actually chose
-let _altTried = new Set();  // indices already tried for it this time
+let _altOrigin = -1;  // the channel the user actually chose
+let _bestFrom = -1;   // the selected channel when a better version of it plays
+const _bestFailed = new Set();  // versions that failed in this session
+let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
     false;  // selectChannel() called by the fallback (not a user choice)
+let _selectingExact = false;  // selectChannel() plays this version, not the
+                              // best version
 function tryAlternateSource(msg) {
   if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active) return false;
-  const alts = alternateSources(_altOrigin);
+  // A best version that fails is not selected again in this session
+  if (currentChannelIndex >= 0) _bestFailed.add(currentChannelIndex);
+  // The selected channel is first: the app can play a better version of it
+  const alts = [_altOrigin].concat(alternateSources(_altOrigin));
   const next = alts.find(i => !_altTried.has(i) && channels[i]);
   if (next === undefined) return false;
   _altTried.add(next);
-  const n = _altTried.size - 1, total = alts.length;
+  const n = _altTried.size - 1, total = alts.length - 1;
   showEPGToast(
       `${msg}. Trying alternate source ${n} of ${total}: ${
           channels[next].name}`,
@@ -680,6 +707,41 @@ function noteCurrentStreamTech() {
 }
 function versionsOf(idx) {
   return channels[idx] ? [idx].concat(alternateSources(idx)) : [];
+}
+// The picture class of a height: 1920×1084 and 1920×1080 are the same class
+function heightClass(h) {
+  return h >= 2000 ? 2160 :
+      h >= 1000    ? 1080 :
+      h >= 700     ? 720 :
+      h >= 540     ? 576 :
+      h > 0        ? 480 :
+                     0;
+}
+// The version of a channel with a better picture than the channel, or -1. Only
+// a version that played before counts (`iptv_stream_tech`). The provider
+// allows 1 connection, thus the app cannot test a version in the background.
+// A channel with no measurement gets the height that its name gives.
+function bestVersionOf(idx) {
+  const ch = channels[idx];
+  if (!ch || settings.bestVersion === false) return -1;
+  const own = streamTechOf(ch, idx);
+  let bestH = own ? heightClass(own.h) :
+                    heightClass(RANK_HEIGHT[nameQualityRank(ch.name)] || 0);
+  let bestFps = own ? own.fps || 0 : Infinity;  // with no measurement, only a
+                                                // higher class counts
+  let best = -1;
+  for (const i of alternateSources(idx)) {
+    if (_bestFailed.has(i) || !channels[i]) continue;
+    const t = streamTechOf(channels[i], i);
+    if (!t) continue;
+    const h = heightClass(t.h), fps = t.fps || 0;
+    if (h > bestH || (h === bestH && fps > bestFps + 1)) {
+      best = i;
+      bestH = h;
+      bestFps = fps;
+    }
+  }
+  return best;
 }
 function streamTechLabel(t) {
   return t ? `${t.w}×${t.h}${t.fps ? ' · ' + fmtFps(t.fps) : ''}` :
@@ -785,7 +847,13 @@ function versionsWatch() {
   if (!r) return;
   closeVersions();
   if (r.i === currentChannelIndex) return;
-  selectChannel(r.i);
+  // The version that you select plays, also when a different one is better
+  _selectingExact = true;
+  try {
+    selectChannel(r.i);
+  } finally {
+    _selectingExact = false;
+  }
   if (livePlayer.active) {
     updateLiveOsd();
     showVodOsd();

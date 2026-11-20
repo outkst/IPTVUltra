@@ -230,7 +230,7 @@ function selectEPGFocusedChannel() {
     startCatchup(idx, p);
     return;
   }
-  if (idx === currentChannelIndex) {
+  if (isPlayingIdx(idx)) {
     toggleLivePlayer();
     return;
   }
@@ -424,7 +424,7 @@ function handleRemoteNav(e) {
         if (!ch) return;
         const idx = getChannelIndex(ch);
         rowOkPress(e, idx, () => {
-          if (idx === currentChannelIndex)
+          if (isPlayingIdx(idx))
             toggleLivePlayer();  // OK on the playing row opens the player
           else
             selectChannel(idx);

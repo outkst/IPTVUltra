@@ -168,13 +168,13 @@ function exitLivePlayer() {
   // it
   if (currentChannelIndex >= 0) {
     if (epgMode) {
-      const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+      const fi = playingListIndex(currentFilteredChannels);
       if (fi >= 0) {
         epgFocusedRowIdx = fi;
         updateEPGRowFocus();
       }
     } else {
-      const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+      const fi = playingListIndex(currentFilteredChannels);
       if (fi >= 0) {
         stdFocusIdx = fi;
         stdFocusZone = 'channels';
@@ -201,6 +201,18 @@ function selectChannel(index) {
   _cancelHold();   // a seek of the previous channel must not go to this one
   catchup = null;  // any channel selection returns to live
   surfCancel();
+  // A selection of a different channel plays its best measured version
+  // (Settings, "Best version automatically")
+  const picked = index;
+  let better = -1;
+  if (!_selectingAlt && !_selectingExact) {
+    if (_bestFrom >= 0 && index === _bestFrom)
+      index = currentChannelIndex;  // it plays as its better version: reload
+    else if (index !== currentChannelIndex) {
+      better = bestVersionOf(index);
+      if (better >= 0) index = better;
+    }
+  }
   if (_selectingAlt) {
     // fallback to another source of the same channel: not a channel change for
     // history purposes
@@ -209,7 +221,8 @@ function selectChannel(index) {
       lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
           _altOrigin :
           currentChannelIndex;
-    _altOrigin = index;
+    if (!isPlayingIdx(picked)) _bestFrom = better >= 0 ? picked : -1;
+    _altOrigin = _bestFrom >= 0 ? _bestFrom : index;
     _altTried = new Set([index]);
     noteRecentChannel(channels[index]);
   }
@@ -238,16 +251,25 @@ function selectChannel(index) {
   channelInfoTag.style.visibility = '';
   statusArea.innerText = `▶️ ${ch.name}`;
   if (_activePlaylistKey) {
-    getPlaylistState(_activePlaylistKey).lastChannel = {
-      url: ch.url,
-      tvgId: ch.tvgId || ''
-    };
+    const ps = getPlaylistState(_activePlaylistKey);
+    ps.lastChannel = {url: ch.url, tvgId: ch.tvgId || ''};
+    // The previous channel stays after a restart of the app (long press of OK,
+    // Red)
+    const prev = channels[lastChannelIndex];
+    if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
     savePlaylistState();
+  }
+  if (better >= 0) {
+    const t = streamTechOf(ch, index);
+    showEPGToast(
+        `${ch.name}${t ? ' · ' + streamTechLabel(t) : ''}`, 'success',
+        'Best version');
+    hideEPGToast(3000);
   }
   if (epgMode) {
     // Don't rebuild the EPG grid — just update active row highlighting in-place
     for (const [, el] of epgRenderedRows) el.classList.remove('active');
-    const filteredIdx = currentFilteredChannels.indexOf(ch);
+    const filteredIdx = playingListIndex(currentFilteredChannels);
     if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx))
       epgRenderedRows.get(filteredIdx).classList.add('active');
     // The cursor goes to the channel that plays. Thus, Up and Down start from
@@ -266,7 +288,7 @@ function selectChannel(index) {
   } else {
     // Update the active row in place — no list rebuild
     for (const [, el] of renderedItems) el.classList.remove('active');
-    const fi = currentFilteredChannels.indexOf(ch);
+    const fi = playingListIndex(currentFilteredChannels);
     if (fi >= 0) {
       stdFocusIdx = fi;
       stdFocusZone = 'channels';
@@ -639,6 +661,8 @@ function goToHomeScreen() {
   _searchCache = {query: null, result: null};
   currentChannelIndex = -1;
   lastChannelIndex = -1;
+  _bestFrom = -1;
+  _bestFailed.clear();
   currentSearchQuery = '';
   selectedPlaylistId = null;
 

@@ -641,7 +641,7 @@ function renderChannelList() {
       const fav = favoriteIds.has(favIdOf(ch, originalIndex));
       const div = document.createElement('div');
       div.className = 'virtual-item' +
-          (currentChannelIndex === originalIndex ? ' active' : '') +
+          (isPlayingIdx(originalIndex) ? ' active' : '') +
           (stdFocusZone === 'channels' && i === stdFocusIdx ? ' focused' : '');
       div.style.top = `${i * ITEM_H}px`;
       div.style.height = `${ITEM_INNER}px`;

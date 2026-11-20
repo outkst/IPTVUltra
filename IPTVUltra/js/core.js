@@ -92,6 +92,7 @@ const DEFAULT_SETTINGS = {
   liveBuffer: 5,
   liveEngine: 'shaka',
   autoNext: true,
+  bestVersion: true,
   ppvEvents: 'hide',
   schema: 5
 };
@@ -359,6 +360,7 @@ function loadSettings() {
     out.schema = 5;
   }
   out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
+  out.bestVersion = st.bestVersion === undefined ? true : !!st.bestVersion;
   out.avSync = Number.isInteger(st.avSync) && st.avSync >= AV_SYNC_MIN &&
           st.avSync <= AV_SYNC_MAX ?
       st.avSync :

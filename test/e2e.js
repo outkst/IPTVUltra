@@ -5689,10 +5689,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     ev('keyup');
     const after = currentChannelIndex;
     closeVersions();
+    settings.bestVersion = false;  // this check selects the exact row
     ev('keydown');
     ev('keyup');
+    settings.bestVersion = true;
     const tuned = channels[currentChannelIndex].name;
-    window.__vsRestore();
     return {fi, open, focus, unchanged: after === before, tuned};
   });
   check(
@@ -5700,6 +5701,98 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       vlp.fi >= 0 && vlp.open && vlp.focus === 'Vers HD' && vlp.unchanged &&
           vlp.tuned === 'Vers HD',
       JSON.stringify(vlp));
+  // Best version: a selection plays the version with the best measured
+  // picture. The selected row stays the playing row.
+  const bv = await page.evaluate(() => {
+    const ev = (type) => {
+      const e = new KeyboardEvent(
+          type, {key: 'Enter', keyCode: 13, bubbles: true, cancelable: true});
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const out = {};
+    selectChannel(1);
+    out.best = bestVersionOf(31) === 32 && bestVersionOf(32) === -1;
+    selectChannel(31);
+    out.playing = channels[currentChannelIndex].name;
+    out.toast = document.getElementById('epgToastTitle').textContent;
+    const fi = currentFilteredChannels.indexOf(channels[31]);
+    out.active = epgRenderedRows.has(fi) &&
+        epgRenderedRows.get(fi).classList.contains('active');
+    out.isPlaying = isPlayingIdx(31) && isPlayingIdx(32);
+    epgFocusedRowIdx = fi;
+    updateEPGRowFocus();
+    ev('keydown');
+    ev('keyup');
+    out.player = livePlayer.active;
+    exitLivePlayer();
+    out.last = lastChannelIndex === 1;
+    // A version that failed is not selected again
+    _bestFailed.add(32);
+    out.failed = bestVersionOf(31) === -1;
+    _bestFailed.delete(32);
+    // The Versions menu plays the version that you select
+    openVersions(31);
+    versionsFocus = _versionsRows.findIndex(r => r.i === 31);
+    versionsWatch();
+    out.exact = currentChannelIndex === 31;
+    settings.bestVersion = false;
+    out.off = bestVersionOf(31) === -1;
+    settings.bestVersion = true;
+    return out;
+  });
+  check(
+      'best version: a selection plays the best measured version, the row stays active',
+      bv.best && bv.playing === 'Vers' && bv.toast === 'Best version' &&
+          bv.active && bv.isPlaying && bv.player && bv.last && bv.failed &&
+          bv.exact && bv.off,
+      JSON.stringify(bv));
+  // A hold of OK in the live player changes to the previous channel while you
+  // hold the key. The release does not pause.
+  const okHold = await page.evaluate(async () => {
+    const ev = (type, repeat) => {
+      const e = new KeyboardEvent(type, {
+        key: 'Enter',
+        keyCode: 13,
+        repeat: !!repeat,
+        bubbles: true,
+        cancelable: true
+      });
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const hold = async () => {
+      ev('keydown');
+      for (let i = 0; i < 7; i++) {
+        await sleep(100);
+        ev('keydown', true);
+      }
+      const during = currentChannelIndex;
+      ev('keyup');
+      return during;
+    };
+    selectChannel(2);
+    selectChannel(5);
+    enterLivePlayer();
+    const out = {toggles: 0};
+    const toggle = toggleLivePause;
+    toggleLivePause = () => out.toggles++;
+    out.first = await hold();
+    out.second = await hold();
+    out.third = await hold();
+    out.prev = getPlaylistState(_activePlaylistKey).prevChannel.url ===
+        channels[5].url;
+    toggleLivePause = toggle;
+    exitLivePlayer();
+    window.__vsRestore();
+    return out;
+  });
+  check(
+      'a hold of OK in the live player changes to the previous channel, again and again',
+      okHold.first === 2 && okHold.second === 5 && okHold.third === 2 &&
+          okHold.toggles === 0 && okHold.prev,
+      JSON.stringify(okHold));
 
   check(
       'no uncaught page errors', errors.length === 0,

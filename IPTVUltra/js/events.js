@@ -347,10 +347,13 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) epgReturnToNow();
 });
 
-// OK in the player acts on release: a long press in the live player switches
-// to the last-viewed channel, a short press on the bar toggles pause
+// OK in the player: a hold of LONG_PRESS_MS in the live player switches to the
+// previous channel while you hold the key. A short press acts on release: a
+// button of the banner, else pause on the bar.
 let _enterPressTime = 0;
 let _enterDown = false;
+let _enterLongTimer = 0;
+let _enterLongDone = false;
 const LONG_PRESS_MS = 600;
 // Capture phase: runs before handleRemoteNav, so a press that opens the player
 // (Play on a details page, OK on a guide row) is not also taken as a player OK
@@ -358,18 +361,41 @@ const LONG_PRESS_MS = 600;
 document.addEventListener('keydown', (e) => {
   if (!_inPlayerMode()) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  if (_enterDown) return;  // ignore key-repeat
+  // The auto-repeat of a hold. A press that is not a repeat starts again, also
+  // when the app did not get the release of the previous press.
+  if (_enterDown && e.repeat) return;
   _enterDown = true;
+  _enterLongDone = false;
   _enterPressTime = Date.now();
+  clearTimeout(_enterLongTimer);
+  _enterLongTimer =
+      livePlayer.active ? setTimeout(enterLongPress, LONG_PRESS_MS) : 0;
 }, true);
+// The hold of OK in the live player reached LONG_PRESS_MS
+function enterLongPress() {
+  _enterLongTimer = 0;
+  if (!_enterDown || !_inPlayerMode() || !livePlayer.active ||
+      vodTracksOpen() || vodNextVisible())
+    return;
+  _enterLongDone = true;
+  surfCancel();
+  if (swapToPreviousChannel()) showVodOsd();
+}
+function clearEnterPress() {
+  clearTimeout(_enterLongTimer);
+  _enterLongTimer = 0;
+  _enterDown = false;
+  _enterLongDone = false;
+  _enterPressTime = 0;
+}
 document.addEventListener('keyup', (e) => {
   if (!_enterDown) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  const held = Date.now() - _enterPressTime;
-  _enterDown = false;
-  _enterPressTime = 0;
+  const long = _enterLongDone;
+  clearEnterPress();
   if (!_inPlayerMode()) return;
   e.preventDefault();
+  if (long) return;  // the hold changed the channel
   if (vodTracksOpen())
     activateVodTrack();
   else if (vodNextVisible())
@@ -380,14 +406,14 @@ document.addEventListener('keyup', (e) => {
       player.focus === 'buttons' &&
       document.getElementById('vodOsd').classList.contains('visible'))
     activatePlayerButton();
-  else if (livePlayer.active && held >= LONG_PRESS_MS) {
-    if (lastChannelIndex >= 0 && channels[lastChannelIndex])
-      selectChannel(lastChannelIndex);
-  } else if (livePlayer.active)
+  else if (livePlayer.active)
     toggleLivePause();
   else
-    toggleVodPause();  // OK on the bar: play/pause (no long-press action in
-                       // VOD)
+    toggleVodPause();  // OK on the bar: play/pause
+});
+// The app does not get the release of a key that it gets while hidden
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearEnterPress();
 });
 
 // Hold Left/Right in the player: short-press = ±3s seek; hold = trick play
@@ -445,9 +471,7 @@ document.addEventListener('keyup', (e) => {
 function zapChannel(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
-  const cur = currentChannelIndex >= 0 ?
-      list.indexOf(channels[currentChannelIndex]) :
-      -1;
+  const cur = playingListIndex(list);
   const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
   if (epgMode) {
     epgFocusedRowIdx = next;

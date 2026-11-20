@@ -50,7 +50,16 @@ function selectInitialChannel() {
     if (idx < 0 && ps.lastChannel.tvgId)
       idx = channels.findIndex(c => c.tvgId === ps.lastChannel.tvgId);
     if (idx >= 0) {
+      const prev = ps.prevChannel;
       selectChannel(idx);
+      // The previous channel of the last session (long press of OK, Red)
+      if (prev && lastChannelIndex < 0) {
+        let p = chanIndexByUrl(prev.url);
+        if (p === undefined) p = -1;
+        if (p < 0 && prev.tvgId)
+          p = channels.findIndex(c => c.tvgId === prev.tvgId);
+        if (p >= 0 && !isPlayingIdx(p)) lastChannelIndex = p;
+      }
       if (epgMode) {
         const fi = currentFilteredChannels.indexOf(channels[idx]);
         if (fi >= 0) {
@@ -317,6 +326,18 @@ function settingsRows() {
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
             settings.liveBuffer > 0)
           reloadStream(false, 'Settings');
+      }
+    },
+    {
+      id: 'bestVersion',
+      type: 'toggle',
+      label: 'Best version automatically',
+      sub:
+          'When you select a channel, play its version with the best picture that the TV measured',
+      get: () => settings.bestVersion !== false,
+      set: v => {
+        settings.bestVersion = v;
+        saveSettings();
       }
     },
     {
