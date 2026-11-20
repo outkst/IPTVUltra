@@ -2046,6 +2046,8 @@ function epgTickRowBlocks(el, ch, now) {
 
 // Runs once a minute. Updates only what is on screen, in place; the full guide
 // is rebuilt only when the hour window rolls over.
+// The time of the previous minute tick (a hidden app has no ticks)
+let _epgLastTickAt = 0;
 function epgMinuteTick() {
   const now = Date.now();
   if (currentPlaylistType === 'xtream') xmltvTick();
@@ -2082,9 +2084,10 @@ function epgMinuteTick() {
       const ch = currentFilteredChannels[idx];
       const x = ch && ch.tvgId ? xmltvProgsOf(ch.tvgId) : null;
       if (x && x.length && x[x.length - 1].stop <= now &&
-          x[x.length - 1].stop > now - 60000)
+          x[x.length - 1].stop > _epgLastTickAt)
         onEpgChannelUpdated(ch.tvgId);
     }
+    _epgLastTickAt = now;
   } else if (currentPlaylistType === 'm3u') {
     // Refresh the "now" line of visible channel rows in place
     for (const [idx, el] of renderedItems) {

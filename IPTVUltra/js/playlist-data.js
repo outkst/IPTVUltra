@@ -421,7 +421,8 @@ function replaceChannelList(parsed) {
   };
   const mapIdx = (i) => (i >= 0 ? mapCh(old[i]) : -1);
   const hadPlaying = currentChannelIndex >= 0;
-  const selected = mapIdx(_bestFrom);
+  const oldPlaying = hadPlaying ? old[currentChannelIndex] : null;
+  let selected = mapIdx(_bestFrom);
   currentChannelIndex = mapIdx(currentChannelIndex);
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
@@ -473,7 +474,18 @@ function replaceChannelList(parsed) {
         videoPlayer.load();
       }
     }
-  } else if (hadPlaying && currentChannelIndex < 0 && selected >= 0) {
+  }
+  // A URL with a token that changes at each download: the same channel by
+  // its tvg-id or its name, in the same group
+  if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected < 0 &&
+      oldPlaying) {
+    const nm = normChannelName(oldPlaying.name);
+    selected = channels.findIndex(
+        c => c.group === oldPlaying.group &&
+            (oldPlaying.tvgId ? c.tvgId === oldPlaying.tvgId :
+                                normChannelName(c.name) === nm));
+  }
+  if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected >= 0) {
     // The version that played is not in the new list: the selected channel
     // plays (its best version again). In Movies or Series, the return to Live
     // plays it.

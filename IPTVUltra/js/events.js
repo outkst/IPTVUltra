@@ -433,9 +433,19 @@ document.addEventListener('keyup', (e) => {
   else
     toggleVodPause();  // OK on the bar: play/pause
 });
-// The app does not get the release of a key that it gets while hidden
+// The app does not get the release of a key that it gets while hidden: the
+// OK push, a Left/Right hold (no seek), and the stopped banner timer end
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) clearEnterPress();
+  if (!document.hidden) return;
+  clearEnterPress();
+  _holdKeyDir = null;
+  _cancelHold();
+  if (_enterOsdHeld) {
+    _enterOsdHeld = false;
+    if (playerActive() &&
+        document.getElementById('vodOsd').classList.contains('visible'))
+      showVodOsd();
+  }
 });
 
 // Hold Left/Right in the player: short-press = ±3s seek; hold = trick play

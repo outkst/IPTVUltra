@@ -550,7 +550,8 @@ function surfTune() {
   if (!ch) return;
   const idx = getChannelIndex(ch);
   if (idx < 0) return;
-  if (isPlayingIdx(idx) && playingStreamHealthy()) {
+  // The channel of a catch-up stays in the archive
+  if (isPlayingIdx(idx) && (catchup || playingStreamHealthy())) {
     showVodOsd();
     return;
   }
@@ -874,7 +875,8 @@ function versionsWatch() {
   const r = _versionsRows[versionsFocus];
   if (!r) return;
   closeVersions();
-  if (r.i === currentChannelIndex) return;
+  // The version that plays loads again only after an error
+  if (r.i === currentChannelIndex && playingStreamHealthy()) return;
   // The version that you select plays, also when a different one is better
   _selectingExact = true;
   try {

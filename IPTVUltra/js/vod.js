@@ -750,14 +750,21 @@ function setVodMode(mode) {
   const opens = _vodListOpens;
   loadVodCats(mode)
       .then(() => {
-        if (vodMode === mode && _vodListOpens === opens &&
-            !(vodNav.query || '').trim())
+        if (vodMode !== mode) return;
+        if (_vodListOpens === opens && !(vodNav.query || '').trim()) {
+          const si = document.getElementById('vodSearchInput');
+          const inSearch = document.activeElement === si;
           openVodList('home');
+          if (inSearch) focusVodSearch();  // 1 focus mark
+        } else
+          renderVodCats();  // the list that you opened stays
       })
       .catch(err => {
         if (vodMode === mode && !err.stale) {
           renderVodCats();
-          showVodEmpty(`Could not load categories: ${err.message}`);
+          // The list or the search that you opened stays
+          if (_vodListOpens === opens && !(vodNav.query || '').trim())
+            showVodEmpty(`Could not load categories: ${err.message}`);
         }
       });
   renderVodCats();

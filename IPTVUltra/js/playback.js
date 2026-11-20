@@ -593,6 +593,11 @@ function reloadStream(auto, cause) {
   if (currentChannelIndex < 0) return;
   if (vodPlay.active || vodMode !== 'live')
     return;  // live reloads pause while in Movies/Series
+  // A waiting error retry does not load the stream a second time
+  if (_errRetryTimer) {
+    clearTimeout(_errRetryTimer);
+    _errRetryTimer = null;
+  }
   _clearSteps();
   const isAuto = auto === true;
   if (!isAuto)
