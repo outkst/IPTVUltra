@@ -476,10 +476,12 @@ function zapChannel(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
   const cur = playingListIndex(list);
-  let next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+  let next = cur >= 0 ? (cur + dir + list.length) % list.length :
+      dir > 0         ? 0 :
+                        list.length - 1;
   // Skip the rows of the stream that plays: in a group of versions, CH+ and
   // CH- go to a different stream
-  let found = cur < 0;
+  let found = false;
   for (let n = 0; n < list.length && !found; n++) {
     const i = getChannelIndex(list[next]);
     if (!isPlayingIdx(i) && bestVersionOf(i) !== currentChannelIndex)
@@ -538,6 +540,11 @@ document.addEventListener('keydown', (e) => {
 // suppressed
 document.addEventListener('keydown', (e) => {
   if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+  // A held Back goes back 1 step
+  if (e.repeat) {
+    e.preventDefault();
+    return;
+  }
 
   // Back while the confirm dialog is open cancels it
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) {

@@ -269,7 +269,7 @@ function catchupUrl(ch, prog) {
   return `${_xt.base}/timeshift/${encodeURIComponent(_xt.user)}/${
       encodeURIComponent(_xt.pass)}/${mins}/${
       fmtTimeshiftStart(
-          prog.utc ? prog.start : epgUnshiftTime(prog.start), _xt.tz,
+          epgUnshiftTime(prog.start), _xt.tz,
           prog.tsOff)}/${ch.streamId}.${
       catchupExt()}`;  // archive is indexed by provider time
 }
@@ -555,7 +555,6 @@ function archiveProgAt(ch, ms, now) {
     if (p.hasArchive === false && p.stop <= now) return null;
     const r = {start: p.start, stop: Math.min(p.stop, now), title: p.title};
     if (p.tsOff !== undefined) r.tsOff = p.tsOff;  // the clock of the listing
-    if (p.utc) r.utc = true;
     return r;
   }
   return {start: Math.floor(ms / 60000) * 60000, stop: now, title: 'Archive'};
@@ -1995,8 +1994,7 @@ function xmltvProgramme(xml, from, to) {
     start,
     stop,
     title: ti ? copyStr(unescapeXml(ti[1].trim())) : '',
-    desc: copyStr(desc),
-    utc: true  // XMLTV times are UTC: no EPG timezone shift
+    desc: copyStr(desc)
   };
 }
 

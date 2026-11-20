@@ -601,16 +601,15 @@ function alternateSources(idx) {
   return out;
 }
 let _altOrigin = -1;  // the channel the user actually chose
+// The selected channel when a better version of it plays
 let _bestFrom = -1;
-let _bestIdx = -1;  // the best version that bestVersionOf gave for _bestFrom //
-                    // the selected channel when a better version of it plays
+let _bestIdx = -1;  // the best version that bestVersionOf gave for _bestFrom
 const _bestFailed = new Set();  // versions that failed in this session
 let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
     false;  // selectChannel() called by the fallback (not a user choice)
-let _returningLive = false;
+let _returningLive = false;   // selectChannel() after a catch-up
 let _keepSelection = false;   // selectChannel() keeps _bestFrom and _altOrigin
-                              // // selectChannel() after a catch-up
 let _selectingExact = false;  // selectChannel() plays this version, not the
                               // best version
 function tryAlternateSource(msg) {
@@ -800,13 +799,14 @@ function openVersions(idx) {
   _versionsRows.sort(
       (a, b) => (b.h - a.h) || (b.fps - a.fps) ||
           ((b.tech ? 1 : 0) - (a.tech ? 1 : 0)) || (a.i - b.i));
-  const known = _versionsRows.filter(r => r.tech);
-  const best = known.length >= 2 ?
-      known.reduce(
-          (m, r) => (r.h > m.h || (r.h === m.h && r.fps > m.fps + 1)) ? r : m) :
-      null;
+  // "Best" is the version that a selection plays (bestVersionOf), else the
+  // selected channel when it has a measurement
+  const sel = _bestFrom >= 0 && list.includes(_bestFrom) ? _bestFrom : idx;
+  const bv = bestVersionOf(sel);
+  const bestI = bv >= 0 ? bv : streamTechOf(channels[sel], sel) ? sel : -1;
+  const known = _versionsRows.filter(r => r.tech).length;
   _versionsRows.forEach(r => {
-    r.best = r === best;
+    r.best = known >= 2 && r.i === bestI;
   });
   versionsFocus = Math.max(0, _versionsRows.findIndex(r => r.i === idx));
   versionsOpen = true;
@@ -1030,7 +1030,13 @@ function commitDigits() {
   setTimeout(() => {
     if (!_digitBuf) hideDigitOverlay();
   }, 1500);
-  selectChannel(idx);
+  // The number of the channel that plays does not load the stream again (the
+  // provider counts the previous connection for approximately 15 s)
+  if (isPlayingIdx(idx) && !catchup && stallWatchdogTimer &&
+      !videoPlayer.error) {
+    if (livePlayer.active) showVodOsd();
+  } else
+    selectChannel(idx);
   // Put the cursor on the channel where it is listed
   const fi = currentFilteredChannels.indexOf(ch);
   if (fi >= 0) {

@@ -607,6 +607,7 @@ function renderSettings() {
   const f = list.querySelector('.settings-row.focused');
   if (f) f.scrollIntoView({block: 'nearest'});
 }
+const SETTINGS_NO_REPEAT = new Set(['liveBuffer', 'liveEngine', 'avSync']);
 function settingsChange(r, dir) {
   if (r.type === 'choice') {
     const i = r.options.findIndex(x => x.v === r.get());
@@ -637,12 +638,14 @@ function handleSettingsKey(e) {
     e.preventDefault();
     settingsFocusIdx = Math.min(foc.length - 1, settingsFocusIdx + 1);
     renderSettings();
-  } else if (k === 'ArrowLeft' || kc === 37) {
+  } else if (
+      k === 'ArrowLeft' || kc === 37 || k === 'ArrowRight' || kc === 39) {
     e.preventDefault();
-    if (row && row.type !== 'action') settingsChange(row, -1);
-  } else if (k === 'ArrowRight' || kc === 39) {
-    e.preventDefault();
-    if (row && row.type !== 'action') settingsChange(row, 1);
+    // A held key does not go through the rows that load the stream again or
+    // send a root command: each value opens a provider stream
+    if (e.repeat && row && SETTINGS_NO_REPEAT.has(row.id)) return;
+    if (row && row.type !== 'action')
+      settingsChange(row, k === 'ArrowLeft' || kc === 37 ? -1 : 1);
   } else if (k === 'Enter' || kc === 13) {
     e.preventDefault();
     if (id === 'close')

@@ -19,9 +19,10 @@ function startStallWatchdog() {
     // end, and a reload cannot make the event start.
     // A channel that waits for the load of hls.js has no source.
     // A live stream that ended (the provider closed a .ts stream) is a stall:
-    // the element is paused at `ended`
-    const liveEnded =
-        videoPlayer.ended && vodMode === 'live' && !catchup && !vodPlay.active;
+    // the element is paused at `ended`. Only an Xtream live .ts URL: an M3U
+    // file and a placeholder (black.ts with ENDLIST) also end.
+    const liveEnded = videoPlayer.ended && vodMode === 'live' && !catchup &&
+        !vodPlay.active && _RE_LIVE_TS.test(videoPlayer.currentSrc || '');
     if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
         liveEngine.hlsWait ||
         (liveEngineActive() &&
@@ -48,7 +49,7 @@ function startStallWatchdog() {
     if (t === stallLastTime) {
       stallCount++;
       _stallGoodChecks = 0;
-      if (stallCount >= limit && bufEnd - t < 2 &&
+      if (stallCount >= limit && bufEnd - t < 2 && !liveEnded &&
           Date.now() - _stallBufAt < STALL_ALIVE_MS) {
         stallCount = limit - 1;  // slow, not dead: wait
       } else if (stallCount >= limit) {
@@ -214,6 +215,8 @@ function noteSelectedChannel() {
 }
 // The previous channel is never the channel that plays. If a change made it
 // that channel, the value from before the change comes back (or -1).
+// An Xtream live stream as 1 continuous MPEG-TS stream
+const _RE_LIVE_TS = /\/live\/[^/]+\/[^/]+\/\d+\.ts(\?|$)/;
 function keepPreviousChannel(prevLast) {
   if (!isPlayingIdx(lastChannelIndex)) return;
   lastChannelIndex =
@@ -229,9 +232,10 @@ function selectChannel(index) {
   const picked = index, prevLast = lastChannelIndex;
   let better = -1;
   // Also the end of a catch-up of a different channel (`_returningLive`)
+  // A selection during a catch-up goes back to live, also on the same row.
   if (!_selectingAlt && !_selectingExact &&
-      (index !== currentChannelIndex || index === _bestFrom ||
-       _returningLive)) {
+      (index !== currentChannelIndex || index === _bestFrom || _returningLive ||
+       catchup)) {
     better = bestVersionOf(index);
     if (better >= 0) index = better;
   }
@@ -243,7 +247,7 @@ function selectChannel(index) {
   if (userPick && index === currentChannelIndex &&
       (better >= 0 || _bestFrom >= 0) && !catchup && !vodPlay.active &&
       vodMode === 'live' && stallWatchdogTimer && !_errRetryTimer &&
-      !videoPlayer.error) {
+      !videoPlayer.error && !videoPlayer.ended) {
     surfCancel();
     // A different channel row that plays the same stream: the previous
     // selection becomes the previous channel

@@ -457,8 +457,14 @@ function replaceChannelList(parsed) {
       catchup.chIdx = live;
       catchupBackToLive();
     } else {
+      // The selection that catchupBackToLive would set
+      const c = catchup;
       catchup = null;
       currentChannelIndex = live;
+      _bestFrom =
+          live >= 0 && c.bestFrom >= 0 && c.bestFrom !== live ? c.bestFrom : -1;
+      _bestIdx = _bestFrom >= 0 && c.bestIdx === live ? live : -1;
+      _altOrigin = _bestFrom >= 0 ? _bestFrom : live;
       // In Movies or Series, setVodMode stopped the live source already, and a
       // movie can use the <video>
       if (live < 0 && inLive) {
@@ -467,13 +473,17 @@ function replaceChannelList(parsed) {
         videoPlayer.load();
       }
     }
-  } else if (
-      hadPlaying && currentChannelIndex < 0 && selected >= 0 &&
-      vodMode === 'live' && !vodPlay.active) {
+  } else if (hadPlaying && currentChannelIndex < 0 && selected >= 0) {
     // The version that played is not in the new list: the selected channel
-    // plays (its best version again)
+    // plays (its best version again). In Movies or Series, the return to Live
+    // plays it.
     _bestFrom = -1;
-    selectChannel(selected);
+    if (vodMode === 'live' && !vodPlay.active)
+      selectChannel(selected);
+    else {
+      currentChannelIndex = selected;
+      _altOrigin = selected;
+    }
   }
   extractGroups();
   validateCurrentGroup();
