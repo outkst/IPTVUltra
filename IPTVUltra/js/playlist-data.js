@@ -170,7 +170,7 @@ const EPG_PERSIST_MAX_AGE_MS =
 let _cacheDbPromise = null;
 let _playlistCacheAt =
     0;  // when the applied channel list was fetched from the provider
-let _playlistRefreshing = false;
+let _playlistRefreshing = '';  // the playlist key of the refresh that runs
 let _m3uSource =
     null;  // { url, epgUrl } of the loaded M3U, for background refresh
 function cacheDb() {
@@ -420,6 +420,8 @@ function replaceChannelList(parsed) {
     return l && l.length ? channelIndexMap.get(l[0]) : -1;
   };
   const mapIdx = (i) => (i >= 0 ? mapCh(old[i]) : -1);
+  const hadPlaying = currentChannelIndex >= 0;
+  const selected = mapIdx(_bestFrom);
   currentChannelIndex = mapIdx(currentChannelIndex);
   lastChannelIndex = mapIdx(lastChannelIndex);
   _altOrigin = mapIdx(_altOrigin);
@@ -434,6 +436,7 @@ function replaceChannelList(parsed) {
     catchup.chIdx = mapIdx(catchup.chIdx);
     catchup.liveIdx = mapIdx(catchup.liveIdx);
     catchup.bestFrom = mapIdx(catchup.bestFrom);
+    catchup.bestIdx = mapIdx(catchup.bestIdx);
     catchupGone = catchup.chIdx < 0;
   }
   // Open UI keeps indexes of the previous list: close it
@@ -448,20 +451,29 @@ function replaceChannelList(parsed) {
     // live version is in the list, go back to it (not in Movies or Series:
     // setVodMode reloads the channel).
     const live = catchup.liveIdx;
-    if (live >= 0 && vodMode === 'live' && !vodPlay.active) {
+    const inLive = vodMode === 'live' && !vodPlay.active;
+    if (live >= 0 && inLive) {
       currentChannelIndex = live;
       catchup.chIdx = live;
       catchupBackToLive();
     } else {
       catchup = null;
-      if (live >= 0)
-        currentChannelIndex = live;
-      else {
+      currentChannelIndex = live;
+      // In Movies or Series, setVodMode stopped the live source already, and a
+      // movie can use the <video>
+      if (live < 0 && inLive) {
         liveEngineDestroy();
         videoPlayer.removeAttribute('src');
         videoPlayer.load();
       }
     }
+  } else if (
+      hadPlaying && currentChannelIndex < 0 && selected >= 0 &&
+      vodMode === 'live' && !vodPlay.active) {
+    // The version that played is not in the new list: the selected channel
+    // plays (its best version again)
+    _bestFrom = -1;
+    selectChannel(selected);
   }
   extractGroups();
   validateCurrentGroup();
@@ -483,14 +495,14 @@ function replaceChannelList(parsed) {
 // Re-download the loaded playlist and apply it in place if it changed.
 // force=false respects the 6 h age.
 async function refreshPlaylistInBackground(force) {
-  if (_playlistRefreshing || isLoading || !_activePlaylistKey ||
-      _activePlaylistKey === 'm:demo')
+  if (_playlistRefreshing === _activePlaylistKey || isLoading ||
+      !_activePlaylistKey || _activePlaylistKey === 'm:demo')
     return false;
   if (!force && _playlistCacheAt &&
       Date.now() - _playlistCacheAt < PLAYLIST_CACHE_MAX_AGE_MS)
     return false;
-  _playlistRefreshing = true;
   const key = _activePlaylistKey;
+  _playlistRefreshing = key;  // a refresh of a different playlist can run
   try {
     let parsed;
     if (currentPlaylistType === 'xtream' && _xt)
@@ -532,7 +544,7 @@ async function refreshPlaylistInBackground(force) {
     }
     return false;
   } finally {
-    _playlistRefreshing = false;
+    if (_playlistRefreshing === key) _playlistRefreshing = '';
   }
 }
 function fmtAge(ts) {

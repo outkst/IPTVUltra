@@ -521,6 +521,7 @@ function ssField(row, value, placeholder, isAdd) {
     if (e.key === 'Enter' || e.keyCode === 13) {
       e.preventDefault();
       e.stopPropagation();
+      if (e.repeat) return;  // the hold that started the edit
       ssCommitEdit(inp.value);
     }
   });

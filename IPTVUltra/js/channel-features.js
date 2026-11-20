@@ -429,6 +429,7 @@ function arrangeEventGroup(list) {
     const ch = list[i], ev = eventOf(ch);
     const done = ev ? evFinished(ev, now) : false;
     if (mode === 'hide' && done && ch !== playing &&
+        !isPlayingIdx(channelIndexMap.get(ch)) &&
         now > (ev.tag === 'ended' ? Math.min(ev.start, ev.stop) : ev.stop) +
                 EVENT_HIDE_AFTER_MS)
       continue;
@@ -512,7 +513,8 @@ function surfStep(dir) {
   if (!list.length) return;
   if (!surf.active) {
     const cur = playingListIndex(list);
-    surf.idx = cur < 0 ? 0 : cur;
+    // Not in the list: the first step shows the first (or the last) row
+    surf.idx = cur >= 0 ? cur : dir > 0 ? -1 : 0;
     surf.active = true;
     document.getElementById('vodOsd').classList.add('surf');
   }
@@ -606,7 +608,9 @@ const _bestFailed = new Set();  // versions that failed in this session
 let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
     false;  // selectChannel() called by the fallback (not a user choice)
-let _returningLive = false;   // selectChannel() after a catch-up
+let _returningLive = false;
+let _keepSelection = false;   // selectChannel() keeps _bestFrom and _altOrigin
+                              // // selectChannel() after a catch-up
 let _selectingExact = false;  // selectChannel() plays this version, not the
                               // best version
 function tryAlternateSource(msg) {
@@ -742,8 +746,9 @@ function bestVersionOf(idx) {
   const own = streamTechOf(ch, idx);
   let bestH = own ? heightClass(own.h) :
                     heightClass(RANK_HEIGHT[nameQualityRank(ch.name)] || 0);
-  let bestFps = own ? own.fps || 0 : Infinity;  // with no measurement, only a
-                                                // higher class counts
+  let bestFps =
+      own && own.fps ? own.fps : Infinity;  // with no measurement, only a
+                                            // higher class counts
   let best = -1;
   for (const i of alternateSources(idx)) {
     if (_bestFailed.has(i) || !channels[i]) continue;
@@ -788,7 +793,7 @@ function openVersions(idx) {
       ch,
       tech,
       order,
-      h: tech ? tech.h : RANK_HEIGHT[nameQualityRank(ch.name)],
+      h: heightClass(tech ? tech.h : RANK_HEIGHT[nameQualityRank(ch.name)]),
       fps: tech ? tech.fps || 0 : 0
     };
   });
@@ -798,11 +803,7 @@ function openVersions(idx) {
   const known = _versionsRows.filter(r => r.tech);
   const best = known.length >= 2 ?
       known.reduce(
-          (m, r) => (r.tech.h > m.tech.h ||
-                     (r.tech.h === m.tech.h &&
-                      (r.tech.fps || 0) > (m.tech.fps || 0))) ?
-              r :
-              m) :
+          (m, r) => (r.h > m.h || (r.h === m.h && r.fps > m.fps + 1)) ? r : m) :
       null;
   _versionsRows.forEach(r => {
     r.best = r === best;

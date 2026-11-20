@@ -269,7 +269,7 @@ function catchupUrl(ch, prog) {
   return `${_xt.base}/timeshift/${encodeURIComponent(_xt.user)}/${
       encodeURIComponent(_xt.pass)}/${mins}/${
       fmtTimeshiftStart(
-          epgUnshiftTime(prog.start), _xt.tz,
+          prog.utc ? prog.start : epgUnshiftTime(prog.start), _xt.tz,
           prog.tsOff)}/${ch.streamId}.${
       catchupExt()}`;  // archive is indexed by provider time
 }
@@ -333,9 +333,11 @@ function xtreamEnsureServerInfo() {
       });
 }
 // Full EPG table (history + future) for one channel, merged into epgData
-async function fetchXtreamEpgFull(tvgId) {
+// `streamId` is the stream of the archive channel: versions share a tvg-id,
+// and the first of them can have no archive.
+async function fetchXtreamEpgFull(tvgId, streamId) {
   const xt = _xt;
-  const streamId = xt ? _xtStreamIdByTvgId.get(tvgId) : undefined;
+  if (xt && streamId === undefined) streamId = _xtStreamIdByTvgId.get(tvgId);
   if (!xt || streamId === undefined || _epgFullFetched.has(tvgId)) return;
   _epgFullFetched.add(tvgId);
   _epgFullPending.add(tvgId);
@@ -439,8 +441,9 @@ function startCatchup(chIdx, prog, startAt) {
     chIdx,
     // The live version to go back to: the version that played (with the
     // channel that you selected), or -1 (the best version of chIdx)
-    liveIdx: sameCh ? liveIdx : -1,
+    liveIdx: sameCh ? (catchup ? catchup.liveIdx : liveIdx) : -1,
     bestFrom: sameCh ? (catchup ? catchup.bestFrom : _bestFrom) : -1,
+    bestIdx: sameCh ? (catchup ? catchup.bestIdx : _bestIdx) : -1,
     prog,
     url: catchupUrl(ch, prog),
     dur: (prog.stop - prog.start) / 1000,
@@ -476,46 +479,49 @@ function startCatchup(chIdx, prog, startAt) {
 // Loads the version that plays again (the return from Movies or Series). The
 // channel that you selected stays.
 function reloadLiveChannel() {
-  const idx = currentChannelIndex;
-  if (!channels[idx]) return;
-  const from = _bestFrom, best = _bestIdx, origin = _altOrigin;
-  _returningLive = true;
+  if (catchup) {
+    catchupBackToLive();  // the live version of the catch-up
+    return;
+  }
+  if (channels[currentChannelIndex])
+    selectKeepingSelection(currentChannelIndex);
+}
+// Plays this version, and keeps the selection (_bestFrom, _altOrigin) that the
+// caller set
+function selectKeepingSelection(idx) {
+  _keepSelection = true;
   _selectingExact = true;
   try {
     selectChannel(idx);
   } finally {
-    _returningLive = false;
+    _keepSelection = false;
     _selectingExact = false;
   }
-  _bestFrom = from;
-  _bestIdx = best;
-  _altOrigin = origin;
-  noteSelectedChannel();
-  markPlayingRows();
 }
 function catchupBackToLive() {
   if (!catchup) return;
   const c = catchup;
   catchup = null;
-  const exact = !!channels[c.liveIdx];
-  const idx = exact ? c.liveIdx : c.chIdx;
-  if (!channels[idx]) return;
+  if (channels[c.liveIdx]) {
+    // The version that played before the catch-up, with the channel that you
+    // selected
+    const idx = c.liveIdx;
+    const from = c.bestFrom >= 0 && channels[c.bestFrom] && c.bestFrom !== idx ?
+        c.bestFrom :
+        -1;
+    _bestFrom = from;
+    _bestIdx = from >= 0 && c.bestIdx === idx ? idx : -1;
+    _altOrigin = from >= 0 ? from : idx;
+    selectKeepingSelection(idx);
+    return;
+  }
+  // A catch-up of a different channel: its best version
+  if (!channels[c.chIdx]) return;
   _returningLive = true;
-  _selectingExact = exact;
   try {
-    selectChannel(idx);
+    selectChannel(c.chIdx);
   } finally {
     _returningLive = false;
-    _selectingExact = false;
-  }
-  // The version that played before the catch-up, with the channel that you
-  // selected
-  if (exact && c.bestFrom >= 0 && channels[c.bestFrom] && c.bestFrom !== idx) {
-    _bestFrom = c.bestFrom;
-    _bestIdx = idx;
-    _altOrigin = c.bestFrom;
-    noteSelectedChannel();
-    markPlayingRows();
   }
 }
 
@@ -549,6 +555,7 @@ function archiveProgAt(ch, ms, now) {
     if (p.hasArchive === false && p.stop <= now) return null;
     const r = {start: p.start, stop: Math.min(p.stop, now), title: p.title};
     if (p.tsOff !== undefined) r.tsOff = p.tsOff;  // the clock of the listing
+    if (p.utc) r.utc = true;
     return r;
   }
   return {start: Math.floor(ms / 60000) * 60000, stop: now, title: 'Archive'};
@@ -1988,7 +1995,8 @@ function xmltvProgramme(xml, from, to) {
     start,
     stop,
     title: ti ? copyStr(unescapeXml(ti[1].trim())) : '',
-    desc: copyStr(desc)
+    desc: copyStr(desc),
+    utc: true  // XMLTV times are UTC: no EPG timezone shift
   };
 }
 

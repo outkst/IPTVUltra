@@ -596,6 +596,7 @@ function epgOffsetChange() {
     }
   }
   _epgSkeletonWinStart = 0;
+  _xmltvMerged.clear();  // its cut point uses the old times
   if (!currentPlaylistType) return;
   refreshCurrentView();
   updateNowNext();

@@ -732,10 +732,17 @@ function setVodMode(mode) {
   vodNav.detail = null;
   // The lists and the search box of the previous mode do not stay
   vodNav.zone = 'cats';
+  vodNav.catIdx = 0;  // Home
+  vodNav.screen = 'home';
+  vodNav.homeRows = [];
   vodNav.items = [];
   vodNav.baseItems = [];
+  vodNav.query = '';
   const si = document.getElementById('vodSearchInput');
-  if (si && document.activeElement === si) si.blur();
+  if (si) {
+    if (document.activeElement === si) si.blur();
+    si.value = '';
+  }
   document.getElementById('vodDetails').style.display = 'none';
   // The categories show Home, Favorites, and "Search all" before the load
   // completes. If you opened a list or typed meanwhile, the load does not go

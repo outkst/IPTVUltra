@@ -18,7 +18,12 @@ function startStallWatchdog() {
     // own timeouts stop a dead server. A placeholder (black.ts) stops at its
     // end, and a reload cannot make the event start.
     // A channel that waits for the load of hls.js has no source.
-    if (videoPlayer.paused || currentChannelIndex < 0 || liveEngine.hlsWait ||
+    // A live stream that ended (the provider closed a .ts stream) is a stall:
+    // the element is paused at `ended`
+    const liveEnded =
+        videoPlayer.ended && vodMode === 'live' && !catchup && !vodPlay.active;
+    if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
+        liveEngine.hlsWait ||
         (liveEngineActive() &&
          (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;
@@ -207,31 +212,50 @@ function noteSelectedChannel() {
   if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
   savePlaylistState();
 }
+// The previous channel is never the channel that plays. If a change made it
+// that channel, the value from before the change comes back (or -1).
+function keepPreviousChannel(prevLast) {
+  if (!isPlayingIdx(lastChannelIndex)) return;
+  lastChannelIndex =
+      prevLast >= 0 && channels[prevLast] && !isPlayingIdx(prevLast) ?
+      prevLast :
+      -1;
+}
 function selectChannel(index) {
   if (!channels[index]) return;
   // A selection of a channel plays its best measured version (Settings, "Best
   // version automatically"). A retry of the selection (`_bestFrom`) gets the
   // best version again, or the selected channel if that version failed.
-  const picked = index;
+  const picked = index, prevLast = lastChannelIndex;
   let better = -1;
+  // Also the end of a catch-up of a different channel (`_returningLive`)
   if (!_selectingAlt && !_selectingExact &&
-      (index !== currentChannelIndex || index === _bestFrom)) {
+      (index !== currentChannelIndex || index === _bestFrom ||
+       _returningLive)) {
     better = bestVersionOf(index);
     if (better >= 0) index = better;
   }
   // The selection plays already (a different row of the same stream): no
   // reload. The provider counts the previous connection for approximately 15 s.
   // Also the row of the version that plays, when a different row selected it.
+  // Only when the stream plays: a stream with an error loads again.
   const userPick = !_selectingAlt && !_selectingExact && !_returningLive;
   if (userPick && index === currentChannelIndex &&
       (better >= 0 || _bestFrom >= 0) && !catchup && !vodPlay.active &&
-      vodMode === 'live') {
+      vodMode === 'live' && stallWatchdogTimer && !_errRetryTimer &&
+      !videoPlayer.error) {
     surfCancel();
+    // A different channel row that plays the same stream: the previous
+    // selection becomes the previous channel
+    if (!isPlayingIdx(picked) && picked !== _altOrigin && _altOrigin >= 0 &&
+        channels[_altOrigin])
+      lastChannelIndex = _altOrigin;
     _bestFrom = better >= 0 ? picked : -1;
     _bestIdx = better >= 0 ? index : -1;
     _altOrigin = picked;
     _altTried = new Set([index]);
     noteRecentChannel(channels[picked]);
+    keepPreviousChannel(prevLast);
     noteSelectedChannel();
     markPlayingRows();
     if (livePlayer.active) showVodOsd();
@@ -245,8 +269,14 @@ function selectChannel(index) {
   if (_selectingAlt) {
     // fallback to another source of the same channel: not a channel change for
     // history purposes. The selected channel stays the selected row.
-    if (_altOrigin >= 0 && _altOrigin !== index && channels[_altOrigin])
-      _bestFrom = _altOrigin;
+    _bestFrom =
+        _altOrigin >= 0 && _altOrigin !== index && channels[_altOrigin] ?
+        _altOrigin :
+        -1;
+  } else if (_keepSelection) {
+    // The version that plays loads again (the return from Movies or Series,
+    // the end of a catch-up): the caller set the selection
+    _altTried = new Set([index]);
   } else {
     // A retry of the selection, a version of it from the Versions menu, or the
     // end of a catch-up is not a channel change
@@ -262,7 +292,7 @@ function selectChannel(index) {
     _bestIdx = better >= 0 ? index : -1;
     _altOrigin = picked;
     _altTried = new Set([index]);
-    noteRecentChannel(channels[picked]);
+    if (!_returningLive) noteRecentChannel(channels[picked]);
   }
   const cause = _selectingAlt       ? 'alternative source' :
       currentChannelIndex === index ? 'same channel again' :
@@ -270,6 +300,7 @@ function selectChannel(index) {
   const prevPlaying =
       currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
   currentChannelIndex = index;
+  keepPreviousChannel(prevLast);
   _reloadAttempts = 0;
   if (_errRetryTimer) {
     clearTimeout(_errRetryTimer);

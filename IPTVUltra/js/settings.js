@@ -277,7 +277,7 @@ function settingsRows() {
       label: 'Refresh playlist now',
       button: 'Refresh',
       sub: _activePlaylistKey && _activePlaylistKey !== 'm:demo' ?
-          (_playlistRefreshing ?
+          (_playlistRefreshing === _activePlaylistKey ?
                'Refreshing …' :
                `Channel list fetched ${
                    _playlistCacheAt ?
@@ -285,7 +285,7 @@ function settingsRows() {
                        'this session'}; refreshes itself after 6 h`) :
                'Load a playlist first',
       disabled: !_activePlaylistKey || _activePlaylistKey === 'm:demo' ||
-          _playlistRefreshing,
+          _playlistRefreshing === _activePlaylistKey,
       run: () => {
         showEPGToast('Refreshing playlist …', 'loading', 'Playlist');
         refreshPlaylistInBackground(true).then(() => renderSettings());

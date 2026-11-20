@@ -162,7 +162,7 @@ function epgMaybeFetchHistory(ch) {
     return;
   const row = epgRenderedRows.get(epgFocusedRowIdx);
   if (row) row.classList.add('epg-row-loading-past');
-  fetchXtreamEpgFull(ch.tvgId);
+  fetchXtreamEpgFull(ch.tvgId, ch.streamId);
 }
 
 function scrollEPGRowIntoView(idx) {

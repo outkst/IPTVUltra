@@ -479,11 +479,15 @@ function zapChannel(dir) {
   let next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
   // Skip the rows of the stream that plays: in a group of versions, CH+ and
   // CH- go to a different stream
-  for (let n = 0; n < list.length && cur >= 0; n++) {
+  let found = cur < 0;
+  for (let n = 0; n < list.length && !found; n++) {
     const i = getChannelIndex(list[next]);
-    if (!isPlayingIdx(i) && bestVersionOf(i) !== currentChannelIndex) break;
-    next = (next + dir + list.length) % list.length;
+    if (!isPlayingIdx(i) && bestVersionOf(i) !== currentChannelIndex)
+      found = true;
+    else
+      next = (next + dir + list.length) % list.length;
   }
+  if (!found) return;  // each row of the list plays this stream
   if (epgMode) {
     epgFocusedRowIdx = next;
     updateEPGRowFocus();
@@ -497,6 +501,7 @@ document.addEventListener('keydown', (e) => {
   if (d < 0 || !digitEntryAllowed()) return;
   e.preventDefault();
   e.stopPropagation();
+  if (e.repeat) return;  // a held digit is 1 digit
   onDigitKey(d);
 }, true);
 
@@ -512,6 +517,9 @@ document.addEventListener('keydown', (e) => {
   if (vodMode !== 'live' && !vodPlay.active) return;
   if (vodPlay.active && (kc === 427 || kc === 428)) return;
   e.preventDefault();
+  // A held CH+ or CH- changes the channel 1 time: each change opens a provider
+  // stream, and the provider counts the previous one for approximately 15 s
+  if (e.repeat) return;
   if (kc === 415) {
     videoPlayer.play().catch(() => {});
     showPlayerControls();
