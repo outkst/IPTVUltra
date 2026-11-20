@@ -479,11 +479,18 @@ function replaceChannelList(parsed) {
   // its tvg-id or its name, in the same group
   if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected < 0 &&
       oldPlaying) {
-    const nm = normChannelName(oldPlaying.name);
-    selected = channels.findIndex(
-        c => c.group === oldPlaying.group &&
-            (oldPlaying.tvgId ? c.tvgId === oldPlaying.tvgId :
-                                normChannelName(c.name) === nm));
+    // The same name first. A tvg-id from the XMLTV name fallback is not in
+    // the new list. A normalized name can be empty (a Cyrillic name): then
+    // only the same name counts.
+    const g = oldPlaying.group, name = oldPlaying.name;
+    const id = oldPlaying.tvgIdFromName ? '' : oldPlaying.tvgId;
+    const nm = normChannelName(name);
+    selected = channels.findIndex(c => c.group === g && c.name === name);
+    if (selected < 0 && id)
+      selected = channels.findIndex(c => c.group === g && c.tvgId === id);
+    if (selected < 0 && nm)
+      selected = channels.findIndex(
+          c => c.group === g && normChannelName(c.name) === nm);
   }
   if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected >= 0) {
     // The version that played is not in the new list: the selected channel

@@ -875,8 +875,9 @@ function versionsWatch() {
   const r = _versionsRows[versionsFocus];
   if (!r) return;
   closeVersions();
-  // The version that plays loads again only after an error
-  if (r.i === currentChannelIndex && playingStreamHealthy()) return;
+  // The version that plays loads again only after an error. A catch-up stays.
+  if (r.i === currentChannelIndex && (catchup || playingStreamHealthy()))
+    return;
   // The version that you select plays, also when a different one is better
   _selectingExact = true;
   try {

@@ -438,14 +438,19 @@ document.addEventListener('keyup', (e) => {
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) return;
   clearEnterPress();
-  _holdKeyDir = null;
-  _cancelHold();
-  if (_enterOsdHeld) {
-    _enterOsdHeld = false;
-    if (playerActive() &&
-        document.getElementById('vodOsd').classList.contains('visible'))
-      showVodOsd();
+  // The OK press of a guide or list row (its release goes to the other app)
+  if (_rowOk) {
+    clearTimeout(_rowOk.timer);
+    _rowOk = null;
   }
+  _holdKeyDir = null;
+  const wasHolding = _isHolding();
+  _cancelHold();
+  // The banner shows the position again, and its timer starts again
+  if ((wasHolding || _enterOsdHeld) && playerActive() &&
+      document.getElementById('vodOsd').classList.contains('visible'))
+    showVodOsd();
+  _enterOsdHeld = false;
 });
 
 // Hold Left/Right in the player: short-press = ±3s seek; hold = trick play
