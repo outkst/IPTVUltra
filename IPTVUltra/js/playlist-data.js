@@ -481,10 +481,17 @@ function replaceChannelList(parsed) {
     if (vodMode === 'live' && !vodPlay.active)
       selectChannel(selected);
     else {
-      currentChannelIndex = selected;
+      const b = bestVersionOf(selected);
+      currentChannelIndex = b >= 0 ? b : selected;
+      _bestFrom = b >= 0 ? selected : -1;
+      _bestIdx = b;
       _altOrigin = selected;
     }
   }
+  // The selected row is not in the new list, but its version plays: the
+  // fallback uses that version
+  if (_altOrigin < 0 && currentChannelIndex >= 0)
+    _altOrigin = currentChannelIndex;
   extractGroups();
   validateCurrentGroup();
   refreshCurrentView();

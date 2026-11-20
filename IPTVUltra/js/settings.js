@@ -607,13 +607,16 @@ function renderSettings() {
   const f = list.querySelector('.settings-row.focused');
   if (f) f.scrollIntoView({block: 'nearest'});
 }
-const SETTINGS_NO_REPEAT = new Set(['liveBuffer', 'liveEngine', 'avSync']);
+const SETTINGS_NO_REPEAT =
+    new Set(['liveBuffer', 'liveEngine', 'avSync', 'xtXmltv']);
 function settingsChange(r, dir) {
   if (r.type === 'choice') {
     const i = r.options.findIndex(x => x.v === r.get());
     r.set(r.options[(i + dir + r.options.length) % r.options.length].v);
   } else if (r.type === 'toggle') {
-    r.set(dir > 0 ? true : dir < 0 ? false : !r.get());
+    const v = dir > 0 ? true : dir < 0 ? false : !r.get();
+    // A row can do much work on set (Provider XMLTV loads all data again)
+    if (v !== r.get()) r.set(v);
   }
   renderSettings();
 }

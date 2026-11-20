@@ -22,7 +22,8 @@ function startStallWatchdog() {
     // the element is paused at `ended`. Only an Xtream live .ts URL: an M3U
     // file and a placeholder (black.ts with ENDLIST) also end.
     const liveEnded = videoPlayer.ended && vodMode === 'live' && !catchup &&
-        !vodPlay.active && _RE_LIVE_TS.test(videoPlayer.currentSrc || '');
+        !vodPlay.active &&
+        (_RE_LIVE_TS.test(videoPlayer.currentSrc || '') || _srcNoEnd);
     if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
         liveEngine.hlsWait ||
         (liveEngineActive() &&
@@ -215,6 +216,15 @@ function noteSelectedChannel() {
 }
 // The previous channel is never the channel that plays. If a change made it
 // that channel, the value from before the change comes back (or -1).
+// True when the source had no end (duration Infinity) at its metadata: a live
+// stream. An M3U file and a placeholder playlist have a duration.
+let _srcNoEnd = false;
+videoPlayer.addEventListener('loadedmetadata', () => {
+  _srcNoEnd = !Number.isFinite(videoPlayer.duration);
+});
+videoPlayer.addEventListener('emptied', () => {
+  _srcNoEnd = false;
+});
 // An Xtream live stream as 1 continuous MPEG-TS stream
 const _RE_LIVE_TS = /\/live\/[^/]+\/[^/]+\/\d+\.ts(\?|$)/;
 function keepPreviousChannel(prevLast) {

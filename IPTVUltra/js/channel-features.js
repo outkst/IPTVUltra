@@ -378,9 +378,16 @@ function epgProgsOf(tvgId) {
   const id = resolveEpgId(tvgId);
   const p = id ? epgData.get(id) : null;
   const x = xmltvProgsOf(tvgId);
-  if (x) return p && p.length ? xmltvWithPast(tvgId, x, p) : x;
+  // When the XMLTV programs ended (the file stops, or its refresh fails), the
+  // provider programs come first
+  if (x && (xmltvCurrent(x) || !(p && p.length)))
+    return p && p.length ? xmltvWithPast(tvgId, x, p) : x;
   if (p && p.length) return p;
   return (tvgId && _eventProgs.get(tvgId)) || null;
+}
+// True while an XMLTV list has a program that did not stop
+function xmltvCurrent(x) {
+  return x.length > 0 && x[x.length - 1].stop > Date.now();
 }
 // tvgId -> {x, p, list}: the last list that xmltvWithPast made
 const _xmltvMerged = new Map();
@@ -740,8 +747,13 @@ function heightClass(h) {
 // allows 1 connection, thus the app cannot test a version in the background.
 // A channel with no measurement gets the height that its name gives.
 function bestVersionOf(idx) {
+  return settings.bestVersion === false ? -1 : betterMeasuredVersion(idx);
+}
+// The rule of bestVersionOf, also when the setting is Off (the Best mark of
+// the Versions menu)
+function betterMeasuredVersion(idx) {
   const ch = channels[idx];
-  if (!ch || settings.bestVersion === false) return -1;
+  if (!ch) return -1;
   const own = streamTechOf(ch, idx);
   let bestH = own ? heightClass(own.h) :
                     heightClass(RANK_HEIGHT[nameQualityRank(ch.name)] || 0);
@@ -802,7 +814,7 @@ function openVersions(idx) {
   // "Best" is the version that a selection plays (bestVersionOf), else the
   // selected channel when it has a measurement
   const sel = _bestFrom >= 0 && list.includes(_bestFrom) ? _bestFrom : idx;
-  const bv = bestVersionOf(sel);
+  const bv = betterMeasuredVersion(sel);
   const bestI = bv >= 0 ? bv : streamTechOf(channels[sel], sel) ? sel : -1;
   const known = _versionsRows.filter(r => r.tech).length;
   _versionsRows.forEach(r => {
@@ -1032,8 +1044,9 @@ function commitDigits() {
   }, 1500);
   // The number of the channel that plays does not load the stream again (the
   // provider counts the previous connection for approximately 15 s)
-  if (isPlayingIdx(idx) && !catchup && stallWatchdogTimer &&
-      !videoPlayer.error) {
+  if (isPlayingIdx(idx) && !catchup && stallWatchdogTimer && !_errRetryTimer &&
+      !videoPlayer.error && !videoPlayer.ended) {
+    surfCancel();
     if (livePlayer.active) showVodOsd();
   } else
     selectChannel(idx);

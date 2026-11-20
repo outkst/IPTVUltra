@@ -377,7 +377,11 @@ document.addEventListener('keydown', (e) => {
 function enterLongPress() {
   _enterLongTimer = 0;
   if (!_enterDown || !_inPlayerMode() || !livePlayer.active ||
-      vodTracksOpen() || vodNextVisible())
+      vodTracksOpen() || vodNextVisible() || surf.active)
+    return;
+  // A button of the banner acts on the release
+  if (player.focus === 'buttons' &&
+      document.getElementById('vodOsd').classList.contains('visible'))
     return;
   _enterLongDone = true;
   surfCancel();

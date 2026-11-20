@@ -1223,7 +1223,8 @@ function resetLazyEpg() {
 
 function epgNeedsFetch(tvgId) {
   if (!_xt || !tvgId) return false;
-  if (xmltvProgsOf(tvgId)) return false;  // the XMLTV file has its programmes
+  const x = xmltvProgsOf(tvgId);
+  if (x && xmltvCurrent(x)) return false;  // the XMLTV file has its programs
   const m = _epgFetchMeta.get(tvgId);
   if (!m) return true;
   if (m.status === 'pending') return false;
