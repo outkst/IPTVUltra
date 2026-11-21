@@ -471,6 +471,12 @@ function markPlayingRows() {
     el.classList.toggle('active', !!ch && isPlayingIdx(getChannelIndex(ch)));
   }
 }
+// True when a selection of the channel at `idx` must not load the stream: it
+// plays with no error, or a catch-up of it plays. Then OK opens the player (or
+// shows the banner).
+function playsNow(idx) {
+  return isPlayingIdx(idx) && (!!catchup || playingStreamHealthy());
+}
 // True when the channel at `idx` plays, also when the app plays a better
 // version of it (`_bestFrom`)
 function isPlayingIdx(idx) {
@@ -551,7 +557,7 @@ function surfTune() {
   const idx = getChannelIndex(ch);
   if (idx < 0) return;
   // The channel of a catch-up stays in the archive
-  if (isPlayingIdx(idx) && (catchup || playingStreamHealthy())) {
+  if (playsNow(idx)) {
     showVodOsd();
     return;
   }
@@ -876,8 +882,7 @@ function versionsWatch() {
   if (!r) return;
   closeVersions();
   // The version that plays loads again only after an error. A catch-up stays.
-  if (r.i === currentChannelIndex && (catchup || playingStreamHealthy()))
-    return;
+  if (r.i === currentChannelIndex && playsNow(r.i)) return;
   // The version that you select plays, also when a different one is better
   _selectingExact = true;
   try {
@@ -1047,7 +1052,7 @@ function commitDigits() {
   }, 1500);
   // The number of the channel that plays does not load the stream again (the
   // provider counts the previous connection for approximately 15 s)
-  if (isPlayingIdx(idx) && playingStreamHealthy()) {
+  if (playsNow(idx)) {
     surfCancel();
     if (livePlayer.active) showVodOsd();
   } else

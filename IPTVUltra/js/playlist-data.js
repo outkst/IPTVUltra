@@ -485,12 +485,29 @@ function replaceChannelList(parsed) {
     const g = oldPlaying.group, name = oldPlaying.name;
     const id = oldPlaying.tvgIdFromName ? '' : oldPlaying.tvgId;
     const nm = normChannelName(name);
-    selected = channels.findIndex(c => c.group === g && c.name === name);
+    // The same position among the rows with this group and name (2 rows can
+    // have the same name)
+    const same = (c) => c.group === g && c.name === name;
+    const nth = old.filter(same).indexOf(oldPlaying);
+    const rows = [];
+    for (let i = 0; i < channels.length; i++)
+      if (same(channels[i])) rows.push(i);
+    selected =
+        rows.length ? rows[Math.min(Math.max(nth, 0), rows.length - 1)] : -1;
     if (selected < 0 && id)
       selected = channels.findIndex(c => c.group === g && c.tvgId === id);
     if (selected < 0 && nm)
       selected = channels.findIndex(
           c => c.group === g && normChannelName(c.name) === nm);
+  }
+  if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected < 0 &&
+      vodMode === 'live' && !vodPlay.active) {
+    // The channel is not in the new list: its stream stops, and a message
+    // tells why (else the stream plays with no channel, and no reload occurs)
+    liveEngineDestroy();
+    videoPlayer.removeAttribute('src');
+    videoPlayer.load();
+    showStreamError('The channel is not in the playlist now');
   }
   if (!catchupGone && hadPlaying && currentChannelIndex < 0 && selected >= 0) {
     // The version that played is not in the new list: the selected channel

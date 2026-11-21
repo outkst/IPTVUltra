@@ -771,6 +771,11 @@ function buildEPGRow(i) {
     toggleEPGFav(favId);
   });
   row.addEventListener('click', () => {
+    // The same rule as OK: the playing row opens the player
+    if (playsNow(origIdx)) {
+      toggleLivePlayer();
+      return;
+    }
     for (const [, el] of epgRenderedRows) el.classList.remove('active');
     row.classList.add('active');
     selectChannel(origIdx);

@@ -692,7 +692,10 @@ function renderChannelList() {
           starSpan.textContent =
               favoriteIds.has(id) ? '★' : '☆';  // otherwise update in place
       };
-      div.onclick = () => selectChannel(originalIndex);
+      // The same rule as OK: the playing row opens the player
+      div.onclick = () => playsNow(originalIndex) ?
+          toggleLivePlayer() :
+          selectChannel(originalIndex);
       virtualContainer.appendChild(div);
       renderedItems.set(i, div);
     }
