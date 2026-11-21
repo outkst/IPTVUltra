@@ -6,6 +6,7 @@
 // ── playback ─────────────────────────────────────────────────
 function _inPlayerMode() {
   return playerActive() && !settingsOpen && !diagOpen && !versionsOpen &&
+      !ssOpen && !catsOpen && !vodSortOpen &&
       !(confirmDialog && !confirmDialog.classList.contains('hidden'));
 }
 function showPlayerControls() {
@@ -42,14 +43,17 @@ function startVodPlayback(p) {
        saved.pos >= vodMinResume(saved.dur) && saved.pos < saved.dur * 0.9) ?
       saved.pos :
       0;
-  if (p.restart && saved) {
-    delete vodProgress[key];
-    saveJson('iptv_vod_progress', vodProgress);
-  }
+  // "Start over" keeps the saved entry (also the watched state).
+  // saveVodProgress replaces it when the new position is more than
+  // vodMinResume.
   if (vodPlay.active) {
     saveVodProgress(true);
     clearVodNext();
   }
+  vodClearLoadListeners();
+  _nativeRate = 0;
+  _cancelHold();  // a step of the previous title must not seek this one
+  const loadToken = ++_vodLoadToken;
   stopStallWatchdog();
   if (_errRetryTimer) {
     clearTimeout(_errRetryTimer);
@@ -68,6 +72,7 @@ function startVodPlayback(p) {
       (saved && saved.dur) || 0;
   vodPlay.saveAt = 0;
   vodPlay.ended = false;
+  vodPlay.noAudio = false;
   vodPlay.subManual = false;
   vodPlay.audioManual = false;
   closeVodTracks();
@@ -82,13 +87,13 @@ function startVodPlayback(p) {
       [`Season ${p.season}`, fmtRuntime(vodPlay.dur)].filter(Boolean).join(
           ' · ');
   if (resumeAt) vodPlay.sub += ` · Resumed from ${fmtClock(resumeAt)}`;
-  const player = document.getElementById('vodPlayer'),
+  const playerEl = document.getElementById('vodPlayer'),
         slot = document.getElementById('vodVideoSlot');
   if (videoPlayer.parentNode !== slot) slot.appendChild(videoPlayer);
   const badge = document.getElementById('pbTrickBadge');
-  if (badge && badge.parentNode !== player) player.appendChild(badge);
+  if (badge && badge.parentNode !== playerEl) playerEl.appendChild(badge);
   videoPlayer.removeAttribute('controls');
-  player.classList.remove('hidden');
+  playerEl.classList.remove('hidden');
   document.getElementById('vodPaused').classList.add('hidden');
   document.getElementById('vodLoading').classList.remove('hidden');
   document.getElementById('vodNext').classList.add('hidden');
@@ -113,37 +118,54 @@ function startVodPlayback(p) {
   // attach and the play also wait: the pipeline of the movie does not exist
   // before the source.
   afterLiveTeardown(() => {
-    if (!vodPlay.active) return;  // the player closed during the teardown
+    // The player closed, or a different title started, during the teardown.
+    if (!vodPlay.active || loadToken !== _vodLoadToken) return;
     videoPlayer.src = url;
     videoPlayer.load();
     umsAttach();
-    if (resumeAt > 0)
-      videoPlayer.addEventListener('loadedmetadata', function seekOnce() {
+    _vodOnMeta = () => {
+      _vodOnMeta = null;
+      if (!vodPlay.active || loadToken !== _vodLoadToken) return;
+      if (resumeAt > 0) {
         try {
           videoPlayer.currentTime = resumeAt;
         } catch (_) { /* not seekable yet */
         }
-      }, {once: true});
-    videoPlayer.addEventListener('loadedmetadata', function tracksOnce() {
+      }
       applyVodTrackPrefs();
-    }, {once: true});
+    };
+    videoPlayer.addEventListener('loadedmetadata', _vodOnMeta, {once: true});
     setTimeout(() => {
-      if (vodPlay.active) applyVodTrackPrefs();
+      if (vodPlay.active && loadToken === _vodLoadToken) applyVodTrackPrefs();
     }, 4000);  // some files announce tracks late
+    setTimeout(() => {
+      if (vodPlay.active && loadToken === _vodLoadToken)
+        vodAudioCheck(url, loadToken);
+    }, AUDIO_CHECK_DELAY_MS);
     videoPlayer.play().catch(() => {});
   });
   statusArea.innerText = `▶️ ${vodPlay.title}`;
   updateVodOsd();
   showVodOsd();
 }
+// The loadedmetadata listener of the active VOD load (the resume seek and the
+// track preferences), and a counter that increases for each load. A listener
+// of an old load must not seek the next title or a live channel.
+let _vodOnMeta = null;
+let _vodLoadToken = 0;
+function vodClearLoadListeners() {
+  if (_vodOnMeta) videoPlayer.removeEventListener('loadedmetadata', _vodOnMeta);
+  _vodOnMeta = null;
+}
 function stopVodPlayback(backToDetails) {
   if (!vodPlay.active) return;
   saveVodProgress(true);
   clearVodNext();
-  _scrubPos =
-      null;  // abandon any scrub in progress; no seek/play on the way out
+  vodClearLoadListeners();
+  _vodLoadToken++;
+  flushVodTech();
   _nativeRate = 0;  // the pipeline is being unloaded; nothing to restore
-  if (_isHolding()) _stopHold();
+  _cancelHold();    // no seek and no play on the way out
   _holdKeyDir = null;
   closeVodTracks();
   umsDetach();
@@ -216,8 +238,10 @@ function updateVodOsd(posOverride) {
     updateLiveOsd();
     return;
   }
-  const pos =
-      posOverride !== undefined ? posOverride : (videoPlayer.currentTime || 0);
+  // A step that waits for `seeked` shows its target
+  const pos = posOverride !== undefined ? posOverride :
+      _stepPos !== null                 ? _stepPos :
+                                          (videoPlayer.currentTime || 0);
   const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) ||
       vodPlay.dur || 0;
   document.getElementById('vodOsdTitle').textContent = vodPlay.title || '';
@@ -243,7 +267,10 @@ function updateLiveOsd() {
         `${p.title} · ${formatClock(p.start)} – ${formatClock(p.stop)}`;
     const dur = (isFinite(videoPlayer.duration) && videoPlayer.duration) ||
         catchup.dur || 0;
-    const pos = videoPlayer.currentTime || 0;
+    // A scrub or a step that waits shows its virtual position
+    const pos = _scrubPos !== null ? _scrubPos :
+        _stepPos !== null          ? _stepPos :
+                                     (videoPlayer.currentTime || 0);
     const pct = dur ? Math.min(100, pos / dur * 100) : 0;
     document.getElementById('vodBarFill').style.width = pct + '%';
     document.getElementById('vodBarKnob').style.left = pct + '%';
@@ -287,28 +314,43 @@ function updateLiveOsd() {
             currentFilteredChannels.length}`;
     return;
   }
-  const now = getCurrentProgramme(ch.tvgId), next = getNextProgramme(ch.tvgId);
+  // The clock time of the picture: the virtual position during a scrub or a
+  // step that waits, else the playhead. The bar and the program are for that
+  // time.
+  const nowMs = Date.now();
+  const posMs = _liveScrubWall !== null ? _liveScrubWall :
+      _stepWall !== null                ? _stepWall :
+      liveEngineActive() ? liveWallTimeAt(videoPlayer.currentTime || 0) :
+                           nowMs;
+  const progs = epgProgsOf(ch.tvgId) || [];
+  const pi = _epgBinarySearch(progs, posMs);
+  const now = pi >= 0 && progs[pi].stop > posMs ? progs[pi] : null;
+  const next = progs[pi + 1] || null;
   document.getElementById('vodOsdTitle').textContent =
       `${chDisplayNum(ch, currentChannelIndex)}  ${ch.name}`;
-  const subBits = [ch.group || '', now ? now.title : ''].filter(Boolean);
+  const untimed = now ? null : untimedEventOf(ch);
+  const subBits = [
+    ch.group || '',
+    now         ? now.title :
+        untimed ? untimed.title :
+                  ''
+  ].filter(Boolean);
   document.getElementById('vodOsdSub').textContent = subBits.join(' · ');
   let pct = 0;
   if (now && now.stop > now.start)
     pct = Math.min(
-        100,
-        Math.max(0, (Date.now() - now.start) / (now.stop - now.start) * 100));
+        100, Math.max(0, (posMs - now.start) / (now.stop - now.start) * 100));
   document.getElementById('vodBarFill').style.width = pct + '%';
   document.getElementById('vodBarKnob').style.left = pct + '%';
-  const behind = liveBehindSecs();
-  document.getElementById('vodTimePos').textContent = behind > 5 ?
-      `⏪ −${fmtClock(behind)} behind live` :
+  const posBehind = Math.max(0, (nowMs - posMs) / 1000);
+  document.getElementById('vodTimePos').textContent = posBehind > 5 ?
+      `⏪ −${fmtClock(posBehind)} behind live · ${formatClock(posMs)}` :
       (now ? `${formatClock(now.start)} – ${formatClock(now.stop)}` : 'LIVE');
   document.getElementById('vodTimeRem').textContent = next ?
       `Next: ${next.title} · ${formatClock(next.start)}` :
-      (now ? `${
-                 Math.max(
-                     0, Math.ceil((now.stop - Date.now()) / 60000))} min left` :
+      (now ? `${Math.max(0, Math.ceil((now.stop - posMs) / 60000))} min left` :
              '');
+  const behind = liveBehindSecs();
   const wasBehind = !!document.getElementById('vodOsd').dataset.behind;
   if ((behind > 5) !== wasBehind) {
     document.getElementById('vodOsd').dataset.behind = behind > 5 ? '1' : '';
@@ -359,8 +401,8 @@ function playerButtonsFor() {
         id: 'next',
         label: '⏭ Next episode',
         act: () => {
+          // playNextEpisode reads vodPlay.nextEp and then clears the card.
           vodPlay.nextEp = nextEpisode();
-          clearVodNext();
           playNextEpisode();
         }
       });
@@ -466,8 +508,9 @@ function updatePlayerFocus() {
       (el, i) => el.classList.toggle(
           'focused', player.focus === 'buttons' && i === player.btn));
   const u = activeUms();
-  const on = u ? u.selectedSub >= 0 :
-                 getSubtitleTracks().some(t => t.mode === 'showing');
+  const on = u && u.subTracks.length ?
+      u.selectedSub >= 0 :
+      getSubtitleTracks().some(t => t.mode === 'showing');
   const cc = document.getElementById('vodCcBtn');
   if (cc) cc.classList.toggle('on', on);
 }
@@ -680,8 +723,12 @@ function trackDisplayName(track, i) {
 // the user picked manually)
 function applyVodTrackPrefs() {
   if (!vodPlay.active) return;
+  // The media service and the HTML tracks are 2 different sources. Use the
+  // media service for subtitles and for audio when it has tracks of that type.
   const u = vodPlay.ums;
-  if (u && u.subTracks.length) {
+  const umsSubs = !!(u && u.subTracks.length);
+  const umsAudio = !!(u && u.audioTracks.length);
+  if (umsSubs) {
     if (!vodPlay.subManual) {
       const pref = settings.subLang;
       let chosen = null;
@@ -697,6 +744,8 @@ function applyVodTrackPrefs() {
       }
       umsSelectSubtitle(chosen ? chosen.trackNum : -1);
     }
+  }
+  if (umsAudio) {
     if (u.audioTracks.length > 1 && !vodPlay.audioManual &&
         settings.audioLang !== 'default') {
       const i = u.audioTracks.findIndex(
@@ -704,10 +753,8 @@ function applyVodTrackPrefs() {
               {language: t.language, label: ''}, settings.audioLang));
       if (i >= 0 && i !== u.selectedAudio) umsSelectAudio(i);
     }
-    updateVodTracksHint();
-    return;
   }
-  const subs = getSubtitleTracks();
+  const subs = umsSubs ? [] : getSubtitleTracks();
   if (subs.length && !vodPlay.subManual) {
     const pref = settings.subLang;
     let chosen = null;
@@ -722,7 +769,7 @@ function applyVodTrackPrefs() {
       if (t.mode !== want) t.mode = want;
     });
   }
-  const auds = getAudioTracks();
+  const auds = umsAudio ? [] : getAudioTracks();
   if (auds.length > 1 && !vodPlay.audioManual &&
       settings.audioLang !== 'default') {
     const t = auds.find(a => trackMatchesLang(a, settings.audioLang));
@@ -737,30 +784,35 @@ function updateVodTracksHint() {
   const el = document.getElementById('vodOsdTracks');
   if (!el) return;
   const u = activeUms();
-  if (u && u.subTracks.length) {
+  const umsSubs = !!(u && u.subTracks.length);
+  const umsAudio = !!(u && u.audioTracks.length);
+  const bits = [];
+  let anySubs = umsSubs;
+  if (umsSubs) {
     const on = u.subTracks.find(t => t.trackNum === u.selectedSub);
-    const bits =
-        ['Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off')];
+    bits.push('Subtitles: ' + (on ? umsTrackLabel(on, u.subTracks) : 'Off'));
+  } else {
+    const subs = getSubtitleTracks();
+    const on = subs.find(t => t.mode === 'showing');
+    anySubs = subs.length > 0;
+    if (subs.length)
+      bits.push(
+          'Subtitles: ' +
+          (on ? trackDisplayName(on, subs.indexOf(on)) : 'Off'));
+  }
+  if (umsAudio) {
     if (u.audioTracks.length > 1) {
       const a = u.audioTracks[u.selectedAudio];
       if (a) bits.push('Audio: ' + umsAudioLabel(a, u.selectedAudio));
     }
-    bits.push('Green: audio & subtitles');
-    el.textContent = bits.join(' · ');
-    updatePlayerFocus();
-    return;
+  } else {
+    const auds = getAudioTracks();
+    if (auds.length > 1) {
+      const a = auds.find(t => t.enabled);
+      if (a) bits.push('Audio: ' + trackDisplayName(a, auds.indexOf(a)));
+    }
   }
-  const subs = getSubtitleTracks(), auds = getAudioTracks();
-  const on = subs.find(t => t.mode === 'showing');
-  const bits = [];
-  if (subs.length)
-    bits.push(
-        'Subtitles: ' + (on ? trackDisplayName(on, subs.indexOf(on)) : 'Off'));
-  if (auds.length > 1) {
-    const a = auds.find(t => t.enabled);
-    if (a) bits.push('Audio: ' + trackDisplayName(a, auds.indexOf(a)));
-  }
-  if (!subs.length) bits.push('No subtitle tracks in this file');
+  if (!anySubs) bits.push('No subtitle tracks in this file');
   bits.push('Green: audio & subtitles');
   el.textContent = bits.join(' · ');
   updatePlayerFocus();
@@ -838,8 +890,12 @@ function vodTracksItems() {
     return items;
   }
   const u = activeUms();
+  // The media service and the HTML tracks are independent for each type: the
+  // same rule as applyVodTrackPrefs and updateVodTracksHint
+  let umsAudioDone = false;
   if (u && (u.subTracks.length || u.audioTracks.length > 1)) {
     if (u.audioTracks.length > 1) {
+      umsAudioDone = true;
       items.push({header: 'Audio'});
       u.audioTracks.forEach((t, i) => items.push({
         kind: 'audio',
@@ -848,6 +904,10 @@ function vodTracksItems() {
         on: i === u.selectedAudio
       }));
     }
+  }
+  if (u &&
+      (u.subTracks.length ||
+       (u.audioTracks.length > 1 && !getSubtitleTracks().length))) {
     items.push({header: 'Subtitles'});
     items.push({kind: 'sub', ums: -1, label: 'Off', on: u.selectedSub < 0});
     u.subTracks.forEach(t => items.push({
@@ -872,7 +932,7 @@ function vodTracksItems() {
     }
     return items;
   }
-  const auds = getAudioTracks();
+  const auds = umsAudioDone ? [] : getAudioTracks();
   if (auds.length > 1) {
     items.push({header: 'Audio'});
     auds.forEach((t, i) => items.push({
@@ -1017,10 +1077,45 @@ const CAPTION_TRACK = /^(CC\d|svc\d+)$/;
  * Moves the active cues of a caption track to the bottom center.
  * @param {!TextTrack} track The caption track.
  */
+// True when the previous caption ended a sentence
+let _capSentenceEnd = true;
+/**
+ * Changes a caption in capital letters to sentence case: "THE FIRST DOWN. A
+ * BIG RUN." gives "The first down. A big run." A caption with small letters
+ * does not change. The tags of the cue (<c.white>, <i>) do not change.
+ * @param {string} text The text of the cue.
+ * @return {string}
+ */
+function captionSentenceCase(text) {
+  const plain = String(text).replace(/<[^>]*>/g, '');
+  const letters = plain.replace(/[^A-Za-z]/g, '');
+  if (letters.length >= 3 &&
+      letters.replace(/[^A-Z]/g, '').length / letters.length >= 0.8) {
+    let start = _capSentenceEnd;
+    text = String(text).replace(/(<[^>]*>)|([^<]+)/g, (m, tag, txt) => {
+      if (tag) return tag;
+      let r = '';
+      for (const ch of txt.toLowerCase()) {
+        if (/[a-z]/.test(ch)) {
+          r += start ? ch.toUpperCase() : ch;
+          start = false;
+        } else {
+          r += ch;
+          if (/[.!?>]/.test(ch)) start = true;  // ">>" is a new speaker
+        }
+      }
+      // The word "I" ("I", "I'm", "I'll")
+      return r.replace(/(^|[^a-z'])i(?=$|[^a-z])/g, '$1I');
+    });
+  }
+  _capSentenceEnd = /[.!?]["')\]]*\s*$/.test(plain);
+  return text;
+}
 function fixCaptionCues(track) {
   for (const c of Array.from(track.activeCues || [])) {
     if (c.iptvFixed || typeof c.snapToLines !== 'boolean') continue;
     c.iptvFixed = true;
+    if (settings.capCase !== 'asis') c.text = captionSentenceCase(c.text);
     c.snapToLines = true;
     c.line = 'auto';
     c.position = 'auto';
@@ -1053,7 +1148,7 @@ function applyShakaTrackPrefs() {
                     settings.subLang)) ||
                 null;
       const cur = subs.find(t => t.active) || null;
-      if ((pick && pick.id) !== (cur && cur.id)) p.selectTextTrack(pick);
+      if ((pick && pick.id) !== (cur && cur.id)) shakaSelectText(p, pick);
     }
     if (auds.length > 1 && !liveEngine.audioManual &&
         settings.audioLang !== 'default') {
@@ -1107,7 +1202,7 @@ function activateVodTrack() {
     const p = liveEngine.shaka;
     try {
       if (it.kind === 'sub') {
-        p.selectTextTrack(it.shaka);
+        shakaSelectText(p, it.shaka);
         liveEngine.subManual = true;
       } else {
         p.selectAudioTrack(it.shaka);
@@ -1327,6 +1422,13 @@ function reapplySubtitlePrefs() {
   } else if (liveUms) {
     liveUms.subManual = false;
     applyLiveTrackPrefs(liveUms);
+  } else if (liveEngine.shaka || liveEngine.hls) {
+    // Shaka Player and hls.js have no media service (liveUms is null)
+    liveEngine.subManual = false;
+    if (liveEngine.shaka)
+      applyShakaTrackPrefs();
+    else
+      applyHlsTrackPrefs();
   }
 }
 // Live: same subtitle/audio language preferences as VOD, applied to the live
@@ -1428,17 +1530,31 @@ function umsMeasureFps(u) {
     }
   }, 3000);
 }
+// The media service sends many videoInfo and audioInfo messages. Write the
+// codec lines to localStorage 1 time, 2 s after the last change.
+let _vodTechSaveTimer = null;
+function saveVodTechSoon() {
+  if (_vodTechSaveTimer) clearTimeout(_vodTechSaveTimer);
+  _vodTechSaveTimer = setTimeout(flushVodTech, 2000);
+}
+function flushVodTech() {
+  if (!_vodTechSaveTimer) return;
+  clearTimeout(_vodTechSaveTimer);
+  _vodTechSaveTimer = null;
+  saveJson('iptv_vod_tech', vodTech);
+}
+window.addEventListener('pagehide', flushVodTech);
 function umsTechUpdated(u) {
   const s = umsTechString(u);
   umsMeasureFps(u);
   if (u.kind === 'vod' && vodPlay.ums === u) {
     const el = document.getElementById('vodOsdTech');
     if (el) el.textContent = s;
-    if (s && vodPlay.key) {
+    if (s && vodPlay.key && vodTech[vodPlay.key] !== s) {
       vodTech[vodPlay.key] = s;
       const ks = Object.keys(vodTech);
       if (ks.length > 300) delete vodTech[ks[0]];
-      saveJson('iptv_vod_tech', vodTech);
+      saveVodTechSoon();
     }
   } else if (u.kind === 'live' && liveUms === u) {
     noteCurrentStreamTech();
@@ -1479,22 +1595,36 @@ const CAPTION_COLORS = {
   cyan: '0,255,255',
   green: '0,255,0'
 };
+// The sizes agree with the subtitles of the media service (VOD and the native
+// pipeline). Chromium sets the cue font to 5 % of the video height, and these
+// values are a percentage of that font. The media service uses its own
+// renderer. Measured on the C4 (2026-11-08) with the same text: at "small",
+// the renderer gave a width of 499, and a cue of 80 % was 532 px wide. The
+// other sizes use the ratio of the box heights of the renderer (98, 122, 130,
+// and 146). The renderer values are screen pixels: the user compared the
+// values for a 1280x720 plane (113 to 168 %) on the TV, and the live text was
+// too large.
 const CAPTION_SIZES = {
-  small: 80,
-  medium: 100,
-  large: 125,
-  extraLarge: 150
+  small: 75,
+  medium: 94,
+  large: 100,
+  extraLarge: 112
 };
 const CAPTION_BGS = {
   none: 'transparent',
   translucent: 'rgba(0,0,0,0.5)',
   solid: '#000'
 };
+// Hard edges with no blur, like the subtitle renderer of the TV (uniform,
+// right_drop_shadow, raised)
 const CAPTION_EDGES = {
   none: 'none',
-  outline: '-2px -2px 0 #000, 2px -2px 0 #000, -2px 2px 0 #000, 2px 2px 0 #000',
-  shadow: '3px 3px 4px #000',
-  raised: '-1px -1px 0 rgba(255,255,255,0.6), 2px 2px 0 #000'
+  // The uniform edge of the renderer is approximately 1 px (photo of the user,
+  // 2026-11-09). An edge of 2 px made the letters touch.
+  outline: '-1px 0 0 #000, 1px 0 0 #000, 0 -1px 0 #000, 0 1px 0 #000, ' +
+      '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000',
+  shadow: '2px 2px 0 #000, 3px 3px 0 rgba(0,0,0,0.6)',
+  raised: '-1px -1px 0 rgba(255,255,255,0.45), 1px 1px 0 #000, 2px 2px 0 #000'
 };
 /**
  * Gives the CSS rule for the cues of a <track> from the subtitle settings.
@@ -1703,4 +1833,257 @@ function onVodError() {
   stopVodPlayback(true);
   showEPGToast(`${title}: ${msg}`, 'error', 'Playback Error');
   hideEPGToast(7000);
+}
+
+// ── Audio data check (MKV and WebM) ─────────────────────────────
+// Some provider files have audio tracks with almost no data. Measured
+// 2026-11-09: 3 audio packets and 720 video packets in 30 s, and no sound on
+// the TV. The media service and the TV log gave the same messages as for a
+// correct file. Thus, the app reads the track list and a part of the file
+// with range requests, and counts the blocks of each track. On the C4, the
+// provider accepted the range requests while the episode played.
+const AUDIO_CHECK_DELAY_MS = 8000;  // after the start, not to slow the load
+const AUDIO_CHECK_HEAD_BYTES = 256 * 1024;
+const AUDIO_CHECK_PART_BYTES = 3 * 1024 * 1024;
+const AUDIO_CHECK_PART_AT = 0.4;   // position of the part in the file
+const AUDIO_CHECK_MIN_VIDEO = 24;  // video blocks for a usable result
+const _EBML_SEGMENT = 0x18538067, _EBML_TRACKS = 0x1654AE6B,
+      _EBML_CLUSTER = 0x1F43B675;
+const _audioCheckResults = new Map();  // url -> 'ok' | 'none' | null
+
+/**
+ * Reads an EBML variable-length integer.
+ * @param {!Uint8Array} b The bytes.
+ * @param {number} p The position of the first byte.
+ * @param {boolean} isId True for an element ID (the length marker stays).
+ * @return {?{v: number, n: number}} The value (-1 for an unknown size) and
+ *     the number of bytes, or null if the bytes stop or are not valid.
+ */
+function ebmlVint(b, p, isId) {
+  if (p >= b.length) return null;
+  const first = b[p];
+  let n = 1;
+  while (n <= 8 && !(first & (0x80 >> (n - 1)))) n++;
+  if (n > 8 || p + n > b.length) return null;
+  let v = isId ? first : first & (0xFF >> n);
+  let allOnes = v === (0xFF >> n);
+  for (let i = 1; i < n; i++) {
+    v = v * 256 + b[p + i];
+    if (b[p + i] !== 0xFF) allOnes = false;
+  }
+  return {v: !isId && allOnes ? -1 : v, n};
+}
+
+/**
+ * Reads 1 element header (the ID and the size).
+ * @param {!Uint8Array} b The bytes.
+ * @param {number} p The position of the element.
+ * @return {?{id: number, size: number, data: number}} The ID, the size of
+ *     the data (-1 if unknown), and the position of the data.
+ */
+function ebmlElement(b, p) {
+  const id = ebmlVint(b, p, true);
+  if (!id) return null;
+  const size = ebmlVint(b, p + id.n, false);
+  if (!size) return null;
+  return {id: id.v, size: size.v, data: p + id.n + size.n};
+}
+
+/**
+ * Finds the tracks in the start of a Matroska file.
+ * @param {!Uint8Array} b The first bytes of the file.
+ * @return {?Map<number, number>} Track number -> track type (1 video,
+ *     2 audio, 17 subtitles), or null if the track list is not in the bytes.
+ */
+function mkvTracks(b) {
+  const hdr = ebmlElement(b, 0);
+  if (!hdr || hdr.id !== 0x1A45DFA3 || hdr.size < 0) return null;
+  const seg = ebmlElement(b, hdr.data + hdr.size);
+  if (!seg || seg.id !== _EBML_SEGMENT) return null;
+  let p = seg.data;
+  while (p < b.length) {
+    const e = ebmlElement(b, p);
+    if (!e || e.size < 0 || e.id === _EBML_CLUSTER) return null;
+    if (e.id === _EBML_TRACKS) {
+      if (e.data + e.size > b.length) return null;
+      const tracks = new Map();
+      for (let q = e.data; q < e.data + e.size;) {
+        const t = ebmlElement(b, q);
+        if (!t || t.size < 0) return null;
+        if (t.id === 0xAE) {  // TrackEntry
+          let num = 0, type = 0;
+          for (let r = t.data; r < t.data + t.size;) {
+            const f = ebmlElement(b, r);
+            if (!f || f.size < 0) return null;
+            if (f.id === 0xD7 || f.id === 0x83) {
+              let v = 0;
+              for (let i = 0; i < f.size; i++) v = v * 256 + b[f.data + i];
+              if (f.id === 0xD7)
+                num = v;
+              else
+                type = v;
+            }
+            r = f.data + f.size;
+          }
+          if (num) tracks.set(num, type);
+        }
+        q = t.data + t.size;
+      }
+      return tracks;
+    }
+    p = e.data + e.size;
+  }
+  return null;
+}
+
+/**
+ * Counts the blocks of each track in the clusters of a part of a Matroska
+ * file. The part can start and stop in the middle of a cluster.
+ * @param {!Uint8Array} b The bytes of the part.
+ * @return {!Map<number, number>} Track number -> number of blocks.
+ */
+function mkvBlockCounts(b) {
+  const counts = new Map();
+  const add = p => {
+    const t = ebmlVint(b, p, false);
+    if (t) counts.set(t.v, (counts.get(t.v) || 0) + 1);
+  };
+  let p = 0;
+  while (p + 4 < b.length) {
+    // The next cluster: its ID, then a Timestamp element as first child. A
+    // match in the data of a block does not have that.
+    if (b[p] !== 0x1F || b[p + 1] !== 0x43 || b[p + 2] !== 0xB6 ||
+        b[p + 3] !== 0x75) {
+      p++;
+      continue;
+    }
+    const c = ebmlElement(b, p);
+    if (!c || b[c.data] !== 0xE7) {
+      p++;
+      continue;
+    }
+    const end = c.size < 0 ? b.length : Math.min(b.length, c.data + c.size);
+    for (let q = c.data; q < end;) {
+      const e = ebmlElement(b, q);
+      if (!e || e.size < 0) break;
+      if (e.id === 0xA3) {  // SimpleBlock
+        add(e.data);
+      } else if (e.id === 0xA0) {  // BlockGroup
+        const ge = Math.min(b.length, e.data + e.size);
+        for (let r = e.data; r < ge;) {
+          const g = ebmlElement(b, r);
+          if (!g || g.size < 0) break;
+          if (g.id === 0xA1) add(g.data);  // Block
+          r = g.data + g.size;
+        }
+      }
+      q = e.data + e.size;
+    }
+    p = c.size < 0 ? b.length : c.data + c.size;
+  }
+  return counts;
+}
+
+/**
+ * Gives the result of the block counts.
+ * @param {!Map<number, number>} tracks Track number -> track type.
+ * @param {!Map<number, number>} counts Track number -> number of blocks.
+ * @return {?string} 'none' if the audio tracks have almost no blocks, 'ok',
+ *     or null if the part has too few video blocks or the file has no audio
+ *     track.
+ */
+function audioDataVerdict(tracks, counts) {
+  let video = 0, audio = -1;
+  tracks.forEach((type, num) => {
+    const n = counts.get(num) || 0;
+    if (type === 1) video += n;
+    if (type === 2) audio = Math.max(audio, n);
+  });
+  if (audio < 0 || video < AUDIO_CHECK_MIN_VIDEO) return null;
+  // A correct file has more audio blocks than video blocks (AAC at 48 kHz:
+  // 47 each second), or a quarter with lacing.
+  return audio * 20 < video ? 'none' : 'ok';
+}
+
+/**
+ * Reads a range of a file.
+ * @param {string} url The file.
+ * @param {number} start The first byte.
+ * @param {number} end The last byte.
+ * @return {!Promise<?{bytes: !Uint8Array, total: number}>} The bytes and the
+ *     size of the file, or null if the server does not send a range.
+ */
+async function fetchRange(url, start, end) {
+  const ctl = new AbortController();
+  const res = await fetch(
+      url, {headers: {Range: `bytes=${start}-${end}`}, signal: ctl.signal});
+  // Only the requested range: never the full file, and never more bytes than
+  // requested (a TV has little memory)
+  const m = /^bytes\s+(\d+)-(\d+)\/(\d+)\s*$/.exec(
+      res.headers.get('Content-Range') || '');
+  if (res.status !== 206 || !m || Number(m[1]) !== start ||
+      Number(m[2]) > end || !res.body) {
+    ctl.abort();
+    return null;
+  }
+  const max = end - start + 1;
+  const bytes = new Uint8Array(max);
+  const reader = res.body.getReader();
+  let n = 0;
+  for (;;) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    if (n + value.length > max) {
+      ctl.abort();
+      return null;
+    }
+    bytes.set(value, n);
+    n += value.length;
+  }
+  return {bytes: bytes.subarray(0, n), total: Number(m[3])};
+}
+
+/**
+ * Examines the audio data of a Matroska or WebM file.
+ * @param {string} url The file.
+ * @return {!Promise<?string>} 'none', 'ok', or null (no result).
+ */
+async function audioDataOf(url) {
+  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1);
+  if (!head || !head.total) return null;
+  const tracks = mkvTracks(head.bytes);
+  if (!tracks) return null;
+  const start = Math.floor(head.total * AUDIO_CHECK_PART_AT);
+  const end = Math.min(head.total - 1, start + AUDIO_CHECK_PART_BYTES - 1);
+  const part = await fetchRange(url, start, end);
+  if (!part) return null;
+  return audioDataVerdict(tracks, mkvBlockCounts(part.bytes));
+}
+
+/**
+ * Shows a message when the playing file has no audio data. The result of
+ * each URL is kept for the session.
+ * @param {string} url The file that plays.
+ * @param {number} token The load token of the title.
+ */
+async function vodAudioCheck(url, token) {
+  if (!/\.(mkv|webm)$/i.test(url.split('?')[0])) return;
+  let r = _audioCheckResults.get(url);
+  if (r === undefined) {
+    try {
+      r = await audioDataOf(url);
+    } catch (_) {
+      r = null;
+    }
+    _audioCheckResults.set(url, r);
+  }
+  if (!vodPlay.active || token !== _vodLoadToken) return;
+  vodPlay.noAudio = r === 'none';
+  if (!vodPlay.noAudio) return;
+  diagLog(`No audio data in the file: ${vodPlay.title}`);
+  showEPGToast(
+      'The audio tracks of this file have no sound data. ' +
+          'The provider sent the video without sound.',
+      'error', 'No audio');
+  hideEPGToast(10000);
 }

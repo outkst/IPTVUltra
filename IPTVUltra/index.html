@@ -231,6 +231,20 @@
           </div>
         </div>
       </div>
+      <div id="ssOverlay" class="settings-overlay hidden">
+        <div
+          class="settings-card ss-card"
+          role="dialog"
+          aria-label="Saved search"
+        >
+          <div id="ssTitle" class="settings-title">Saved search</div>
+          <div id="ssList" class="settings-list"></div>
+          <div id="ssSummary" class="ss-summary"></div>
+          <div class="settings-footer">
+            <span id="ssHint" class="settings-hint"></span>
+          </div>
+        </div>
+      </div>
       <div id="vodSortOverlay" class="settings-overlay hidden">
         <div class="settings-card" role="dialog" aria-label="Sort and filter">
           <div class="settings-title">⇅ Sort &amp; genre</div>
@@ -312,7 +326,7 @@
               </button>
             </div>
             <div class="groups-header">
-              <span>📁 Groups</span
+              <span>Groups</span
               ><button id="toggleGroupsBtn" class="toggle-groups-btn">
                 ◀ Hide
               </button>
@@ -551,6 +565,7 @@
     <script src="js/channel-features.js"></script>
     <script src="js/playlist-data.js"></script>
     <script src="js/channel-list.js"></script>
+    <script src="js/saved-searches.js"></script>
     <script src="js/playback.js"></script>
     <script src="js/epg-guide.js"></script>
     <script src="js/start-page.js"></script>

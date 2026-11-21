@@ -87,10 +87,12 @@ const DEFAULT_SETTINGS = {
   subOpacity: 85,
   subBg: 'translucent',
   subEdge: 'outline',
+  capCase: 'sentence',
   subAuto: false,
   liveBuffer: 5,
   liveEngine: 'shaka',
   autoNext: true,
+  bestVersion: true,
   ppvEvents: 'hide',
   schema: 5
 };
@@ -127,6 +129,30 @@ const SUB_SIZE_OPTIONS = [
 // restart can still be read; entries from earlier runs are flagged `prev`.
 const DIAG_MAX = 50;
 const DIAG_STORE_KEY = 'iptv_diag_log';
+
+/**
+ * Removes the credentials from a URL, a playlist key, or a favorite id, for the
+ * Diagnostics overlay and the log. The function replaces the user name and the
+ * password in the query, in the user info, and in the path of an Xtream
+ * stream (`/live/<user>/<pass>/` and `/<user>/<pass>/<id>`) with `***`.
+ * @param {*} s The text.
+ * @return {string} The text with no credentials.
+ */
+function redactCredentials(s) {
+  return String(s == null ? '' : s)
+      .replace(
+          /([?&](?:username|password|user|pass|pwd|token)=)[^&#\s]*/gi, '$1***')
+      .replace(/(\/\/)[^/@\s]+@/g, '$1***@')
+      .replace(
+          /\/(live|movie|series|timeshift)\/[^/\s]+\/[^/\s]+\//gi,
+          '/$1/***/***/')
+      .replace(
+          /(\/\/[^/\s]+)\/[^/\s*]+\/[^/\s*]+\/(\d+(?:\.\w+)?)(?=$|[?#\s])/g,
+          '$1/***/***/$2')
+      .replace(
+          /(\/\/[^/\s]+\/(?:playlist|get)\/)[^/\s]+\/[^/\s]+\//gi, '$1***/***/')
+      .replace(/^(x:[^|]*\|).+$/, '$1***');
+}
 const _diagLog = (() => {
   try {
     const a = JSON.parse(localStorage.getItem(DIAG_STORE_KEY) || '[]');
@@ -152,7 +178,7 @@ function diagSave() {
   }
 }
 function diagLog(msg) {
-  _diagLog.push({t: Date.now(), msg: String(msg).slice(0, 300)});
+  _diagLog.push({t: Date.now(), msg: redactCredentials(msg).slice(0, 300)});
   if (_diagLog.length > DIAG_MAX) _diagLog.shift();
   if (!_diagSaveTimer) _diagSaveTimer = setTimeout(diagSave, 2000);
 }
@@ -226,6 +252,10 @@ const SUB_EDGE_OPTIONS = [
   {v: 'none', label: 'None'}, {v: 'outline', label: 'Outline'},
   {v: 'shadow', label: 'Shadow'}, {v: 'raised', label: 'Raised'}
 ];
+// Broadcast captions (CEA-608) are often all capital letters
+const CAPTION_CASE_OPTIONS = [
+  {v: 'sentence', label: 'Sentence case'}, {v: 'asis', label: 'As broadcast'}
+];
 const SUB_EDGE_UMS = {
   none: 'none',
   outline: 'uniform',
@@ -260,6 +290,21 @@ function saveJson(key, v) {
   } catch (_) { /* storage unavailable */
   }
 }
+
+/**
+ * Writes a string to localStorage. A full storage does not stop the caller.
+ * @param {string} key The key.
+ * @param {string} value The value.
+ * @return {boolean} True if the write was a success.
+ */
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 function loadSettings() {
   let st = {};
   try {
@@ -280,7 +325,8 @@ function loadSettings() {
     out.audioLang = DEFAULT_SETTINGS.audioLang;
   for (const [k, opts] of [
            ['subSize', SUB_SIZE_OPTIONS], ['subColor', SUB_COLOR_OPTIONS],
-           ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS]])
+           ['subBg', SUB_BG_OPTIONS], ['subEdge', SUB_EDGE_OPTIONS],
+           ['capCase', CAPTION_CASE_OPTIONS]])
     if (!opts.some(o => o.v === out[k])) out[k] = DEFAULT_SETTINGS[k];
   if (!(st.schema >= 3)) {
     out.subAuto = false;
@@ -314,6 +360,7 @@ function loadSettings() {
     out.schema = 5;
   }
   out.autoNext = st.autoNext === undefined ? true : !!st.autoNext;
+  out.bestVersion = st.bestVersion === undefined ? true : !!st.bestVersion;
   out.avSync = Number.isInteger(st.avSync) && st.avSync >= AV_SYNC_MIN &&
           st.avSync <= AV_SYNC_MAX ?
       st.avSync :
@@ -549,6 +596,7 @@ function epgOffsetChange() {
     }
   }
   _epgSkeletonWinStart = 0;
+  _xmltvMerged.clear();  // its cut point uses the old times
   if (!currentPlaylistType) return;
   refreshCurrentView();
   updateNowNext();
@@ -566,7 +614,8 @@ const vodByCat = new Map(),
       seriesByCat = new Map();        // category id -> items (session cache)
 let vodAll = null, seriesAll = null;  // full catalogs once fetched
 let vodRecent = null, seriesRecent = null;  // newest 60 of the full catalog
-let _vodAllLoading = null;  // { mode, p } while a full fetch is in flight
+let _vodAllLoading = {};  // mode → promise while a full fetch is in flight
+let _vodListOpens = 0;    // counts the calls of openVodList
 const vodInfoCache = new Map(), seriesInfoCache = new Map();
 let vodFavs = loadJson(
     'iptv_vod_favorites',
@@ -614,6 +663,7 @@ const vodPlay = {
   nextEp: null,
   nextFocus: 'play',
   ended: false,
+  noAudio: false,  // the file has audio tracks with no data (vodAudioCheck)
   subManual: false,
   audioManual: false,
   tracksFocus: 0,

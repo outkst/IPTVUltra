@@ -120,16 +120,18 @@ function epgMoveCursor(dir) {
   const t = epgCursorTime();
   if (!progs.length) {
     scrollEPGTimeBy(dir * 30);
+    // Keep the cursor in the guide window.
     epgFocusT = t + dir * 1800000;
+    if (_epgWinStart)
+      epgFocusT = Math.max(_epgWinStart, Math.min(_epgWinEnd - 1, epgFocusT));
     if (ch && dir < 0) epgMaybeFetchHistory(ch);
     return;
   }
-  let i = _epgBinarySearch(progs, t);
-  if (i >= 0 && progs[i].stop <= t)
-    i = Math.min(
-        progs.length - 1,
-        i + (dir > 0 ? 0 : 1));  // cursor in a gap: nearest side
-  let j = i + dir;
+  // If the cursor is between 2 programs (or before the first program), the
+  // next program is i + 1 and the previous program is i.
+  const i = _epgBinarySearch(progs, t);
+  const inGap = i < 0 || progs[i].stop <= t;
+  const j = inGap ? (dir > 0 ? i + 1 : i) : i + dir;
   if (j < 0) {
     // Earlier than anything loaded: the archive may hold more; fetch the full
     // table and nudge the view back
@@ -160,7 +162,7 @@ function epgMaybeFetchHistory(ch) {
     return;
   const row = epgRenderedRows.get(epgFocusedRowIdx);
   if (row) row.classList.add('epg-row-loading-past');
-  fetchXtreamEpgFull(ch.tvgId);
+  fetchXtreamEpgFull(ch.tvgId, ch.streamId);
 }
 
 function scrollEPGRowIntoView(idx) {
@@ -212,7 +214,9 @@ function toggleEPGFav(id) {
       el.classList.toggle('fav-active', isFav);
     }
   });
-  if (!epgMode) renderChannelList();
+  // In the Favorites group, the list changes. CLAUDE.md tells you to use
+  // refreshCurrentView. refreshEPGRows keeps the row of the cursor.
+  if (!epgMode || currentGroup === 'favorites') refreshCurrentView();
 }
 
 function selectEPGFocusedChannel() {
@@ -226,7 +230,7 @@ function selectEPGFocusedChannel() {
     startCatchup(idx, p);
     return;
   }
-  if (idx === currentChannelIndex) {
+  if (isPlayingIdx(idx)) {
     toggleLivePlayer();
     return;
   }
@@ -245,6 +249,15 @@ function handleRemoteNav(e) {
         right = k === 'ArrowRight' || kc === 39;
   const enter = k === 'Enter' || kc === 13;
 
+  // An auto-repeat of OK or of a colour key does nothing. Else a hold acts
+  // again each 100 ms: the Versions menu that a long press opens takes the next
+  // repeat as OK, a toggle in Settings flips, and Red changes the channel again
+  // and again. The player and the guide and list rows act on the release.
+  if (e.repeat && (enter || (kc >= 403 && kc <= 406))) {
+    e.preventDefault();
+    return;
+  }
+
   // The confirm dialog owns the remote while it is open
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
     if (left || up) {
@@ -262,6 +275,10 @@ function handleRemoteNav(e) {
 
   // Diagnostics / Sort menu / Categories manager / Settings overlay own the
   // remote while open
+  if (ssOpen) {
+    handleSavedSearchKey(e);
+    return;
+  }
   if (versionsOpen) {
     handleVersionsKey(e);
     return;
@@ -351,8 +368,9 @@ function handleRemoteNav(e) {
       updateEPGRowFocus();
     } else if (down) {
       e.preventDefault();
-      epgFocusedRowIdx =
-          Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1);
+      epgFocusedRowIdx = Math.max(
+          0,
+          Math.min(currentFilteredChannels.length - 1, epgFocusedRowIdx + 1));
       updateEPGRowFocus();
     } else if (left) {
       e.preventDefault();
@@ -415,7 +433,7 @@ function handleRemoteNav(e) {
         if (!ch) return;
         const idx = getChannelIndex(ch);
         rowOkPress(e, idx, () => {
-          if (idx === currentChannelIndex)
+          if (isPlayingIdx(idx))
             toggleLivePlayer();  // OK on the playing row opens the player
           else
             selectChannel(idx);

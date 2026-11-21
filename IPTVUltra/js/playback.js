@@ -3,6 +3,9 @@
  */
 
 // ----- Stall Watchdog -----
+// A frozen picture (the playhead does not move, readyState 3 or 4) gets this
+// number of times the checks of a stall before a reload.
+const STALL_FROZEN_FACTOR = 2;
 function startStallWatchdog() {
   stopStallWatchdog();
   stallLastTime = -1;
@@ -15,7 +18,14 @@ function startStallWatchdog() {
     // own timeouts stop a dead server. A placeholder (black.ts) stops at its
     // end, and a reload cannot make the event start.
     // A channel that waits for the load of hls.js has no source.
-    if (videoPlayer.paused || currentChannelIndex < 0 || liveEngine.hlsWait ||
+    // A live stream that ended (the provider closed a .ts stream) is a stall:
+    // the element is paused at `ended`. Only an Xtream live .ts URL: an M3U
+    // file and a placeholder (black.ts with ENDLIST) also end.
+    const liveEnded = videoPlayer.ended && vodMode === 'live' && !catchup &&
+        !vodPlay.active &&
+        (_RE_LIVE_TS.test(videoPlayer.currentSrc || '') || _srcNoEnd);
+    if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
+        liveEngine.hlsWait ||
         (liveEngineActive() &&
          (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;
@@ -33,18 +43,22 @@ function startStallWatchdog() {
     // the element then keeps readyState 4 (seen on the C4, 2026-10-26)
     const waits = videoPlayer.readyState < 3 ||
         (!!liveEngine.shaka && liveEngine.shaka.isBuffering());
-    if (t === stallLastTime && waits) {
+    // A playhead that does not move with data (readyState 3 or 4) is a frozen
+    // picture. It is not good playback, but it gets more time than a stall.
+    const limit = waits ? STALL_THRESHOLD_CHECKS :
+                          STALL_FROZEN_FACTOR * STALL_THRESHOLD_CHECKS;
+    if (t === stallLastTime) {
       stallCount++;
       _stallGoodChecks = 0;
-      if (stallCount >= STALL_THRESHOLD_CHECKS && bufEnd - t < 2 &&
+      if (stallCount >= limit && bufEnd - t < 2 && !liveEnded &&
           Date.now() - _stallBufAt < STALL_ALIVE_MS) {
-        stallCount = STALL_THRESHOLD_CHECKS - 1;  // slow, not dead: wait
-      } else if (stallCount >= STALL_THRESHOLD_CHECKS) {
+        stallCount = limit - 1;  // slow, not dead: wait
+      } else if (stallCount >= limit) {
         stallCount = 0;
         stallLastTime = -1;
         noteStreamFail(
             liveEngineName(),
-            `No progress for ${STALL_THRESHOLD_CHECKS * 2} s (readyState ${
+            `No progress for ${limit * 2} s (readyState ${
                 videoPlayer.readyState}, t=${t.toFixed(1)} s)`,
             '');
         if (_reloadAttempts >= MAX_AUTO_RELOADS) {
@@ -150,7 +164,7 @@ function exitLivePlayer() {
   if (!livePlayer.active) return;
   closeVodTracks();
   hideVodOsd();
-  if (_isHolding()) _stopHold();
+  _cancelHold();
   _holdKeyDir = null;
   livePlayer.active = false;
   document.getElementById('vodPlayer').classList.add('hidden');
@@ -161,13 +175,13 @@ function exitLivePlayer() {
   // it
   if (currentChannelIndex >= 0) {
     if (epgMode) {
-      const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+      const fi = playingListIndex(currentFilteredChannels);
       if (fi >= 0) {
         epgFocusedRowIdx = fi;
         updateEPGRowFocus();
       }
     } else {
-      const fi = currentFilteredChannels.indexOf(channels[currentChannelIndex]);
+      const fi = playingListIndex(currentFilteredChannels);
       if (fi >= 0) {
         stdFocusIdx = fi;
         stdFocusZone = 'channels';
@@ -187,28 +201,125 @@ function toggleLivePause() {
 }
 
 // ----- Video Control -----
+// Saves the channel that you selected and the previous channel in the playlist
+// data: the next start selects the best version again, the cursor finds the
+// row, and the previous channel (long press of OK, Red) stays.
+function noteSelectedChannel() {
+  if (!_activePlaylistKey || currentChannelIndex < 0) return;
+  const ps = getPlaylistState(_activePlaylistKey);
+  const sel = channels[_bestFrom] || channels[currentChannelIndex];
+  if (!sel) return;
+  ps.lastChannel = {url: sel.url, tvgId: sel.tvgId || ''};
+  const prev = channels[lastChannelIndex];
+  if (prev) ps.prevChannel = {url: prev.url, tvgId: prev.tvgId || ''};
+  savePlaylistState();
+}
+// True while the live stream plays with no error: a selection of the channel
+// that plays does not need to load it again
+function playingStreamHealthy() {
+  return currentChannelIndex >= 0 && !catchup && !vodPlay.active &&
+      vodMode === 'live' && !!stallWatchdogTimer && !_errRetryTimer &&
+      !videoPlayer.error && !videoPlayer.ended;
+}
+// The previous channel is never the channel that plays. If a change made it
+// that channel, the value from before the change comes back (or -1).
+// True when the source had no end (duration Infinity) at its metadata: a live
+// stream. An M3U file and a placeholder playlist have a duration.
+let _srcNoEnd = false;
+videoPlayer.addEventListener('loadedmetadata', () => {
+  _srcNoEnd = !Number.isFinite(videoPlayer.duration);
+});
+videoPlayer.addEventListener('emptied', () => {
+  _srcNoEnd = false;
+});
+// An Xtream live stream as 1 continuous MPEG-TS stream
+const _RE_LIVE_TS = /\/live\/[^/]+\/[^/]+\/\d+\.ts(\?|$)/;
+function keepPreviousChannel(prevLast) {
+  if (!isPlayingIdx(lastChannelIndex)) return;
+  lastChannelIndex =
+      prevLast >= 0 && channels[prevLast] && !isPlayingIdx(prevLast) ?
+      prevLast :
+      -1;
+}
 function selectChannel(index) {
   if (!channels[index]) return;
+  // A selection of a channel plays its best measured version (Settings, "Best
+  // version automatically"). A retry of the selection (`_bestFrom`) gets the
+  // best version again, or the selected channel if that version failed.
+  const picked = index, prevLast = lastChannelIndex;
+  let better = -1;
+  // Also the end of a catch-up of a different channel (`_returningLive`)
+  // A selection during a catch-up goes back to live, also on the same row.
+  if (!_selectingAlt && !_selectingExact &&
+      (index !== currentChannelIndex || index === _bestFrom || _returningLive ||
+       catchup)) {
+    better = bestVersionOf(index);
+    if (better >= 0) index = better;
+  }
+  // The selection plays already (a different row of the same stream): no
+  // reload. The provider counts the previous connection for approximately 15 s.
+  // Also the row of the version that plays, when a different row selected it.
+  // Only when the stream plays: a stream with an error loads again.
+  const userPick = !_selectingAlt && !_selectingExact && !_returningLive;
+  if (userPick && index === currentChannelIndex &&
+      (better >= 0 || _bestFrom >= 0) && playingStreamHealthy()) {
+    surfCancel();
+    // A different channel row that plays the same stream: the previous
+    // selection becomes the previous channel
+    if (!isPlayingIdx(picked) && picked !== _altOrigin && _altOrigin >= 0 &&
+        channels[_altOrigin])
+      lastChannelIndex = _altOrigin;
+    _bestFrom = better >= 0 ? picked : -1;
+    _bestIdx = better >= 0 ? index : -1;
+    _altOrigin = picked;
+    _altTried = new Set([index]);
+    noteRecentChannel(channels[picked]);
+    keepPreviousChannel(prevLast);
+    noteSelectedChannel();
+    markPlayingRows();
+    if (livePlayer.active) showVodOsd();
+    return;
+  }
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
+  _cancelHold();   // a seek of the previous channel must not go to this one
   catchup = null;  // any channel selection returns to live
   surfCancel();
   if (_selectingAlt) {
     // fallback to another source of the same channel: not a channel change for
-    // history purposes
+    // history purposes. The selected channel stays the selected row.
+    _bestFrom =
+        _altOrigin >= 0 && _altOrigin !== index && channels[_altOrigin] ?
+        _altOrigin :
+        -1;
+  } else if (_keepSelection) {
+    // The version that plays loads again (the return from Movies or Series,
+    // the end of a catch-up): the caller set the selection
+    _altTried = new Set([index]);
   } else {
-    if (currentChannelIndex >= 0 && currentChannelIndex !== index)
+    // A retry of the selection, a version of it from the Versions menu, or the
+    // end of a catch-up is not a channel change
+    const sameSel = _returningLive || isPlayingIdx(picked) ||
+        picked === _altOrigin ||
+        (_selectingExact && _altOrigin >= 0 &&
+         versionsOf(_altOrigin).includes(picked));
+    if (!sameSel && currentChannelIndex >= 0)
       lastChannelIndex = _altOrigin >= 0 && channels[_altOrigin] ?
           _altOrigin :
           currentChannelIndex;
-    _altOrigin = index;
+    _bestFrom = better >= 0 ? picked : -1;
+    _bestIdx = better >= 0 ? index : -1;
+    _altOrigin = picked;
     _altTried = new Set([index]);
-    noteRecentChannel(channels[index]);
+    if (!_returningLive) noteRecentChannel(channels[picked]);
   }
   const cause = _selectingAlt       ? 'alternative source' :
       currentChannelIndex === index ? 'same channel again' :
                                       '';
+  const prevPlaying =
+      currentChannelIndex >= 0 ? channels[currentChannelIndex] : null;
   currentChannelIndex = index;
+  keepPreviousChannel(prevLast);
   _reloadAttempts = 0;
   if (_errRetryTimer) {
     clearTimeout(_errRetryTimer);
@@ -227,28 +338,38 @@ function selectChannel(index) {
   channelInfoTag.innerText = `📺 ${ch.name}`;
   channelInfoTag.style.visibility = '';
   statusArea.innerText = `▶️ ${ch.name}`;
-  if (_activePlaylistKey) {
-    getPlaylistState(_activePlaylistKey).lastChannel = {
-      url: ch.url,
-      tvgId: ch.tvgId || ''
-    };
-    savePlaylistState();
+  noteSelectedChannel();
+  if (better >= 0) {
+    const t = streamTechOf(ch, index);
+    showEPGToast(
+        `${ch.name}${t ? ' · ' + streamTechLabel(t) : ''}`, 'success',
+        'Best version');
+    hideEPGToast(3000);
   }
   if (epgMode) {
     // Don't rebuild the EPG grid — just update active row highlighting in-place
-    for (const [, el] of epgRenderedRows) el.classList.remove('active');
-    const filteredIdx = currentFilteredChannels.indexOf(ch);
-    if (filteredIdx >= 0 && epgRenderedRows.has(filteredIdx))
-      epgRenderedRows.get(filteredIdx).classList.add('active');
+    markPlayingRows();
+    const filteredIdx = playingListIndex(currentFilteredChannels);
+    // The cursor goes to the channel that plays. Thus, Up and Down start from
+    // that row also after a pointer click or a long press of OK. An
+    // alternative source after a failure moves the cursor only if the cursor
+    // was on the row that played: you can scroll the guide during a failure.
+    const followAlt = !_selectingAlt ||
+        (prevPlaying &&
+         currentFilteredChannels[epgFocusedRowIdx] === prevPlaying);
+    if (filteredIdx >= 0 && filteredIdx !== epgFocusedRowIdx && followAlt) {
+      epgFocusedRowIdx = filteredIdx;
+      epgFocusT = 0;
+      updateEPGRowFocus();
+    }
     updateEPGInfoPanel(ch);
   } else {
     // Update the active row in place — no list rebuild
-    for (const [, el] of renderedItems) el.classList.remove('active');
-    const fi = currentFilteredChannels.indexOf(ch);
+    markPlayingRows();
+    const fi = playingListIndex(currentFilteredChannels);
     if (fi >= 0) {
       stdFocusIdx = fi;
       stdFocusZone = 'channels';
-      if (renderedItems.has(fi)) renderedItems.get(fi).classList.add('active');
     }
     updateStdChannelFocus();
     updateStdGroupFocus(false);
@@ -472,13 +593,22 @@ function reloadStream(auto, cause) {
   if (currentChannelIndex < 0) return;
   if (vodPlay.active || vodMode !== 'live')
     return;  // live reloads pause while in Movies/Series
+  // A waiting error retry does not load the stream a second time
+  if (_errRetryTimer) {
+    clearTimeout(_errRetryTimer);
+    _errRetryTimer = null;
+  }
+  _clearSteps();
   const isAuto = auto === true;
   if (!isAuto)
     _reloadAttempts = 0;  // a manual reload restores the auto-reload budget
   stopStallWatchdog();
-  const url = catchup && catchup.chIdx === currentChannelIndex ?
-      catchup.url :
-      channels[currentChannelIndex].url;
+  const c = catchup && catchup.chIdx === currentChannelIndex ? catchup : null;
+  // A catch-up continues from the position in the program. Before the
+  // metadata of the stream, the position is not known: keep the last value.
+  if (c && videoPlayer.readyState >= 1 && videoPlayer.currentTime > 0)
+    c.seekTo = videoPlayer.currentTime;
+  const url = c ? c.url : channels[currentChannelIndex].url;
   const wasPlaying = !videoPlayer.paused;
   videoPlayer.pause();
   umsNoteCurrentId();
@@ -490,6 +620,8 @@ function reloadStream(auto, cause) {
     liveUms = null;
   } else
     liveUmsRefresh();
+  // Shaka Player gets the position with its load (loadShakaSource)
+  if (c && !liveEngine.shaka) catchupSeekOnLoad(c);
   if (wasPlaying || isAuto) videoPlayer.play().catch(e => console.log);
   startStallWatchdog();
   const reloading = isAuto ?
@@ -553,6 +685,13 @@ function goToHomeScreen() {
     clearTimeout(_epgToastTimer);
     _epgToastTimer = null;
   }
+  // The live timers must not reload or seek a stream on the start page
+  stopStallWatchdog();
+  if (_errRetryTimer) {
+    clearTimeout(_errRetryTimer);
+    _errRetryTimer = null;
+  }
+  _cancelHold();
 
   // Dismiss EPG toast immediately
   const _toast = document.getElementById('epgToast');
@@ -604,6 +743,9 @@ function goToHomeScreen() {
   _searchCache = {query: null, result: null};
   currentChannelIndex = -1;
   lastChannelIndex = -1;
+  _bestFrom = -1;
+  _bestIdx = -1;
+  _bestFailed.clear();
   currentSearchQuery = '';
   selectedPlaylistId = null;
 

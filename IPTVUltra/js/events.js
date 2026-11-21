@@ -342,11 +342,19 @@ if (videoPlayer.audioTracks) {
   });
 }
 document.addEventListener('keydown', handleRemoteNav);
+// Back from a different app: the guide shows the current time
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) epgReturnToNow();
+});
 
-// OK in the player acts on release: a long press in the live player switches
-// to the last-viewed channel, a short press on the bar toggles pause
+// OK in the player: a hold of LONG_PRESS_MS in the live player switches to the
+// previous channel while you hold the key. A short press acts on release: a
+// button of the banner, else pause on the bar.
 let _enterPressTime = 0;
 let _enterDown = false;
+let _enterLongTimer = 0;
+let _enterLongDone = false;
+let _enterOsdHeld = false;  // the push stopped the banner timer
 const LONG_PRESS_MS = 600;
 // Capture phase: runs before handleRemoteNav, so a press that opens the player
 // (Play on a details page, OK on a guide row) is not also taken as a player OK
@@ -354,18 +362,62 @@ const LONG_PRESS_MS = 600;
 document.addEventListener('keydown', (e) => {
   if (!_inPlayerMode()) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  if (_enterDown) return;  // ignore key-repeat
+  // An auto-repeat never starts a press: the press can start outside the
+  // player (OK on Play, or on a row of an overlay that closes on keydown). A
+  // press that is not a repeat starts again, also when the app did not get the
+  // release of the previous press.
+  if (e.repeat) return;
   _enterDown = true;
+  _enterLongDone = false;
   _enterPressTime = Date.now();
+  // The banner timer does not hide the banner (and its button focus or surf
+  // preview) during the push. The release starts the timer again.
+  if (vodPlay.osdTimer) {
+    clearTimeout(vodPlay.osdTimer);
+    vodPlay.osdTimer = null;
+    _enterOsdHeld = true;
+  }
+  clearTimeout(_enterLongTimer);
+  _enterLongTimer =
+      livePlayer.active ? setTimeout(enterLongPress, LONG_PRESS_MS) : 0;
 }, true);
+// The hold of OK in the live player reached LONG_PRESS_MS
+function enterLongPress() {
+  _enterLongTimer = 0;
+  if (!_enterDown || !_inPlayerMode() || !livePlayer.active ||
+      vodTracksOpen() || vodNextVisible() || surf.active)
+    return;
+  // A button of the banner acts on the release
+  if (player.focus === 'buttons' &&
+      document.getElementById('vodOsd').classList.contains('visible'))
+    return;
+  _enterLongDone = true;
+  surfCancel();
+  if (swapToPreviousChannel()) showVodOsd();
+}
+function clearEnterPress() {
+  clearTimeout(_enterLongTimer);
+  _enterLongTimer = 0;
+  _enterDown = false;
+  _enterLongDone = false;
+  _enterPressTime = 0;
+}
 document.addEventListener('keyup', (e) => {
   if (!_enterDown) return;
   if (e.key !== 'Enter' && e.keyCode !== 13) return;
-  const held = Date.now() - _enterPressTime;
-  _enterDown = false;
-  _enterPressTime = 0;
+  const long = _enterLongDone, osdHeld = _enterOsdHeld;
+  _enterOsdHeld = false;
+  clearEnterPress();
+  // The banner timer starts again after the action of the release
+  if (osdHeld)
+    setTimeout(() => {
+      if (playerActive() && !vodPlay.osdTimer &&
+          document.getElementById('vodOsd').classList.contains('visible'))
+        showVodOsd();
+    }, 0);
   if (!_inPlayerMode()) return;
   e.preventDefault();
+  if (long) return;  // the hold changed the channel
   if (vodTracksOpen())
     activateVodTrack();
   else if (vodNextVisible())
@@ -376,14 +428,29 @@ document.addEventListener('keyup', (e) => {
       player.focus === 'buttons' &&
       document.getElementById('vodOsd').classList.contains('visible'))
     activatePlayerButton();
-  else if (livePlayer.active && held >= LONG_PRESS_MS) {
-    if (lastChannelIndex >= 0 && channels[lastChannelIndex])
-      selectChannel(lastChannelIndex);
-  } else if (livePlayer.active)
+  else if (livePlayer.active)
     toggleLivePause();
   else
-    toggleVodPause();  // OK on the bar: play/pause (no long-press action in
-                       // VOD)
+    toggleVodPause();  // OK on the bar: play/pause
+});
+// The app does not get the release of a key that it gets while hidden: the
+// OK push, a Left/Right hold (no seek), and the stopped banner timer end
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) return;
+  clearEnterPress();
+  // The OK press of a guide or list row (its release goes to the other app)
+  if (_rowOk) {
+    clearTimeout(_rowOk.timer);
+    _rowOk = null;
+  }
+  _holdKeyDir = null;
+  const wasHolding = _isHolding();
+  _cancelHold();
+  // The banner shows the position again, and its timer starts again
+  if ((wasHolding || _enterOsdHeld) && playerActive() &&
+      document.getElementById('vodOsd').classList.contains('visible'))
+    showVodOsd();
+  _enterOsdHeld = false;
 });
 
 // Hold Left/Right in the player: short-press = ±3s seek; hold = trick play
@@ -403,9 +470,11 @@ document.addEventListener('keydown', (e) => {
   _holdKeyDir = isLeft ? 'left' : 'right';
   _holdKeyStart = Date.now();
   showPlayerControls();
-  const capturedDir = _holdKeyDir;
+  const capturedDir = _holdKeyDir, pressAt = _holdKeyStart;
   setTimeout(() => {
-    if (_holdKeyDir === capturedDir) _startHold(capturedDir);
+    // Only the same press: not the second tap of a quick double tap
+    if (_holdKeyDir === capturedDir && _holdKeyStart === pressAt)
+      _startHold(capturedDir);
   }, HOLD_THRESHOLD_MS);
 }, true);
 
@@ -429,14 +498,9 @@ document.addEventListener('keyup', (e) => {
   if (_isHolding()) {
     _stopHold();
   } else if (dir && held < HOLD_THRESHOLD_MS) {
-    // On an archive channel, a step that goes before the start of the buffer
-    // continues in the archive
-    if (dir === 'left' && liveLeftIntoArchive(3)) return;
-    _seekBy(
-        (dir === 'left' ? -1 : 1) *
-        (vodPlay.active || catchup ?
-             10 :
-             3));  // VOD and catch-up skip 10 s, live 3 s
+    // Live 3 s, VOD and catch-up 10 s. On an archive channel, a step before
+    // the start of the buffer continues in the archive.
+    playerStep(dir === 'left' ? -1 : 1);
   }
   showPlayerControls();
 });
@@ -446,10 +510,21 @@ document.addEventListener('keyup', (e) => {
 function zapChannel(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
-  const cur = currentChannelIndex >= 0 ?
-      list.indexOf(channels[currentChannelIndex]) :
-      -1;
-  const next = cur < 0 ? 0 : (cur + dir + list.length) % list.length;
+  const cur = playingListIndex(list);
+  let next = cur >= 0 ? (cur + dir + list.length) % list.length :
+      dir > 0         ? 0 :
+                        list.length - 1;
+  // Skip the rows of the stream that plays: in a group of versions, CH+ and
+  // CH- go to a different stream
+  let found = false;
+  for (let n = 0; n < list.length && !found; n++) {
+    const i = getChannelIndex(list[next]);
+    if (!isPlayingIdx(i) && bestVersionOf(i) !== currentChannelIndex)
+      found = true;
+    else
+      next = (next + dir + list.length) % list.length;
+  }
+  if (!found) return;  // each row of the list plays this stream
   if (epgMode) {
     epgFocusedRowIdx = next;
     updateEPGRowFocus();
@@ -463,6 +538,7 @@ document.addEventListener('keydown', (e) => {
   if (d < 0 || !digitEntryAllowed()) return;
   e.preventDefault();
   e.stopPropagation();
+  if (e.repeat) return;  // a held digit is 1 digit
   onDigitKey(d);
 }, true);
 
@@ -474,10 +550,13 @@ document.addEventListener('keydown', (e) => {
   if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0)
     return;
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
-  if (settingsOpen || catsOpen || diagOpen || versionsOpen) return;
+  if (settingsOpen || catsOpen || diagOpen || versionsOpen || ssOpen) return;
   if (vodMode !== 'live' && !vodPlay.active) return;
   if (vodPlay.active && (kc === 427 || kc === 428)) return;
   e.preventDefault();
+  // A held CH+ or CH- changes the channel 1 time: each change opens a provider
+  // stream, and the provider counts the previous one for approximately 15 s
+  if (e.repeat) return;
   if (kc === 415) {
     videoPlayer.play().catch(() => {});
     showPlayerControls();
@@ -496,11 +575,21 @@ document.addEventListener('keydown', (e) => {
 // suppressed
 document.addEventListener('keydown', (e) => {
   if (e.keyCode !== 461 && e.key !== 'GoBack') return;
+  // A held Back goes back 1 step
+  if (e.repeat) {
+    e.preventDefault();
+    return;
+  }
 
   // Back while the confirm dialog is open cancels it
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) {
     e.preventDefault();
     confirmNo.click();
+    return;
+  }
+  if (ssOpen) {
+    e.preventDefault();
+    savedSearchBack();
     return;
   }
   if (versionsOpen) {

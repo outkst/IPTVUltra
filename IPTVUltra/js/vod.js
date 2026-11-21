@@ -248,19 +248,39 @@ function normSeries(s) {
     backdrop: Array.isArray(s.backdrop_path) ? s.backdrop_path[0] : ''
   };
 }
+// Makes a provider URL safe for url("...") in a style attribute. Percent
+// encoding replaces the quotes, the parentheses, the backslash, and the
+// spaces. escapeHtml then encodes the HTML characters.
+function cssUrl(u) {
+  return escapeHtml(String(u).replace(
+      /['"()\\\s]/g,
+      c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')));
+}
 function vodStreamUrl(id, ext) {
-  return `${_xt.base}/movie/${_xt.user}/${_xt.pass}/${id}.${ext || 'mp4'}`;
+  return `${_xt.base}/movie/${encodeURIComponent(_xt.user)}/${
+      encodeURIComponent(_xt.pass)}/${id}.${ext || 'mp4'}`;
 }
 function episodeUrl(ep) {
-  return `${_xt.base}/series/${_xt.user}/${_xt.pass}/${ep.id}.${
-      ep.ext || 'mp4'}`;
+  return `${_xt.base}/series/${encodeURIComponent(_xt.user)}/${
+      encodeURIComponent(_xt.pass)}/${ep.id}.${ep.ext || 'mp4'}`;
 }
 
 // ── catalog ──────────────────────────────────────────────────
+// A late result of a different playlist must not go into the caches of the
+// current playlist. The loaders compare _xt before and after each request.
+function vodCheckPlaylist(xt) {
+  if (_xt !== xt) {
+    const err = new Error('playlist changed');
+    err.stale = true;  // the screens ignore this error
+    throw err;
+  }
+}
 async function loadVodCats(mode) {
   if (mode === 'movies' ? vodCats : seriesCats) return;
+  const xt = _xt;
   const raw = await xtApi(
       mode === 'movies' ? 'get_vod_categories' : 'get_series_categories');
+  vodCheckPlaylist(xt);
   const cats = Array.isArray(raw) ?
       raw.map(c => ({
                 id: String(c.category_id),
@@ -276,9 +296,11 @@ async function loadVodCats(mode) {
 async function loadVodCategory(mode, catId) {
   const cache = mode === 'movies' ? vodByCat : seriesByCat;
   if (cache.has(catId)) return cache.get(catId);
+  const xt = _xt;
   const raw = await xtApi(
       mode === 'movies' ? 'get_vod_streams' : 'get_series',
       {category_id: catId});
+  vodCheckPlaylist(xt);
   const items = Array.isArray(raw) ?
       raw.map(mode === 'movies' ? normMovie : normSeries) :
       [];
@@ -291,7 +313,7 @@ async function loadVodCategory(mode, catId) {
 function loadVodAll(mode) {
   const have = mode === 'movies' ? vodAll : seriesAll;
   if (have) return Promise.resolve(have);
-  if (_vodAllLoading && _vodAllLoading.mode === mode) return _vodAllLoading.p;
+  if (_vodAllLoading[mode]) return _vodAllLoading[mode];
   const xt = _xt;
   const p = (async () => {
     const resp = await fetch(
@@ -310,7 +332,7 @@ function loadVodAll(mode) {
         await new Promise(r => setTimeout(r, 0));
       }
     }
-    if (_xt !== xt) throw new Error('playlist changed');
+    vodCheckPlaylist(xt);  // a stale error: the screens ignore it
     const recent = out.slice().sort((a, b) => b.added - a.added).slice(0, 60);
     if (mode === 'movies') {
       vodAll = out;
@@ -321,14 +343,11 @@ function loadVodAll(mode) {
     }
     return out;
   })();
-  _vodAllLoading = {mode, p};
-  p.then(
-      () => {
-        if (_vodAllLoading && _vodAllLoading.p === p) _vodAllLoading = null;
-      },
-      () => {
-        _vodAllLoading = null;
-      });
+  _vodAllLoading[mode] = p;
+  const done = () => {
+    if (_vodAllLoading[mode] === p) delete _vodAllLoading[mode];
+  };
+  p.then(done, done);
   return p;
 }
 function adultCatIds(mode) {
@@ -453,6 +472,17 @@ function episodeIsLast(seasons, ep) {
 }
 function setEpisodeWatched(item, ep, seasons, on, noSave) {
   const key = progressKeyFor('episode', ep.id, item.id);
+  // A mark on an episode before the newest entry of the series does not move
+  // "Play" and Continue Watching back to that episode
+  let at = Date.now();
+  if (on && !noSave) {
+    const latest = lastEpisodeEntry(item.id), flat = seriesEpisodeIds(seasons);
+    const lp = latest ? flat.indexOf(latest.epId) : -1,
+          ep0 = flat.indexOf(ep.id);
+    // The offset keeps the series order among the marks
+    if (latest && latest.epId !== ep.id && ep0 >= 0 && lp > ep0)
+      at = (latest.at || at) - (lp - ep0);
+  }
   if (!on)
     delete vodProgress[key];
   else {
@@ -466,7 +496,7 @@ function setEpisodeWatched(item, ep, seasons, on, noSave) {
       rating: item.rating || 0,
       pos: dur,
       dur,
-      at: Date.now(),
+      at,
       watched: true,
       seriesId: item.id,
       season: ep.season,
@@ -477,7 +507,7 @@ function setEpisodeWatched(item, ep, seasons, on, noSave) {
     };
   }
   if (noSave) return;
-  pruneVodProgress();
+  pruneVodProgress(`${_activePlaylistKey || '_'}|e:${item.id}:`);
   saveJson('iptv_vod_progress', vodProgress);
 }
 function setSeasonWatched(item, season, seasons, on) {
@@ -485,18 +515,33 @@ function setSeasonWatched(item, season, seasons, on) {
   // Entries get ascending 'at' in series order, so the newest entry is the last
   // episode marked and Continue Watching / "Play" resume after it (or drop the
   // series when that was the final episode)
-  const flat = [];
-  for (const s of seasons)
-    for (const ep of s.episodes) flat.push(ep.id);
-  const base = Date.now() - flat.length;
+  const flat = seriesEpisodeIds(seasons);
+  // When the newest entry of the series is after this season, the marks stay
+  // older than that entry
+  const latest = lastEpisodeEntry(item.id);
+  const lastPos =
+      Math.max(-1, ...season.episodes.map(ep => flat.indexOf(ep.id)));
+  const base = latest && flat.indexOf(latest.epId) > lastPos ?
+      (latest.at || Date.now()) - flat.length - 1 :
+      Date.now() - flat.length;
   for (const ep of season.episodes) {
     setEpisodeWatched(item, ep, seasons, on, true);
     if (on)
       vodProgress[progressKeyFor('episode', ep.id, item.id)].at =
           base + flat.indexOf(ep.id);
   }
-  pruneVodProgress();
+  pruneVodProgress(`${_activePlaylistKey || '_'}|e:${item.id}:`);
   saveJson('iptv_vod_progress', vodProgress);
+}
+// The episode after the episode with the ID epId, or null.
+function episodeAfter(seasons, epId) {
+  let found = false;
+  for (const s of seasons)
+    for (const ep of s.episodes) {
+      if (found) return ep;
+      if (ep.id === epId) found = true;
+    }
+  return null;
 }
 function lastEpisodeEntry(seriesId) {
   const prefix = `${_activePlaylistKey || '_'}|e:${seriesId}:`;
@@ -544,6 +589,17 @@ function continueWatchingItems(mode) {
     if (e.watched && e.lastOfSeries) continue;  // finished the series
     if (!e.watched && !(e.dur && e.pos >= vodMinResume(e.dur)))
       continue;  // barely started
+    // After a watched episode, the card shows the next episode. If the series
+    // information is in the cache and has no next episode, the series is
+    // complete.
+    let next = null;
+    if (e.watched) {
+      const info = seriesInfoCache.get(e.seriesId);
+      if (info) {
+        next = episodeAfter(info.seasons, e.epId);
+        if (!next) continue;
+      }
+    }
     out.push({
       kind: 'series',
       id: e.seriesId,
@@ -552,18 +608,40 @@ function continueWatchingItems(mode) {
       rating: e.rating || 0,
       added: 0,
       catId: e.catId,
-      _resume: e
+      _resume: e,
+      _next: next
     });
   }
   out.sort((a, b) => b._resume.at - a._resume.at);
   return out;
 }
-function pruneVodProgress() {
-  const keys = Object.keys(vodProgress);
-  if (keys.length <= VOD_PROGRESS_MAX) return;
-  keys.sort((a, b) => (vodProgress[a].at || 0) - (vodProgress[b].at || 0));
-  for (let i = 0; i < keys.length - VOD_PROGRESS_MAX; i++)
+// Keeps VOD_PROGRESS_MAX entries. Watched entries go first (the oldest first),
+// so that Continue Watching keeps its titles. The entries that start with
+// `keepPrefix` (the series that you mark) stay.
+function pruneVodProgress(keepPrefix) {
+  const all = Object.keys(vodProgress);
+  const over = all.length - VOD_PROGRESS_MAX;
+  if (over <= 0) return;
+  const w = k => (vodProgress[k].watched ? 0 : 1);
+  const byAge = (a, b) =>
+      w(a) - w(b) || (vodProgress[a].at || 0) - (vodProgress[b].at || 0);
+  const kept = keepPrefix ? all.filter(k => k.startsWith(keepPrefix)) : [];
+  // A series with more entries than half of the limit keeps only its newest
+  // half: the other titles also keep entries
+  const keepMax = Math.floor(VOD_PROGRESS_MAX / 2);
+  const keep = new Set(
+      kept.sort((a, b) => (vodProgress[b].at || 0) - (vodProgress[a].at || 0))
+          .slice(0, keepMax));
+  const keys = all.filter(k => !keep.has(k)).sort(byAge);
+  for (let i = 0; i < Math.min(over, keys.length); i++)
     delete vodProgress[keys[i]];
+}
+// The IDs of the episodes of a series, in series order
+function seriesEpisodeIds(seasons) {
+  const flat = [];
+  for (const s of seasons || [])
+    for (const ep of s.episodes) flat.push(ep.id);
+  return flat;
 }
 
 // ── mode switch & layout ─────────────────────────────────────
@@ -577,7 +655,7 @@ function resetVodState(showSwitch) {
   seriesAll = null;
   vodRecent = null;
   seriesRecent = null;
-  _vodAllLoading = null;
+  _vodAllLoading = {};
   vodInfoCache.clear();
   seriesInfoCache.clear();
   vodNav.screen = 'home';
@@ -635,8 +713,8 @@ function setVodMode(mode) {
     renderGroupsList();
     refreshCurrentView();
     if (prev !== 'live' && currentChannelIndex >= 0)
-      selectChannel(currentChannelIndex);  // live streams cannot resume; reload
-                                           // the channel
+      reloadLiveChannel();  // live streams cannot resume; reload
+                            // the channel
     return;
   }
   if (prev === 'live') {
@@ -652,15 +730,41 @@ function setVodMode(mode) {
   ev.style.display = 'none';
   vv.style.display = 'flex';
   vodNav.detail = null;
+  // The lists and the search box of the previous mode do not stay
+  vodNav.zone = 'cats';
+  vodNav.catIdx = 0;  // Home
+  vodNav.screen = 'home';
+  vodNav.homeRows = [];
+  vodNav.items = [];
+  vodNav.baseItems = [];
+  vodNav.query = '';
+  const si = document.getElementById('vodSearchInput');
+  if (si) {
+    if (document.activeElement === si) si.blur();
+    si.value = '';
+  }
   document.getElementById('vodDetails').style.display = 'none';
+  // The categories show Home, Favorites, and "Search all" before the load
+  // completes. If you opened a list or typed meanwhile, the load does not go
+  // back to Home.
+  const opens = _vodListOpens;
   loadVodCats(mode)
       .then(() => {
-        if (vodMode === mode) openVodList('home');
+        if (vodMode !== mode) return;
+        if (_vodListOpens === opens && !(vodNav.query || '').trim()) {
+          const si = document.getElementById('vodSearchInput');
+          const inSearch = document.activeElement === si;
+          openVodList('home');
+          if (inSearch) focusVodSearch();  // 1 focus mark
+        } else
+          renderVodCats();  // the list that you opened stays
       })
       .catch(err => {
-        if (vodMode === mode) {
+        if (vodMode === mode && !err.stale) {
           renderVodCats();
-          showVodEmpty(`Could not load categories: ${err.message}`);
+          // The list or the search that you opened stays
+          if (_vodListOpens === opens && !(vodNav.query || '').trim())
+            showVodEmpty(`Could not load categories: ${err.message}`);
         }
       });
   renderVodCats();
@@ -690,7 +794,7 @@ function renderVodCats() {
   if (pinnedDiv) pinnedDiv.innerHTML = '';
   const cats = (vodMode === 'movies' ? vodCats : seriesCats) || [];
   const hdr = document.querySelector('.groups-header span');
-  if (hdr) hdr.textContent = '📁 Categories';
+  if (hdr) hdr.textContent = 'Categories';
   const mk = (icon, label, list, catId) => {
     const d =
         el('div',
@@ -701,8 +805,8 @@ function renderVodCats() {
                     ''));
     d.dataset.list = list;
     if (catId) d.dataset.catId = catId;
-    d.innerHTML = `<span class="group-folder">${icon}</span><span>${
-        escapeHtml(label)}</span>`;
+    d.innerHTML = (icon ? `<span class="group-folder">${icon}</span>` : '') +
+        `<span>${escapeHtml(label)}</span>`;
     d.onclick = () => {
       vodNav.zone = 'cats';
       openVodList(list, catId);
@@ -718,7 +822,7 @@ function renderVodCats() {
   }
   for (const c of cats) {
     if (c.adult && !settings.showAdult) continue;
-    groupsListDiv.appendChild(mk('📁', c.name, 'cat', c.id));
+    groupsListDiv.appendChild(mk('', c.name, 'cat', c.id));
   }
   updateVodCatFocus(false);
 }
@@ -737,16 +841,17 @@ function updateVodCatFocus(scroll) {
     els[vodNav.catIdx].scrollIntoView({block: 'nearest'});
 }
 
-async function openVodList(list, catId) {
+async function openVodList(list, catId, query = '') {
+  _vodListOpens++;
   vodNav.list = list;
   vodNav.catId = catId || null;
   vodNav.focus = 0;
   vodNav.gridScroll = 0;
-  vodNav.query = '';
+  vodNav.query = query;
   vodNav.detail = null;
   document.getElementById('vodDetails').style.display = 'none';
   const si = document.getElementById('vodSearchInput');
-  si.value = '';
+  si.value = query;
   if (vodNav.zone !== 'cats') vodNav.zone = 'content';
   renderVodCats();
   if (list === 'home') {
@@ -755,22 +860,30 @@ async function openVodList(list, catId) {
     return;
   }
   vodNav.screen = 'grid';
+  // The grid keys must not act on the previous list during the load.
+  vodNav.items = [];
+  vodNav.baseItems = [];
   let items = null;
   if (list === 'favs')
     items = vodFavItems();
   else {
     showVodEmpty('Loading …');
     const mode = vodMode;
+    vodNav.loading = true;  // a search waits for the list
     try {
       items = list === 'all' ? vodVisible(await loadVodAll(mode), mode) :
                                await loadVodCategory(mode, catId);
     } catch (err) {
-      if (vodMode === mode) showVodEmpty(`Could not load: ${err.message}`);
-      return;
+      if (!err.stale && vodMode === mode && vodNav.list === list &&
+          vodNav.catId === (catId || null))
+        showVodEmpty(`Could not load: ${err.message}`);
+      return false;
+    } finally {
+      vodNav.loading = false;
     }
     if (vodMode !== mode || vodNav.list !== list ||
         vodNav.catId !== (catId || null))
-      return;  // user moved on
+      return false;  // user moved on
   }
   vodNav.baseItems = items;
   vodNav.genre = null;  // a genre filter belongs to the list it was chosen in
@@ -780,19 +893,19 @@ async function openVodList(list, catId) {
   vodNav.items = vodDerivedItems();
   renderVodGrid();
   if (list === 'all') focusVodSearch();
+  return true;
 }
 function applyVodSearch() {
   const q = vodNav.query || '';
   if (vodNav.screen === 'home') {
     if (q.trim()) {
-      openVodList('all').then(() => {
-        vodNav.query = q;
-        document.getElementById('vodSearchInput').value = q;
-        applyVodSearch();
-      });
+      // The list starts with the query. Text that you type during the load
+      // changes vodNav.query, and the load applies the last query.
+      openVodList('all', null, q);
     }
     return;
   }
+  if (vodNav.loading) return;  // the load applies the query
   vodNav.items = vodDerivedItems();
   vodNav.focus = 0;
   vodNav.gridScroll = 0;
@@ -875,14 +988,14 @@ function renderVodHome() {
     sec.appendChild(strip);
     home.appendChild(sec);
   });
-  if (!all && !(_vodAllLoading && _vodAllLoading.mode === vodMode)) {
+  if (!all && !_vodAllLoading[vodMode]) {
     const mode = vodMode;
     loadVodAll(mode)
         .then(() => {
           if (vodMode === mode && vodNav.screen === 'home') renderVodHome();
         })
-        .catch(() => {
-          if (vodMode === mode && vodNav.screen === 'home') {
+        .catch(err => {
+          if (vodMode === mode && vodNav.screen === 'home' && !err.stale) {
             const r = home.querySelector('.vod-strip-empty');
             if (r) r.textContent = 'Recently Added unavailable';
           }
@@ -917,7 +1030,12 @@ function buildVodCard(item, focused, pos) {
   const fav = isVodFav(item);
   let pct = 0, meta = '';
   const r = item._resume;
-  if (r && r.dur) {
+  if (r && r.watched && item.kind === 'series') {
+    // The episode of the entry is watched: show the next one, with no bar.
+    const n = item._next;
+    meta = n ? `Next: S${n.season} E${n.num}` :
+               `Next after S${r.season} E${r.epNum}`;
+  } else if (r && r.dur) {
     pct = Math.min(100, Math.round(r.pos / r.dur * 100));
     const left = Math.max(0, r.dur - r.pos);
     meta = item.kind === 'series' ?
@@ -1080,7 +1198,9 @@ function refreshVodFocus() {
 // ── details ──────────────────────────────────────────────────
 async function getVodInfo(item) {
   if (vodInfoCache.has(item.id)) return vodInfoCache.get(item.id);
+  const xt = _xt;
   const raw = await xtApi('get_vod_info', {vod_id: item.id});
+  vodCheckPlaylist(xt);
   const i = (raw && raw.info) || {}, md = (raw && raw.movie_data) || {};
   const info = {
     plot: i.plot || i.description || '',
@@ -1140,7 +1260,9 @@ function providerExtras(i) {
 }
 async function getSeriesInfo(item) {
   if (seriesInfoCache.has(item.id)) return seriesInfoCache.get(item.id);
+  const xt = _xt;
   const raw = await xtApi('get_series_info', {series_id: item.id});
+  vodCheckPlaylist(xt);
   const i = (raw && raw.info) || {};
   const eps = (raw && raw.episodes) || {};
   const seasons = [];
@@ -1227,9 +1349,7 @@ function closeVodDetails() {
   else {
     if (vodNav.list === 'favs') {
       vodNav.baseItems = vodFavItems();
-      vodNav.items = vodNav.query ?
-          vodSearchItems(vodNav.baseItems, vodNav.query) :
-          vodNav.baseItems;
+      vodNav.items = vodDerivedItems();
     }
     renderVodGrid();
     updateVodGridFocus();
@@ -1468,9 +1588,9 @@ function renderVodDetails() {
   const btns = vodDetailButtons();
   let html =
       `<div class="vod-backdrop"${
-          backdrop ? ` style="background-image:url('${
-                         escapeHtml(backdrop).replace(/'/g, '%27')}')"` :
-                     ''}></div>` +
+          backdrop ?
+              ` style="background-image:url(&quot;${cssUrl(backdrop)}&quot;)"` :
+              ''}></div>` +
       `<div class="vod-dwrap${item.kind === 'series' ? ' series' : ''}">` +
       `<div class="vod-dposter"><span class="vod-poster-name">${
           escapeHtml(item.name)}</span>${
@@ -1582,6 +1702,27 @@ function renderVodDetails() {
   const f = box.querySelector('.vod-ep.focused');
   if (f) f.scrollIntoView({block: 'nearest'});
 }
+// Moves the focus classes of the details page in place. A key that only moves
+// the cursor does not build the page again.
+function updateVodDetailsFocus() {
+  const box = document.getElementById('vodDetails');
+  const z = vodNav.detailZone;
+  box.querySelectorAll('.vod-btn')
+      .forEach(
+          (b, i) => b.classList.toggle(
+              'focused', z === 'buttons' && i === vodNav.detailBtn));
+  box.querySelectorAll('.vod-season')
+      .forEach(
+          (b, i) => b.classList.toggle(
+              'focused', z === 'seasons' && i === vodNav.season));
+  let f = null;
+  box.querySelectorAll('.vod-ep').forEach((b, i) => {
+    const on = z === 'episodes' && i === vodNav.epIdx;
+    b.classList.toggle('focused', on);
+    if (on) f = b;
+  });
+  if (f) f.scrollIntoView({block: 'nearest'});
+}
 function playFocusedEpisode() {
   const d = vodNav.detail;
   if (!d || !d.info || !d.info.seasons.length) return;
@@ -1627,6 +1768,7 @@ function handleVodDetailsKey(e, up, down, left, right, enter) {
   }
   if (!(up || down || left || right || enter)) return;
   e.preventDefault();
+  const season0 = vodNav.season;
   if (z === 'buttons') {
     if (left)
       vodNav.detailBtn = Math.max(0, vodNav.detailBtn - 1);
@@ -1677,7 +1819,11 @@ function handleVodDetailsKey(e, up, down, left, right, enter) {
       }
     }
   }
-  renderVodDetails();
+  // A different season changes the episodes and the labels of the buttons.
+  if (vodNav.season !== season0)
+    renderVodDetails();
+  else
+    updateVodDetailsFocus();
 }
 
 // ── browse keys ──────────────────────────────────────────────

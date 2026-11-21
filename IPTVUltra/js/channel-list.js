@@ -9,10 +9,12 @@
 let _hiddenGroups = new Set();
 let _groupOrder = [
 ];  // user order for this playlist; groups not listed follow alphabetically
+// buildChannelIndexMap gives each channel the name from normGroupName. Thus,
+// the list, the filters, and the set of hidden groups use the same name.
 function allGroupNames() {
   const groups = new Set();
   for (const ch of channels)
-    if (ch.group && ch.group.trim()) groups.add(ch.group.trim());
+    if (ch.group) groups.add(ch.group);
   return Array.from(groups);
 }
 function sortGroupNames(names) {
@@ -28,11 +30,22 @@ function extractGroups() {
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   _hiddenGroups = new Set((ps && ps.hiddenGroups) || []);
   _groupOrder = (ps && ps.groupOrder) || [];
-  groupsList = ['favorites', 'all', 'recent'].concat(
-      sortGroupNames(allGroupNames().filter(g => !_hiddenGroups.has(g))));
+  _searchCache = {query: null, result: null};  // the hidden groups can change
+  // The saved searches of the playlist follow All Channels
+  groupsList = ['favorites', 'all']
+                   .concat(savedSearchKeys(), ['recent'])
+                   .concat(sortGroupNames(
+                       allGroupNames().filter(g => !_hiddenGroups.has(g))));
   renderGroupsList();
 }
 const PINNED_GROUPS = ['favorites', 'all', 'recent'];
+/**
+ * @param {string} g A group key.
+ * @return {boolean} True for a pinned group or a saved search.
+ */
+function isPinnedGroup(g) {
+  return PINNED_GROUPS.includes(g) || isSavedSearchKey(g);
+}
 
 // ----- Categories manager (hide / reorder, per playlist) and Favorites manager
 // (reorder / remove) ----- The same overlay serves both: `catsMode` is 'cats'
@@ -147,7 +160,7 @@ function noteFavoriteChanges(before, after) {
   const removed = before.filter(id => !after.has(id));
   const name = (id) => {
     const l = _chansByFavId.get(id);
-    return l && l[0] ? l[0].name : id;
+    return l && l[0] ? l[0].name : redactCredentials(id);
   };
   for (const [what, ids] of [['added', added], ['removed', removed]]) {
     if (!ids.length) continue;
@@ -362,15 +375,16 @@ function renderGroupsList() {
     return;
   }
   const hdrSpan = document.querySelector('.groups-header span');
-  if (hdrSpan && hdrSpan.textContent !== '📁 Groups')
-    hdrSpan.textContent = '📁 Groups';
+  if (hdrSpan && hdrSpan.textContent !== 'Groups')
+    hdrSpan.textContent = 'Groups';
   const pinnedDiv = document.getElementById('groupsPinned');
   groupsListDiv.innerHTML = '';
   if (pinnedDiv) pinnedDiv.innerHTML = '';
+  let ssSection = null;  // the box of the saved searches
   for (const group of groupsList) {
     const div = document.createElement('div');
     div.className = 'group-item' + (currentGroup === group ? ' active' : '');
-    let folderIcon = '📁';
+    let folderIcon = '';  // provider groups have no icon
     let displayName = group;
     if (group === 'favorites') {
       folderIcon = '⭐';
@@ -381,17 +395,41 @@ function renderGroupsList() {
     } else if (group === 'recent') {
       folderIcon = '🕒';
       displayName = 'Recent';
+    } else if (group === SS_NEW_KEY) {
+      folderIcon = '➕';
+      displayName =
+          currentSearchQuery ? 'Save this search' : 'New saved search';
+      div.classList.add('ss-new');
+    } else if (isSavedSearchKey(group)) {
+      const s = savedSearchOf(group);
+      folderIcon = '🔎';
+      displayName = escapeHtml(s ? s.name : '');
+      div.classList.add('ss-group');
     } else {
-      folderIcon = '📁';
       displayName = escapeHtml(group);
     }
-    if (currentSearchQuery && !PINNED_GROUPS.includes(group) &&
+    if (currentSearchQuery && !isPinnedGroup(group) &&
         group.toLowerCase().includes(currentSearchQuery.toLowerCase())) {
-      displayName = highlightText(displayName, currentSearchQuery);
+      displayName = highlightText(group, currentSearchQuery);
     }
-    div.innerHTML = `<span class="group-folder">${folderIcon}</span><span>${
-        displayName}</span>`;
+    div.innerHTML =
+        (folderIcon ? `<span class="group-folder">${folderIcon}</span>` : '') +
+        `<span>${displayName}</span>` +
+        (isSavedSearchKey(group) && group !== SS_NEW_KEY ?
+             '<span class="ss-edit" title="Edit">✎</span>' :
+             '');
+    const editBtn = div.querySelector('.ss-edit');
+    if (editBtn)
+      editBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        openSavedSearchEditor(savedSearchOf(group));
+      });
     div.onclick = () => {
+      if (group === SS_NEW_KEY) {
+        // A new saved search starts with the text of the search box
+        openSavedSearchEditor(null, ssTermsFromSearchBox());
+        return;
+      }
       currentGroup = group;
       stdGroupFocusIdx = Math.max(0, groupsList.indexOf(group));
       if (_activePlaylistKey) {
@@ -401,11 +439,22 @@ function renderGroupsList() {
       if (currentSearchQuery) {
         currentSearchQuery = '';
         searchInput.value = '';
+        if (epgSearchInput) epgSearchInput.value = '';
       }
       renderGroupsList();
       requestAnimationFrame(refreshCurrentView);
     };
-    if (PINNED_GROUPS.includes(group) && pinnedDiv) {
+    if (isSavedSearchKey(group) && pinnedDiv) {
+      // The saved searches are a section with a rule above and below
+      if (!ssSection) {
+        ssSection = document.createElement('div');
+        ssSection.className = 'ss-groups';
+        ssSection.innerHTML =
+            '<div class="ss-groups-title">Saved searches</div>';
+        pinnedDiv.appendChild(ssSection);
+      }
+      ssSection.appendChild(div);
+    } else if (isPinnedGroup(group) && pinnedDiv) {
       pinnedDiv.appendChild(div);
     } else {
       groupsListDiv.appendChild(div);
@@ -414,23 +463,37 @@ function renderGroupsList() {
   if (currentPlaylistType === 'm3u') updateStdGroupFocus(false);
 }
 
+/**
+ * Gives the HTML of a text with the search terms marked. The function escapes
+ * the text itself: a mark in escaped text can break an entity (`&#39;`).
+ * @param {string} text The raw text.
+ * @param {string} query The search text.
+ * @return {string} HTML.
+ */
 function highlightText(text, query) {
-  if (!query) return text;
-  const terms = query.toLowerCase().split(/\s+/);
-  let result = text;
-  for (const term of terms) {
-    if (term.length < 2) continue;
-    const regex =
-        new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
-    result =
-        result.replace(regex, '<span class="search-match-highlight">$1</span>');
-  }
-  return result;
+  const terms = (query || '')
+                    .toLowerCase()
+                    .split(/\s+/)
+                    .filter(t => t.length >= 2)
+                    .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!terms.length) return escapeHtml(text);
+  const regex = new RegExp(`(${terms.join('|')})`, 'gi');
+  return String(text)
+      .split(regex)
+      .map(
+          (part, i) => i % 2 ? `<span class="search-match-highlight">${
+                                   escapeHtml(part)}</span>` :
+                               escapeHtml(part))
+      .join('');
 }
 
 function searchChannels(query) {
   if (!query.trim()) return [...channels];
-  if (_searchCache.query === query) return _searchCache.result;
+  // The result stays until the query, the channel list, or the hidden
+  // groups change. A new result for new EPG data can change the sequence of
+  // the rows under the cursor.
+  const cacheKey = query;
+  if (_searchCache.query === cacheKey) return _searchCache.result;
   const terms = query.toLowerCase().split(/\s+/);
   // Matches channel names and groups, and also what is on now: a programme
   // title match (from the EPG already loaded, lazily per channel) ranks just
@@ -472,7 +535,7 @@ function searchChannels(query) {
   const result = scored.filter(s => s.score > 0)
                      .sort((a, b) => b.score - a.score)
                      .map(s => channels[s.idx]);
-  _searchCache = {query, result};
+  _searchCache = {query: cacheKey, result};
   return result;
 }
 
@@ -492,6 +555,8 @@ function renderChannelList() {
       title = '🕒 Recent';
     } else if (currentGroup === 'all') {
       title = '📺 All Channels';
+    } else if (savedSearchOf(currentGroup)) {
+      title = '🔎 ' + savedSearchOf(currentGroup).name;
     } else {
       title = '📁 ' + currentGroup;
     }
@@ -510,11 +575,15 @@ function renderChannelList() {
     filtered = _hiddenGroups.size ?
         channels.filter(ch => !_hiddenGroups.has(ch.group)) :
         [...channels];
+  } else if (isSavedSearchKey(currentGroup)) {
+    const s = savedSearchOf(currentGroup);
+    filtered = s ? savedSearchChannels(s) : [];
   } else {
     filtered =
         arrangeEventGroup(channels.filter(ch => ch.group === currentGroup));
   }
   currentFilteredChannels = filtered;
+  ssUpdateMark();
   if (stdFocusIdx >= filtered.length)
     stdFocusIdx = Math.max(0, filtered.length - 1);
   if (currentPlaylistType === 'xtream') return;
@@ -572,7 +641,7 @@ function renderChannelList() {
       const fav = favoriteIds.has(favIdOf(ch, originalIndex));
       const div = document.createElement('div');
       div.className = 'virtual-item' +
-          (currentChannelIndex === originalIndex ? ' active' : '') +
+          (isPlayingIdx(originalIndex) ? ' active' : '') +
           (stdFocusZone === 'channels' && i === stdFocusIdx ? ' focused' : '');
       div.style.top = `${i * ITEM_H}px`;
       div.style.height = `${ITEM_INNER}px`;
@@ -623,7 +692,10 @@ function renderChannelList() {
           starSpan.textContent =
               favoriteIds.has(id) ? '★' : '☆';  // otherwise update in place
       };
-      div.onclick = () => selectChannel(originalIndex);
+      // The same rule as OK: the playing row opens the player
+      div.onclick = () => playsNow(originalIndex) ?
+          toggleLivePlayer() :
+          selectChannel(originalIndex);
       virtualContainer.appendChild(div);
       renderedItems.set(i, div);
     }

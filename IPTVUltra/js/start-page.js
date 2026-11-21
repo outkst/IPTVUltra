@@ -12,22 +12,39 @@ function loadSavedPlaylists() {
   renderSavedPlaylists();
 }
 function savePlaylistsToStorage() {
-  localStorage.setItem('iptv_playlists', JSON.stringify(savedPlaylists));
+  const ok = storageSet('iptv_playlists', JSON.stringify(savedPlaylists));
   renderSavedPlaylists();
+  if (!ok) {
+    diagLog('Saved playlists: the storage is full, the save failed');
+    updateStartStatus(
+        'The TV storage is full. The playlists are not saved.', true);
+  }
+  return ok;
 }
 function addPlaylist(url, name, epgUrl) {
   if (!url) return;
   const existing = savedPlaylists.find(p => p.url === url);
   if (existing) {
+    const before = {...existing};
     existing.name = name || existing.name;
     existing.epgUrl = epgUrl !== undefined ? epgUrl : (existing.epgUrl || '');
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) {
+      // The entry in memory stays the same as the saved entry. The error
+      // message stays, and the fields keep the text for a new attempt.
+      Object.assign(existing, before);
+      renderSavedPlaylists();
+      return;
+    }
     updateStartStatus(
         `Playlist "${existing.name}" updated!`, false, true, false, 0);
   } else {
     savedPlaylists.push(
         {name: name || url.substring(0, 40), url, epgUrl: epgUrl || ''});
-    savePlaylistsToStorage();
+    if (!savePlaylistsToStorage()) {
+      savedPlaylists.pop();  // the fields keep the text for a new attempt
+      renderSavedPlaylists();
+      return;
+    }
     updateStartStatus(`Playlist saved!`, false, true, false, 0);
   }
   setTimeout(() => updateStartStatus('Ready', false, false, false, 0), 2000);
@@ -38,11 +55,13 @@ function addPlaylist(url, name, epgUrl) {
 }
 function removePlaylist(idx) {
   savedPlaylists.splice(idx, 1);
-  savePlaylistsToStorage();
   if (selectedPlaylistId === idx) {
     selectedPlaylistId = null;
     setLoadSelectedButtonEnabled(false);
+  } else if (selectedPlaylistId !== null && selectedPlaylistId > idx) {
+    selectedPlaylistId--;  // the selected item moved up by 1
   }
+  savePlaylistsToStorage();  // also renders the list
   updateFocusableElements();
   focusElement(0);
 }
@@ -69,6 +88,8 @@ function renderSavedPlaylists() {
   savedPlaylists.forEach((p, idx) => {
     const div = document.createElement('div');
     div.className = 'saved-item';
+    div.tabIndex = 0;  // the arrow keys can give it the focus
+    if (idx === selectedPlaylistId) div.style.background = '#2a3a70';
     div.onclick = () => {
       document.querySelectorAll('.saved-item')
           .forEach(i => i.style.background = '#1e2028');

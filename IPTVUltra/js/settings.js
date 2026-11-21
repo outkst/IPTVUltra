@@ -45,11 +45,21 @@ function selectInitialChannel() {
   if (!channels.length) return;
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   if (ps && ps.resume !== false && ps.lastChannel) {
-    let idx = channels.findIndex(c => c.url === ps.lastChannel.url);
+    let idx = chanIndexByUrl(ps.lastChannel.url);
+    if (idx === undefined) idx = -1;
     if (idx < 0 && ps.lastChannel.tvgId)
       idx = channels.findIndex(c => c.tvgId === ps.lastChannel.tvgId);
     if (idx >= 0) {
+      const prev = ps.prevChannel;
       selectChannel(idx);
+      // The previous channel of the last session (long press of OK, Red)
+      if (prev && lastChannelIndex < 0) {
+        let p = chanIndexByUrl(prev.url);
+        if (p === undefined) p = -1;
+        if (p < 0 && prev.tvgId)
+          p = channels.findIndex(c => c.tvgId === prev.tvgId);
+        if (p >= 0 && !isPlayingIdx(p)) lastChannelIndex = p;
+      }
       if (epgMode) {
         const fi = currentFilteredChannels.indexOf(channels[idx]);
         if (fi >= 0) {
@@ -224,6 +234,20 @@ function settingsRows() {
       }
     },
     {
+      id: 'manageSaved',
+      type: 'action',
+      label: 'Manage saved searches',
+      sub: t ? `Keyword searches below All Channels for ${t.name}${
+                   _activePlaylistKey === t.key && savedSearches().length ?
+                       ` · ${savedSearches().length} saved` :
+                       ''}` :
+               'Load a playlist first',
+      button: 'Open',
+      disabled: !t || !_activePlaylistKey || _activePlaylistKey === 'm:demo' ||
+          _activePlaylistKey !== t.key,
+      run: () => openSavedSearchList()
+    },
+    {
       id: 'manageCats',
       type: 'action',
       label: 'Manage categories',
@@ -253,7 +277,7 @@ function settingsRows() {
       label: 'Refresh playlist now',
       button: 'Refresh',
       sub: _activePlaylistKey && _activePlaylistKey !== 'm:demo' ?
-          (_playlistRefreshing ?
+          (_playlistRefreshing === _activePlaylistKey ?
                'Refreshing …' :
                `Channel list fetched ${
                    _playlistCacheAt ?
@@ -261,7 +285,7 @@ function settingsRows() {
                        'this session'}; refreshes itself after 6 h`) :
                'Load a playlist first',
       disabled: !_activePlaylistKey || _activePlaylistKey === 'm:demo' ||
-          _playlistRefreshing,
+          _playlistRefreshing === _activePlaylistKey,
       run: () => {
         showEPGToast('Refreshing playlist …', 'loading', 'Playlist');
         refreshPlaylistInBackground(true).then(() => renderSettings());
@@ -302,6 +326,18 @@ function settingsRows() {
         if (vodMode === 'live' && !vodPlay.active && currentChannelIndex >= 0 &&
             settings.liveBuffer > 0)
           reloadStream(false, 'Settings');
+      }
+    },
+    {
+      id: 'bestVersion',
+      type: 'toggle',
+      label: 'Best version automatically',
+      sub:
+          'When you select a channel, play its version with the best picture that the TV measured',
+      get: () => settings.bestVersion !== false,
+      set: v => {
+        settings.bestVersion = v;
+        saveSettings();
       }
     },
     {
@@ -423,6 +459,18 @@ function settingsRows() {
         settings.subEdge = v;
         saveSettings();
         umsApplySubtitleStyle();
+      }
+    },
+    {
+      id: 'capCase',
+      type: 'choice',
+      label: 'Caption letters',
+      sub: 'Live captions in capital letters',
+      options: CAPTION_CASE_OPTIONS,
+      get: () => settings.capCase,
+      set: v => {
+        settings.capCase = v;
+        saveSettings();
       }
     },
     {
@@ -559,12 +607,16 @@ function renderSettings() {
   const f = list.querySelector('.settings-row.focused');
   if (f) f.scrollIntoView({block: 'nearest'});
 }
+const SETTINGS_NO_REPEAT =
+    new Set(['liveBuffer', 'liveEngine', 'avSync', 'xtXmltv']);
 function settingsChange(r, dir) {
   if (r.type === 'choice') {
     const i = r.options.findIndex(x => x.v === r.get());
     r.set(r.options[(i + dir + r.options.length) % r.options.length].v);
   } else if (r.type === 'toggle') {
-    r.set(dir > 0 ? true : dir < 0 ? false : !r.get());
+    const v = dir > 0 ? true : dir < 0 ? false : !r.get();
+    // A row can do much work on set (Provider XMLTV loads all data again)
+    if (v !== r.get()) r.set(v);
   }
   renderSettings();
 }
@@ -589,12 +641,14 @@ function handleSettingsKey(e) {
     e.preventDefault();
     settingsFocusIdx = Math.min(foc.length - 1, settingsFocusIdx + 1);
     renderSettings();
-  } else if (k === 'ArrowLeft' || kc === 37) {
+  } else if (
+      k === 'ArrowLeft' || kc === 37 || k === 'ArrowRight' || kc === 39) {
     e.preventDefault();
-    if (row && row.type !== 'action') settingsChange(row, -1);
-  } else if (k === 'ArrowRight' || kc === 39) {
-    e.preventDefault();
-    if (row && row.type !== 'action') settingsChange(row, 1);
+    // A held key does not go through the rows that load the stream again or
+    // send a root command: each value opens a provider stream
+    if (e.repeat && row && SETTINGS_NO_REPEAT.has(row.id)) return;
+    if (row && row.type !== 'action')
+      settingsChange(row, k === 'ArrowLeft' || kc === 37 ? -1 : 1);
   } else if (k === 'Enter' || kc === 13) {
     e.preventDefault();
     if (id === 'close')
@@ -639,9 +693,10 @@ function diagLines() {
   L.push(`Memory: ${mem}`);
   L.push(`Agent: ${navigator.userAgent.slice(0, 120)}`);
   L.push('');
-  L.push(`Playlist: ${_activePlaylistKey || 'none'} (${
-      currentPlaylistType ||
-      '-'}) · ${channels.length.toLocaleString()} channels · ${
+  L.push(`Playlist: ${
+      _activePlaylistKey ? redactCredentials(_activePlaylistKey) :
+                           'none'} (${currentPlaylistType || '-'}) · ${
+      channels.length.toLocaleString()} channels · ${
       groupsList.length} groups · ${favoriteIds.size} favorites`);
   L.push(`EPG: ${epgData.size.toLocaleString()} channels cached · queue ${
       typeof _epgQueue !== 'undefined' ?

@@ -18,6 +18,47 @@ function favIdOf(ch, idx) {
       ch.url ? `u:${ch.url}` :
                `idx_${idx}`;
 }
+
+/**
+ * Gives the group name that the app uses for a channel. The name has no spaces
+ * at the start or at the end. A provider group with the key of a pinned group
+ * (`favorites`, `all`, or `recent`) gets a capital first letter, because the
+ * two groups must have different keys.
+ * @param {*} group The group name from the provider.
+ * @return {string} The group name.
+ */
+function normGroupName(group) {
+  const g = group == null ? '' : String(group).trim();
+  if (g === 'favorites' || g === 'all' || g === 'recent')
+    return g[0].toUpperCase() + g.slice(1);
+  // The key of a saved search starts with "ss:" (lower case only). The result
+  // must not change when the function runs again on its own result.
+  if (g.startsWith('ss:')) return 'SS:' + g.slice(3);
+  return g;
+}
+/**
+ * Decodes the percent codes of a URL.
+ * @param {string} url
+ * @return {string} The decoded URL, or the URL if it has an incorrect code.
+ */
+function decodeUrlSafe(url) {
+  try {
+    return decodeURIComponent(url);
+  } catch (_) {
+    return url;
+  }
+}
+/**
+ * The index of the channel with a stream URL. A saved URL can have no URL
+ * encoding.
+ * @param {string} url
+ * @return {number|undefined}
+ */
+function chanIndexByUrl(url) {
+  if (!url) return undefined;
+  const i = _chanByUrl.get(url);
+  return i !== undefined ? i : _chanByUrl.get(decodeUrlSafe(url));
+}
 function buildChannelIndexMap() {
   channelIndexMap = new Map();
   _chanByNum = new Map();
@@ -25,10 +66,18 @@ function buildChannelIndexMap() {
   _chansByFavId = new Map();
   for (let i = 0; i < channels.length; i++) {
     const ch = channels[i];
+    const g = normGroupName(ch.group);
+    if (g !== ch.group) ch.group = g;
     channelIndexMap.set(ch, i);
     const n = ch.num;
     if (n > 0 && !_chanByNum.has(n)) _chanByNum.set(n, i);
-    if (ch.url && !_chanByUrl.has(ch.url)) _chanByUrl.set(ch.url, i);
+    if (ch.url && !_chanByUrl.has(ch.url)) {
+      _chanByUrl.set(ch.url, i);
+      // Saved URLs from before 3.17.0 have no URL encoding of the user name
+      // and the password
+      const plain = decodeUrlSafe(ch.url);
+      if (plain !== ch.url && !_chanByUrl.has(plain)) _chanByUrl.set(plain, i);
+    }
     const fid = favIdOf(ch, i);
     if (_chansByFavId.has(fid))
       _chansByFavId.get(fid).push(ch);
@@ -119,6 +168,7 @@ const _RE_EV_AT =
     /@\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\s+(\d{1,2}):(\d\d)\s*([ap]m)?/i;
 const _RE_EV_JUNKSEG =
     /^(?:\d+K EXCLUSIVE|all|[A-Z]{2}: .+ \d+|(?:[A-Z]{2}\s*)?(?:\([^)]*\)\s*)+\d*)$/i;
+const _RE_EV_SPORT = /^([a-z][a-z ]{1,20}):\s+(\S.*)$/;
 const _RE_EV_LABEL =
     /^(?:(?:\S+\s+){0,2}\d{1,3}\S?\s*:|[a-z]+:\s*\d+\s+name:)\s*/i;  // "UFC 02
                                                                      // :", "PDC
@@ -222,8 +272,21 @@ function parseEventName(ch) {
   if (segs.length > 1 && /^(?:[A-Z]{2}|[^:]{1,30}\s\d{1,3})$/.test(segs[0]))
     segs.shift();  // slot label: "CA", "National League 1"
   if (segs.length) segs[0] = segs[0].replace(_RE_EV_LABEL, '') || segs[0];
+  // A sport label in lower case goes to the description: "hockey:  A vs B _
+  // U18" gives the title "A vs B · U18" and the description "Hockey"
+  let sport = '';
+  if (segs.length) {
+    const sm = _RE_EV_SPORT.exec(segs[0]);
+    if (sm) {
+      const s = sm[1];
+      if (s !== 'live') sport = s.charAt(0).toUpperCase() + s.slice(1);
+      segs[0] = sm[2];
+    }
+    segs[0] = segs[0].replace(/\s+_\s+/g, ' · ').replace(/\s{2,}/g, ' ');
+  }
   const title = segs.length ? segs[0] : name;
-  return {start, stop, title, desc: segs.slice(1).join(' · '), tag};
+  const desc = [sport].concat(segs.slice(1)).filter(Boolean).join(' · ');
+  return {start, stop, title, desc, tag};
 }
 // Parsed once per channel object (names do not change; a playlist refresh
 // brings new objects)
@@ -238,10 +301,67 @@ function eventOf(ch) {
   }
   return ev;
 }
+// Event names with no usable time, for example "Xyz (XY) 25: 2025 A vs B -
+// Field Hockey - 22/10 15:00". The name gives no time zone, and on the
+// provider (2026-11-08) the dates were more than 1 year old. Thus, the guide
+// shows the title with no time: in the row in place of "No data", in the info
+// panel, and in the live banner.
+const _RE_UT_GROUP = /PPV|EVENT/i;
+const _RE_UT_LABEL = /^[^:|]{1,30}?\d{1,4}\s*:\s*(\S.*)$/;
+const _RE_UT_DATE = /\s*-\s*(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d\d)\s*$/;
+const _RE_UT_YEAR = /^((?:19|20)\d\d)\s+/;
+const _untimedCache = new WeakMap();
+// Channel -> {title, note}. The key is the channel, not the tvg-id: event
+// channels can share 1 EPG id, and each one has its own title.
+let _untimedEvents = new WeakMap();
+/**
+ * Reads the title of an event name that has no usable time.
+ * @param {!Object} ch The channel.
+ * @return {?{title: string, note: string}} The title and a note with the
+ *     date of the name, or null.
+ */
+function parseUntimedName(ch) {
+  if (!_RE_UT_GROUP.test(ch.group || '')) return null;
+  const m = _RE_UT_LABEL.exec(ch.name || '');
+  if (!m) return null;
+  let rest = m[1].trim(), note = '';
+  const d = _RE_UT_DATE.exec(rest);
+  rest = rest.replace(_RE_UT_DATE, '');
+  const y = _RE_UT_YEAR.exec(rest);
+  rest = rest.replace(_RE_UT_YEAR, '').replace(/\s+-\s+/g, ' · ').trim();
+  if (!rest || rest.length < 3) return null;
+  if (d) {
+    const mon = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
+      'Nov', 'Dec'
+    ][+d[2] - 1];
+    if (mon)
+      note = `Listed for ${+ d[1]} ${mon}${y ? ' ' + y[1] : ''}, ${d[3]}:${
+          d[4]} (no time zone in the name)`;
+  }
+  return {title: rest, note};
+}
+/**
+ * The title of an untimed event for a channel, if the channel has no EPG.
+ * @param {?Object} ch The channel.
+ * @return {?{title: string, note: string}}
+ */
+function untimedEventOf(ch) {
+  return (ch && _untimedEvents.get(ch)) || null;
+}
 function buildEventProgs() {
   _eventProgs = new Map();
+  _untimedEvents = new WeakMap();
   for (const ch of channels) {
     const ev = eventOf(ch);
+    if (!ev && ch.tvgId && _RE_UT_GROUP.test(ch.group || '')) {
+      let u = _untimedCache.get(ch);
+      if (u === undefined) {
+        u = parseUntimedName(ch);
+        _untimedCache.set(ch, u);
+      }
+      if (u) _untimedEvents.set(ch, u);
+    }
     if (ev && ch.tvgId && !_eventProgs.has(ch.tvgId))
       _eventProgs.set(ch.tvgId, [{
                         start: ev.start,
@@ -258,9 +378,16 @@ function epgProgsOf(tvgId) {
   const id = resolveEpgId(tvgId);
   const p = id ? epgData.get(id) : null;
   const x = xmltvProgsOf(tvgId);
-  if (x) return p && p.length ? xmltvWithPast(tvgId, x, p) : x;
+  // When the XMLTV programs ended (the file stops, or its refresh fails), the
+  // provider programs come first
+  if (x && (xmltvCurrent(x) || !(p && p.length)))
+    return p && p.length ? xmltvWithPast(tvgId, x, p) : x;
   if (p && p.length) return p;
   return (tvgId && _eventProgs.get(tvgId)) || null;
+}
+// True while an XMLTV list has a program that did not stop
+function xmltvCurrent(x) {
+  return x.length > 0 && x[x.length - 1].stop > Date.now();
 }
 // tvgId -> {x, p, list}: the last list that xmltvWithPast made
 const _xmltvMerged = new Map();
@@ -309,6 +436,7 @@ function arrangeEventGroup(list) {
     const ch = list[i], ev = eventOf(ch);
     const done = ev ? evFinished(ev, now) : false;
     if (mode === 'hide' && done && ch !== playing &&
+        !isPlayingIdx(channelIndexMap.get(ch)) &&
         now > (ev.tag === 'ended' ? Math.min(ev.start, ev.stop) : ev.stop) +
                 EVENT_HIDE_AFTER_MS)
       continue;
@@ -324,17 +452,54 @@ function arrangeEventGroup(list) {
 // ----- Red (or a long press on OK) flips between the two most recent channels
 function swapToPreviousChannel() {
   if (lastChannelIndex < 0 || !channels[lastChannelIndex] ||
-      lastChannelIndex === currentChannelIndex)
+      isPlayingIdx(lastChannelIndex)) {
+    showEPGToast('No previous channel', 'success', 'Channel');
+    hideEPGToast(2500);
     return false;
+  }
   const idx = lastChannelIndex;
   selectChannel(idx);
   moveCursorToChannel(channels[idx]);
   return true;
 }
+// Mark the rendered rows of the playing channel (guide or channel list): the
+// version that plays and the channel that you selected
+function markPlayingRows() {
+  const rows = epgMode ? epgRenderedRows : renderedItems;
+  for (const [fi, el] of rows) {
+    const ch = currentFilteredChannels[fi];
+    el.classList.toggle('active', !!ch && isPlayingIdx(getChannelIndex(ch)));
+  }
+}
+// True when a selection of the channel at `idx` must not load the stream: it
+// plays with no error, or a catch-up of it plays. Then OK opens the player (or
+// shows the banner).
+function playsNow(idx) {
+  return isPlayingIdx(idx) && (!!catchup || playingStreamHealthy());
+}
+// True when the channel at `idx` plays, also when the app plays a better
+// version of it (`_bestFrom`)
+function isPlayingIdx(idx) {
+  return idx >= 0 &&
+      (idx === currentChannelIndex || (_bestFrom >= 0 && idx === _bestFrom));
+}
+// The position of the playing channel in a list. When the app plays a better
+// version of the channel that you selected, it is the position of the selected
+// channel, so that the cursor stays on that row.
+function playingListIndex(list) {
+  if (currentChannelIndex < 0) return -1;
+  if (_bestFrom >= 0 && channels[_bestFrom]) {
+    const i = list.indexOf(channels[_bestFrom]);
+    if (i >= 0) return i;
+  }
+  return list.indexOf(channels[currentChannelIndex]);
+}
 // Put the guide / list cursor on a channel after a selection that did not come
 // from the cursor
 function moveCursorToChannel(ch) {
-  const fi = currentFilteredChannels.indexOf(ch);
+  let fi = currentFilteredChannels.indexOf(ch);
+  if (fi < 0 && channels[currentChannelIndex] === ch)
+    fi = playingListIndex(currentFilteredChannels);
   if (fi < 0) return;
   if (epgMode) {
     epgFocusedRowIdx = fi;
@@ -360,10 +525,9 @@ function surfStep(dir) {
   const list = currentFilteredChannels;
   if (!list.length) return;
   if (!surf.active) {
-    const cur = currentChannelIndex >= 0 ?
-        list.indexOf(channels[currentChannelIndex]) :
-        -1;
-    surf.idx = cur < 0 ? 0 : cur;
+    const cur = playingListIndex(list);
+    // Not in the list: the first step shows the first (or the last) row
+    surf.idx = cur >= 0 ? cur : dir > 0 ? -1 : 0;
     surf.active = true;
     document.getElementById('vodOsd').classList.add('surf');
   }
@@ -392,7 +556,8 @@ function surfTune() {
   if (!ch) return;
   const idx = getChannelIndex(ch);
   if (idx < 0) return;
-  if (idx === currentChannelIndex) {
+  // The channel of a catch-up stays in the archive
+  if (playsNow(idx)) {
     showVodOsd();
     return;
   }
@@ -449,17 +614,31 @@ function alternateSources(idx) {
   _altSources.set(idx, out);
   return out;
 }
-let _altOrigin = -1;        // the channel the user actually chose
-let _altTried = new Set();  // indices already tried for it this time
+let _altOrigin = -1;  // the channel the user actually chose
+// The selected channel when a better version of it plays
+let _bestFrom = -1;
+let _bestIdx = -1;  // the best version that bestVersionOf gave for _bestFrom
+const _bestFailed = new Set();  // versions that failed in this session
+let _altTried = new Set();      // indices already tried for it this time
 let _selectingAlt =
     false;  // selectChannel() called by the fallback (not a user choice)
+let _returningLive = false;   // selectChannel() after a catch-up
+let _keepSelection = false;   // selectChannel() keeps _bestFrom and _altOrigin
+let _selectingExact = false;  // selectChannel() plays this version, not the
+                              // best version
 function tryAlternateSource(msg) {
-  if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active) return false;
-  const alts = alternateSources(_altOrigin);
+  // A catch-up that fails is not a failure of the live stream
+  if (_altOrigin < 0 || vodMode !== 'live' || vodPlay.active || catchup)
+    return false;
+  // A best version that fails is not selected again in this session
+  if (_bestIdx >= 0 && currentChannelIndex === _bestIdx)
+    _bestFailed.add(currentChannelIndex);
+  // The selected channel is first: the app can play a better version of it
+  const alts = [_altOrigin].concat(alternateSources(_altOrigin));
   const next = alts.find(i => !_altTried.has(i) && channels[i]);
   if (next === undefined) return false;
   _altTried.add(next);
-  const n = _altTried.size - 1, total = alts.length;
+  const n = _altTried.size - 1, total = alts.length - 1;
   showEPGToast(
       `${msg}. Trying alternate source ${n} of ${total}: ${
           channels[next].name}`,
@@ -488,7 +667,7 @@ function recentChannels() {
   const ps = _activePlaylistKey ? getPlaylistState(_activePlaylistKey) : null;
   const out = [];
   for (const r of (ps && ps.recent) || []) {
-    let i = _chanByUrl.get(r.url);
+    let i = chanIndexByUrl(r.url);
     if (i === undefined && r.tvgId)
       i = channels.findIndex(c => c.tvgId === r.tvgId);
     if (i !== undefined && i >= 0 && channels[i] && !out.includes(channels[i]))
@@ -561,6 +740,47 @@ function noteCurrentStreamTech() {
 function versionsOf(idx) {
   return channels[idx] ? [idx].concat(alternateSources(idx)) : [];
 }
+// The picture class of a height: 1920×1084 and 1920×1080 are the same class
+function heightClass(h) {
+  return h >= 2000 ? 2160 :
+      h >= 1000    ? 1080 :
+      h >= 700     ? 720 :
+      h >= 540     ? 576 :
+      h > 0        ? 480 :
+                     0;
+}
+// The version of a channel with a better picture than the channel, or -1. Only
+// a version that played before counts (`iptv_stream_tech`). The provider
+// allows 1 connection, thus the app cannot test a version in the background.
+// A channel with no measurement gets the height that its name gives.
+function bestVersionOf(idx) {
+  return settings.bestVersion === false ? -1 : betterMeasuredVersion(idx);
+}
+// The rule of bestVersionOf, also when the setting is Off (the Best mark of
+// the Versions menu)
+function betterMeasuredVersion(idx) {
+  const ch = channels[idx];
+  if (!ch) return -1;
+  const own = streamTechOf(ch, idx);
+  let bestH = own ? heightClass(own.h) :
+                    heightClass(RANK_HEIGHT[nameQualityRank(ch.name)] || 0);
+  let bestFps =
+      own && own.fps ? own.fps : Infinity;  // with no measurement, only a
+                                            // higher class counts
+  let best = -1;
+  for (const i of alternateSources(idx)) {
+    if (_bestFailed.has(i) || !channels[i]) continue;
+    const t = streamTechOf(channels[i], i);
+    if (!t) continue;
+    const h = heightClass(t.h), fps = t.fps || 0;
+    if (h > bestH || (h === bestH && fps > bestFps + 1)) {
+      best = i;
+      bestH = h;
+      bestFps = fps;
+    }
+  }
+  return best;
+}
 function streamTechLabel(t) {
   return t ? `${t.w}×${t.h}${t.fps ? ' · ' + fmtFps(t.fps) : ''}` :
              'not watched yet';
@@ -591,24 +811,21 @@ function openVersions(idx) {
       ch,
       tech,
       order,
-      h: tech ? tech.h : RANK_HEIGHT[nameQualityRank(ch.name)],
+      h: heightClass(tech ? tech.h : RANK_HEIGHT[nameQualityRank(ch.name)]),
       fps: tech ? tech.fps || 0 : 0
     };
   });
   _versionsRows.sort(
       (a, b) => (b.h - a.h) || (b.fps - a.fps) ||
           ((b.tech ? 1 : 0) - (a.tech ? 1 : 0)) || (a.i - b.i));
-  const known = _versionsRows.filter(r => r.tech);
-  const best = known.length >= 2 ?
-      known.reduce(
-          (m, r) => (r.tech.h > m.tech.h ||
-                     (r.tech.h === m.tech.h &&
-                      (r.tech.fps || 0) > (m.tech.fps || 0))) ?
-              r :
-              m) :
-      null;
+  // "Best" is the version that a selection plays (bestVersionOf), else the
+  // selected channel when it has a measurement
+  const sel = _bestFrom >= 0 && list.includes(_bestFrom) ? _bestFrom : idx;
+  const bv = betterMeasuredVersion(sel);
+  const bestI = bv >= 0 ? bv : streamTechOf(channels[sel], sel) ? sel : -1;
+  const known = _versionsRows.filter(r => r.tech).length;
   _versionsRows.forEach(r => {
-    r.best = r === best;
+    r.best = known >= 2 && r.i === bestI;
   });
   versionsFocus = Math.max(0, _versionsRows.findIndex(r => r.i === idx));
   versionsOpen = true;
@@ -664,8 +881,15 @@ function versionsWatch() {
   const r = _versionsRows[versionsFocus];
   if (!r) return;
   closeVersions();
-  if (r.i === currentChannelIndex) return;
-  selectChannel(r.i);
+  // The version that plays loads again only after an error. A catch-up stays.
+  if (r.i === currentChannelIndex && playsNow(r.i)) return;
+  // The version that you select plays, also when a different one is better
+  _selectingExact = true;
+  try {
+    selectChannel(r.i);
+  } finally {
+    _selectingExact = false;
+  }
   if (livePlayer.active) {
     updateLiveOsd();
     showVodOsd();
@@ -733,7 +957,7 @@ function handleVersionsKey(e) {
 let _rowOk = null;  // { timer, fired, short }
 function rowOkPress(e, idx, shortAct) {
   e.preventDefault();
-  if (_rowOk && e.repeat) return;          // auto-repeat while the key is held
+  if (e.repeat) return;  // auto-repeat: also a hold that started elsewhere
   if (_rowOk) clearTimeout(_rowOk.timer);  // a release we never saw
   const st = {fired: false, short: shortAct};
   st.timer = setTimeout(() => {
@@ -786,8 +1010,8 @@ function digitEntryAllowed() {
     return false;
   if (confirmDialog && !confirmDialog.classList.contains('hidden'))
     return false;
-  if (settingsOpen || catsOpen || diagOpen || versionsOpen || vodPlay.active ||
-      vodMode !== 'live')
+  if (settingsOpen || catsOpen || diagOpen || versionsOpen || ssOpen ||
+      vodPlay.active || vodMode !== 'live')
     return false;
   if (_isTextInput(document.activeElement)) return false;
   return !_chanByNum.size ? false : true;
@@ -826,7 +1050,13 @@ function commitDigits() {
   setTimeout(() => {
     if (!_digitBuf) hideDigitOverlay();
   }, 1500);
-  selectChannel(idx);
+  // The number of the channel that plays does not load the stream again (the
+  // provider counts the previous connection for approximately 15 s)
+  if (playsNow(idx)) {
+    surfCancel();
+    if (livePlayer.active) showVodOsd();
+  } else
+    selectChannel(idx);
   // Put the cursor on the channel where it is listed
   const fi = currentFilteredChannels.indexOf(ch);
   if (fi >= 0) {
@@ -915,8 +1145,10 @@ function applyEpgNameFallback(nameMap) {
     if (!cid || !epgData.has(cid)) continue;
     if (ch.tvgId)
       epgIdMap.set(ch.tvgId.toLowerCase(), cid);
-    else
+    else {
       ch.tvgId = cid;
+      ch.tvgIdFromName = true;  // replaceChannelList keeps this tvgId
+    }
     n++;
   }
   if (n)
@@ -944,6 +1176,11 @@ function getNextProgramme(tvgId) {
   return nextIdx < progs.length ? progs[nextIdx] : null;
 }
 
+// The parser streams the file, thus the size of the file is not the memory
+// limit. The kept programs are the memory. These 2 limits stop a very large
+// file. When a limit stops the parse, the toast and the log tell you.
+const EPG_M3U_MAX_BYTES = 200 * 1048576;
+const EPG_M3U_MAX_PROGS = 150000;
 async function loadEPG(url) {
   if (epgLoading) return;
   epgLoading = true;
@@ -965,6 +1202,8 @@ async function loadEPG(url) {
   let cursor = 0;
   let programmeCount = 0;
   let bytesRead = 0;
+  let cut = '';          // why the parse stopped before the end of the file
+  let elementCount = 0;  // all <programme> elements, for the yields
   const now = Date.now();
   const windowStart = now - 120000;
   const windowEnd = now + 6 * 3600000;  // 6h
@@ -979,8 +1218,8 @@ async function loadEPG(url) {
       const {done, value} = await reader.read();
       if (done) break;
       bytesRead += value.byteLength;
-      // Hard abort: avoid OOM on feeds > 20 MB
-      if (bytesRead > 20 * 1024 * 1024) {
+      if (bytesRead > EPG_M3U_MAX_BYTES) {
+        cut = `${Math.round(EPG_M3U_MAX_BYTES / 1048576)} MB limit`;
         reader.cancel();
         break;
       }
@@ -1047,13 +1286,20 @@ async function loadEPG(url) {
                 title: tiM ? copyStr(unescapeXml(tiM[1].trim())) : ''
               });
               programmeCount++;
+              if (programmeCount >= EPG_M3U_MAX_PROGS) {
+                cut = `${EPG_M3U_MAX_PROGS.toLocaleString()} programs limit`;
+                break;
+              }
             }
           }
         }
         cursor = idx + 12;
 
         // Yield inside the loop so GC can run between elements
-        if (programmeCount > 0 && programmeCount % 128 === 0) {
+        // Count each element, also an element out of the window. Before, the
+        // count of kept programs stayed at a multiple of 128 for the elements
+        // out of the window, and each of these elements yielded.
+        if (++elementCount % 512 === 0) {
           const _progMsg = `${(bytesRead / 1048576).toFixed(1)} MB — ${
               programmeCount.toLocaleString()} programs …`;
           statusArea.innerText = `📅 EPG: ${_progMsg}`;
@@ -1067,6 +1313,10 @@ async function loadEPG(url) {
         }
       }
 
+      if (cut) {
+        reader.cancel();
+        break;
+      }
       // Safety: if a single element is pathologically large, discard to cursor
       if (buffer.length - cursor > 1048576) {
         const trim = Math.max(
@@ -1099,7 +1349,9 @@ async function loadEPG(url) {
     const mb = (bytesRead / 1048576).toFixed(1);
     const readyMsg = `${epgData.size.toLocaleString()} channels, ${
         programmeCount.toLocaleString()} programs (${mb} MB)${
-        byName ? `, ${byName.toLocaleString()} matched by name` : ''}`;
+        byName ? `, ${byName.toLocaleString()} matched by name` :
+                 ''}${cut ? ` · file cut at the ${cut}` : ''}`;
+    if (cut) diagLog(`XMLTV (M3U): the parse stopped at the ${cut}`);
     statusArea.innerText = `📅 EPG ready — ${readyMsg}`;
     showEPGToast(readyMsg, 'success');
     hideEPGToast(3500);

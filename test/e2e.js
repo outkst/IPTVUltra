@@ -47,9 +47,11 @@ async function rewindIntoArchiveTests(page) {
     window.__archive = null;
     return a;
   });
-  const isArchive = a => !!a && a.player && Math.abs(a.stop - a.at) < 2000 &&
+  // A hold moves the virtual position further back than a short press
+  const isArchive = (a, maxMs = 12000) => !!a && a.player &&
+      Math.abs(a.stop - a.at) < 2000 &&
       a.at - (a.start + a.startAt * 1000) >= 9000 &&
-      a.at - (a.start + a.startAt * 1000) < 12000 &&
+      a.at - (a.start + a.startAt * 1000) < maxMs &&
       /\/timeshift\/user\/pass\/\d+\/[\d:-]+\/50\.ts$/.test(a.url);
   await sleep(300);
   await leftKey(50);
@@ -65,7 +67,7 @@ async function rewindIntoArchiveTests(page) {
   const ra2 = await archiveCall();
   check(
       'a hold of Left in the live player of an archive channel also continues in the archive',
-      isArchive(ra2), JSON.stringify(ra2));
+      isArchive(ra2, 20000), JSON.stringify(ra2));
   await page.evaluate(() => catchupBackToLive());
   await sleep(300);
   // During the load of hls.js, no engine is active, but Left does not start
@@ -82,6 +84,26 @@ async function rewindIntoArchiveTests(page) {
   check(
       'Left during the load of hls.js does not start the archive',
       ra3 === null, JSON.stringify(ra3));
+  // No buffer and no archive: a hold of Left shows a message and does not
+  // pause or seek
+  const na = await page.evaluate(async () => {
+    const ch = channels[currentChannelIndex];
+    const archive = ch.archive;
+    ch.archive = 0;
+    _startHold('left');
+    const badge = document.getElementById('pbTrickBadge');
+    const r = {
+      text: badge.textContent,
+      shown: badge.style.display !== 'none',
+      holding: _isHolding()
+    };
+    ch.archive = archive;
+    return r;
+  });
+  check(
+      'no buffer and no archive: Left shows "Rewind is not available", no hold',
+      /not available/.test(na.text) && na.shown && !na.holding,
+      JSON.stringify(na));
 }
 const stats = async () => (await fetch(BASE + '/__stats')).json();
 
@@ -429,6 +451,32 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'focused row is rendered and highlighted after scrolling',
       focusedVisible);
 
+  // A channel selection that does not come from the cursor (a pointer click
+  // on a row) moves the cursor to the playing row. Down then starts there.
+  const clickFocus = await page.evaluate(() => {
+    const prev = currentChannelIndex;
+    const row = epgRenderedRows.get(epgFocusedRowIdx + 2);
+    if (!row) return null;
+    row.click();
+    return {prev, focus: epgFocusedRowIdx};
+  });
+  check(
+      'a click on a guide row moves the cursor to that row',
+      !!clickFocus && clickFocus.focus === 42,
+      JSON.stringify(clickFocus));
+  await key('ArrowDown', 40);
+  await sleep(200);
+  const downFocus = await page.evaluate(() => epgFocusedRowIdx);
+  check(
+      'Down after a click starts from the playing row', downFocus === 43,
+      `focus=${downFocus}`);
+  if (clickFocus) {
+    await page.evaluate(prev => {
+      if (prev >= 0) selectChannel(prev);
+    }, clickFocus.prev);
+    await sleep(300);
+  }
+
   // ---------- Catch-up: archive channel, programme cursor into the past, OK
   // plays the timeshift stream ----------
   await page.evaluate(() => {
@@ -688,7 +736,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const catsAfter = await page.evaluate(
       () => ({
         open: catsOpen,
-        groups: groupsList.slice(0, 4),
+        groups: groupsList.slice(0, 5),
         hiddenInAll: currentGroup === 'all' &&
             currentFilteredChannels.some(ch => ch.group === 'Group 01'),
         total: currentFilteredChannels.length
@@ -699,8 +747,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           catsSt.saved[0] === 'Group 01' && catsSt.order[0] === 'Group 01' &&
           catsSt.order[1] === 'Group 03' && catsSt.order[2] === 'Group 02' &&
           !catsAfter.open && !catsAfter.groups.includes('Group 01') &&
-          catsAfter.groups[2] === 'recent' &&
-          catsAfter.groups[3] === 'Group 03' && !catsAfter.hiddenInAll &&
+          catsAfter.groups[2] === 'ss:+' && catsAfter.groups[3] === 'recent' &&
+          catsAfter.groups[4] === 'Group 03' && !catsAfter.hiddenInAll &&
           catsAfter.total === 2900,
       JSON.stringify({catsSt, catsAfter}));
   await page.evaluate(() => {
@@ -926,11 +974,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           surfTarget),
       `target=${surfTarget}`);
   check(
-      'Recent group is pinned third and lists the channels just watched, newest first; it is a Starting group option',
+      'Recent group follows the saved searches and lists the channels just watched, newest first; it is a Starting group option',
       await page.evaluate(
-          () => groupsList[2] === 'recent' &&
+          () => groupsList[3] === 'recent' &&
               document.querySelectorAll('#groupsPinned .group-item').length ===
-                  3 &&
+                  4 &&
               recentChannels()[0] === channels[currentChannelIndex] &&
               recentChannels().length >= 3 &&
               settingsRows()
@@ -1178,6 +1226,63 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       hourRoll.x1 === Math.max(0, hourRoll.x0 - hourRoll.px) &&
           hourRoll.rebuilt,
       JSON.stringify(hourRoll));
+  // A short EPG refresh keeps the earlier programs (archive table) and the
+  // programs after the short list.
+  const merge = await page.evaluate(() => {
+    const now = Date.now(), m = 60000;
+    const old = [
+      {start: now - 300 * m, stop: now - 240 * m, title: 'a', hasArchive: true},
+      {start: now - 60 * m, stop: now, title: 'b', hasArchive: true},
+      {start: now + 600 * m, stop: now + 660 * m, title: 'z'}
+    ];
+    const short = [
+      {start: now - 60 * m, stop: now, title: 'b2'},
+      {start: now, stop: now + 60 * m, title: 'c'}
+    ];
+    const r = epgMergeShort(old, short);
+    return {
+      titles: r.map(p => p.title).join(),
+      arch: r[1].hasArchive === true
+    };
+  });
+  check(
+      'a short EPG refresh keeps the archive programs before and after it',
+      merge.titles === 'a,b2,c,z' && merge.arch, JSON.stringify(merge));
+  // Left after the last program goes to that program
+  const lastLeft = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const progs = ch && epgProgsOf(ch.tvgId);
+    if (!progs || !progs.length) return {skip: true};
+    const last = progs[progs.length - 1];
+    const keepT = epgFocusT, keepX = _epgX;
+    epgFocusT = last.stop + 60000;
+    epgMoveCursor(-1);
+    const p = epgFocusedProg();
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: !!p && p.start === last.start};
+  });
+  check(
+      'Left after the last program of a row goes to that program',
+      lastLeft.skip || lastLeft.ok, JSON.stringify(lastLeft));
+  // Back from a different app: the timeline and the cursor go to the time now
+  const backNow = await page.evaluate(() => {
+    const keepT = epgFocusT;
+    _epgX = 0;
+    epgApplyPan();
+    epgFocusT = Date.now() - 6 * 3600000;
+    document.dispatchEvent(new Event('visibilitychange'));
+    const r = {x: _epgX, want: epgNowPan(), t: epgFocusT};
+    epgFocusT = keepT;
+    updateEPGBlockFocus();
+    return r;
+  });
+  check(
+      'a return from a different app pans the guide to the time now',
+      backNow.x > 0 && backNow.x === backNow.want && backNow.t === 0,
+      JSON.stringify(backNow));
 
   // Empty answers under load: an empty epg_listings never replaces data already
   // held and is retried soon
@@ -2665,8 +2770,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     check(
         'OSD shows codec, bit depth, resolution, frame rate and audio from the pipeline',
         await page.evaluate(
-            () => document.getElementById('vodOsdTech').textContent ===
-                    'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1' &&
+            () => (flushVodTech(),  // the write waits 2 s
+                   document.getElementById('vodOsdTech').textContent ===
+                       'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1') &&
                 JSON.parse(
                     localStorage.getItem('iptv_vod_tech'))[vodPlay.key] ===
                     'HEVC · 10-bit · 3840×1600 · 23.976 fps · E-AC-3 5.1'),
@@ -3318,7 +3424,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                     .filter(r => r.classList.contains('disabled'))
                     .map(r => r.dataset.id)
                     .join(',') ===
-              'epgTz,epgDst,epgExtra,xtXmltv,startGroup,resume,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
+              'epgTz,epgDst,epgExtra,xtXmltv,startGroup,resume,manageSaved,manageCats,refreshPlaylist'));  // the demo has no per-playlist state, cache or categories
   await back();
   check(
       'Back closes settings',
@@ -3740,6 +3846,19 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           shk.name === 'Shaka Player' && /hls50/.test(shk.url) && shk.ums &&
           shk.row === 'shaka',
       JSON.stringify(shk));
+  // The app makes the text displayer, thus it can show and hide the text
+  const disp = await page.evaluate(async () => {
+    const t0 = Date.now();
+    while (!_shakaText && Date.now() - t0 < 10000)
+      await new Promise(r => setTimeout(r, 200));
+    if (!_shakaText) return {made: false};
+    shakaSelectText(liveEngine.shaka, null);
+    const off = _shakaText.isTextVisible();
+    return {made: _shakaText instanceof shaka.text.NativeTextDisplayer, off};
+  });
+  check(
+      'Shaka Player uses the text displayer of the app (captions visibility)',
+      disp.made && disp.off === false, JSON.stringify(disp));
   await page
       .waitForFunction(
           () =>
@@ -3794,6 +3913,44 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       svod.active && !svod.shaka &&
           /\/movie\/user\/pass\/1\.mp4$/.test(svod.src) && !svod.teardown,
       JSON.stringify(svod));
+  // Audio data check: the mock file 901 has audio data only in the first
+  // second (as provider files with no sound), 902 has correct audio data
+  const noaud = await page.evaluate(async () => {
+    const xt = _xt;
+    _xt = xt || {base: 'http://localhost:8765', user: 'user', pass: 'pass'};
+    const toast = () => document.getElementById('epgToast')
+                            .classList.contains('epg-toast--visible') ?
+        document.getElementById('epgToastTitle').textContent :
+        '';
+    const run = async (id, stale) => {
+      hideEPGToast();
+      startVodPlayback(
+          {kind: 'movie', item: {id, name: 'Movie ' + id, ext: 'webm'}});
+      await new Promise(r => setTimeout(r, AUDIO_CHECK_DELAY_MS + 2500));
+      const o = {noAudio: vodPlay.noAudio, toast: toast()};
+      if (stale) {
+        // A result for a title that does not play any more: no message
+        await vodAudioCheck(stale, _vodLoadToken - 1);
+        o.staleToast = toast();
+        o.staleNoAudio = vodPlay.noAudio;
+      }
+      stopVodPlayback(false);
+      return o;
+    };
+    const bad = await run(901);
+    const good = await run(902, vodStreamUrl(901, 'webm'));
+    const out = {bad, good, log: _diagLog.slice(-3).map(d => d.msg)};
+    hideEPGToast();
+    _xt = xt;
+    return out;
+  });
+  check(
+      'a WebM file with no audio data shows "No audio"; a correct file does not',
+      noaud.bad.noAudio && noaud.bad.toast === 'No audio' &&
+          !noaud.good.noAudio && !noaud.good.toast && !noaud.good.staleToast &&
+          !noaud.good.staleNoAudio &&
+          noaud.log.some(m => /No audio data in the file: Movie 901/.test(m)),
+      JSON.stringify(noaud));
   // The fixture ends with #EXT-X-ENDLIST and has PLAYLIST-TYPE:VOD, like the
   // first playlist of a cold relay; the response filter removes both
   check(
@@ -3951,8 +4108,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           /^blob:/.test(scold.src) && scold.reloads === 0 &&
           scold.log.some(m => /Shaka Player waits for the relay/.test(m)),
       JSON.stringify(scold));
-  // A poll of the filter that is rejected (HTTP 509): the count of the raw
-  // requests goes back, and the next playlist of Shaka Player gets the filter
+  // A poll of the filter that is rejected (HTTP 509): the next playlist of
+  // Shaka Player gets the filter
   await page.evaluate(() => {
     channels[1].url =
         'http://localhost:8765/hlscold/index.m3u8?fail=1&r=' + Date.now();
@@ -3966,14 +4123,12 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                                       shaka: !!liveEngine.shaka,
                                       live: !!(liveEngine.shaka &&
                                                liveEngine.shaka.isLive()),
-                                      raw: [..._shakaRaw.values()],
                                       waits: liveEngine.relayWaits,
                                       restarts: _hlsRelayRestart.n
                                     }));
   check(
-      'a rejected poll of the filter keeps no raw request count',
-      sfail.shaka && sfail.live && sfail.raw.every(v => v === 0) &&
-          sfail.waits === 1 && sfail.restarts === 0,
+      'a rejected poll of the filter does not stop the filter on the next playlist',
+      sfail.shaka && sfail.live && sfail.waits === 1 && sfail.restarts === 0,
       JSON.stringify(sfail));
   // A relay that does not start: after the wait, the native pipeline gets the
   // channel, and the app tells why. Date.now() goes past the wait.
@@ -4256,9 +4411,22 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       /^video::cue \{/.test(scss.before) &&
           /color: rgba\(255,255,0,0\.7\)/.test(scss.after) &&
           /background-color: #000/.test(scss.after) &&
-          /font-size: 125%/.test(scss.after) &&
-          /text-shadow: 3px 3px 4px #000/.test(scss.after) && scss.back,
+          /font-size: 100%/.test(scss.after) &&
+          /text-shadow: 2px 2px 0 #000/.test(scss.after) && scss.back,
       JSON.stringify(scss));
+  // Captions in capital letters show in sentence case
+  const capc = await page.evaluate(() => {
+    _capSentenceEnd = true;
+    return [
+      captionSentenceCase('<c.white>THE FIRST DOWN. A BIG RUN</c>'),
+      captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.')
+    ];
+  });
+  check(
+      'captions in capital letters show in sentence case; tags stay',
+      capc[0] === '<c.white>The first down. A big run</c>' &&
+          capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.',
+      JSON.stringify(capc));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
       scue.line === 'auto' && scue.snap && scue.position === 'auto' &&
@@ -4313,6 +4481,42 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           scu.range.start === 0 && scu.range.end >= 5 &&
           /^H\.264/.test(scu.tech) && !/⏪/.test(scu.tech),
       JSON.stringify({scu0, scu}));
+  // A hold in a catch-up moves a virtual position on the bar. The video
+  // seeks 1 time, on release. Short presses during a seek add up.
+  const scrub = await page.evaluate(async () => {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    let seeks = 0;
+    const on = () => seeks++;
+    videoPlayer.currentTime = 1;
+    await sleep(500);
+    videoPlayer.addEventListener('seeking', on);
+    const t0 = videoPlayer.currentTime;
+    _startHold('right');
+    await sleep(300);
+    const during = seeks, virt = _scrubPos;
+    const bar =
+        document.getElementById('vodTimePos').textContent === fmtClock(virt);
+    _stopHold();
+    await sleep(400);
+    const after = seeks, t = videoPlayer.currentTime;
+    seeks = 0;
+    playerStep(-1);
+    playerStep(-1);
+    playerStep(-1);
+    await sleep(1000);
+    videoPlayer.removeEventListener('seeking', on);
+    return {during, after, t0, virt, t, bar, steps: seeks,
+            end: videoPlayer.currentTime};
+  });
+  check(
+      'catch-up hold: no seek while held, 1 seek to the bar position on release',
+      scrub.during === 0 && scrub.after === 1 && scrub.virt > scrub.t0 + 1 &&
+          Math.abs(scrub.t - scrub.virt) < 1 &&
+          scrub.bar,
+      JSON.stringify(scrub));
+  check(
+      '3 quick short presses in a catch-up send 2 seeks, to the sum of the steps',
+      scrub.steps === 2 && scrub.end < 1, JSON.stringify(scrub));
   await page.evaluate(() => {
     channels[1].streamId = 404;
     const now = Date.now();
@@ -4551,6 +4755,46 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       fz.n === 1 && fz.title === 'Fuzzy Show' && fz.alias === 'fuzzy.id' &&
           fz.norm === 'bbcone' && fz.norm2 === 'bbcone',
       JSON.stringify(fz));
+
+  // ---------- Text helpers: HTML escape, #EXTINF parser, group names,
+  // credentials in the log ----------
+  const th = await page.evaluate(() => {
+    const inf = parseExtinf(
+        '#EXTINF:-1 tvg-id="a.b" tvg-name="Rock, Paper" ' +
+        'group-title="Kid\'s TV" tvg-logo=\'http://x/l.png\',Rock, Paper HD');
+    return {
+      esc: escapeHtml('<a title="x">Bob\'s & co</a>'),
+      name: inf.name,
+      attrs: inf.attrs,
+      noComma: parseExtinf('#EXTINF:-1 tvg-id="x"').name,
+      groups: [' News ', 'all', 'recent', 'favorites', 'All'].map(
+          normGroupName),
+      redact: [
+        redactCredentials('m:http://h/get.php?username=bob&password=pw'),
+        redactCredentials('u:http://h:80/live/bob/pw/12.ts'),
+        redactCredentials('u:http://h:80/bob/pw/12')
+      ]
+    };
+  });
+  check(
+      'escapeHtml escapes the double quote and the apostrophe',
+      th.esc ===
+          '&lt;a title=&quot;x&quot;&gt;Bob&#39;s &amp; co&lt;/a&gt;',
+      th.esc);
+  check(
+      'parseExtinf keeps a comma and an apostrophe in a value in quotes',
+      th.name === 'Rock, Paper HD' && th.attrs['tvg-id'] === 'a.b' &&
+          th.attrs['tvg-name'] === 'Rock, Paper' &&
+          th.attrs['group-title'] === 'Kid\'s TV' &&
+          th.attrs['tvg-logo'] === 'http://x/l.png' && th.noComma === null,
+      JSON.stringify(th));
+  check(
+      'normGroupName trims and renames the keys of the pinned groups',
+      th.groups.join('|') === 'News|All|Recent|Favorites|All',
+      th.groups.join('|'));
+  check(
+      'redactCredentials removes the user name and the password',
+      th.redact.every(s => !/bob|pw/.test(s)), th.redact.join(' '));
 
   // ---------- Alternate sources: a duplicate of the channel (same name,
   // quality tag) is tried when the budget runs out ----------
@@ -5036,6 +5280,275 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           ev.titles.join('|') ===
               'Old Match||LATER VS LATEST|MAIN CARD|SOON VS SOONER|',
       JSON.stringify(ev));
+  // A sport label in lower case goes from the title to the description
+  const evSport = await page.evaluate(() => {
+    const d = new Date(Date.now() + 3600000);
+    const p2 = n => String(n).padStart(2, '0');
+    const when = `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${
+        p2(d.getDate())} ${p2(d.getHours())}:00:00`;
+    return ['hockey:  Red vs Blue _ U18 (Home)', 'live:  A vs B _ Cricket']
+        .map(t => parseEventName({name: `(SL 001) | ${t} (${when})`,
+                                  group: 'US| TEST PPV'}))
+        .map(e => e ? `${e.title}#${e.desc}` : null);
+  });
+  check(
+      'event names: a sport label goes to the description, " _ " becomes " · "',
+      evSport[0] === 'Red vs Blue · U18 (Home)#Hockey' &&
+          evSport[1] === 'A vs B · Cricket#',
+      JSON.stringify(evSport));
+  // The search mark does not break an entity, and a short EPG refresh does
+  // not copy hasArchive false (the value of a program that was on)
+  const fix2 = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const old = [
+      {start: now - 2 * H, stop: now - H, title: 'A', hasArchive: true},
+      {start: now - H, stop: now + H, title: 'B', hasArchive: false},
+    ];
+    const merged = epgMergeShort(old, [
+      {start: now - H, stop: now + H, title: 'B'},
+      {start: now + H, stop: now + 2 * H, title: 'C'},
+    ]);
+    return {
+      mark: highlightText('Women\'s 39ers', '39'),
+      archive: merged.map(p => p.title + ':' + p.hasArchive).join()
+    };
+  });
+  // ---------- Saved keyword searches ----------
+  const ss = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const pick = channels.filter(c => c.tvgId && !_hiddenGroups.has(c.group))
+                     .slice(10, 15);
+    const saved = pick.map(c => ({c, name: c.name, progs: epgData.get(c.tvgId)}));
+    const prog = (a, b, title) => ({start: now + a * H, stop: now + b * H, title});
+    epgData.set(pick[0].tvgId, [prog(-0.5, 1, 'Steelers at Ravens')]);
+    epgData.set(pick[1].tvgId, [prog(-0.5, 0.5, 'News'),
+                                prog(0.5, 1.5, 'Penguins Hockey')]);
+    pick[2].name = 'Pittsburgh News';
+    epgData.set(pick[3].tvgId, [prog(-0.5, 1, 'Spitting Image')]);
+    // A match that starts later than 60 min: not in the list
+    epgData.set(pick[4].tvgId, [prog(-0.5, 1.5, 'News'),
+                                prog(1.5, 2.5, 'Steelers Postgame')]);
+    const before = savedSearches().length;
+    savedSearches().push({id: 'e2e', name: 'Pgh', terms: ['Pitt', 'Penguins',
+                                                          'Steelers']});
+    ssSaveAll();
+    const keys = groupsList.slice(0, 5).join();
+    currentGroup = 'ss:e2e';
+    renderGroupsList();
+    refreshCurrentView();
+    const list = currentFilteredChannels.slice();
+    const order = pick.map(c => list.indexOf(c));
+    const header = document.getElementById('channelsHeaderTitle').textContent;
+    const mark = ssProgMatches(prog(-0.5, 1, 'Steelers at Ravens')) &&
+        ssProgMatches(prog(0.5, 1.5, 'Penguins Hockey')) &&
+        !ssProgMatches(prog(-0.5, 1, 'Spitting Image')) &&
+        !ssProgMatches(prog(1.5, 2.5, 'Steelers Postgame')) &&
+        !ssProgMatches(prog(-2, -1, 'Steelers Pregame'));
+    const html = epgProgsHtml(pick[0]);
+    // The minute tick adds the mark when a program goes into the 60 min
+    const row = document.createElement('div');
+    const p2 = prog(1.5, 2.5, 'Steelers Postgame');
+    row.innerHTML = `<div class="epg-prog-block" data-start="${
+        p2.start}" data-stop="${p2.stop}"><span class="epg-prog-title">${
+        p2.title}</span></div>`;
+    const blk = row.firstChild;
+    epgTickRowBlocks(row, null, now);
+    const tick = [blk.classList.contains('ss-match')];
+    epgTickRowBlocks(row, null, now + H);
+    tick.push(blk.classList.contains('ss-match'));
+    epgTickRowBlocks(row, null, now + 3 * H);
+    tick.push(blk.classList.contains('ss-match'));
+    // The editor: start with the text of the search box, add a term, save
+    openSavedSearchEditor(null, ['Pirates']);
+    const ed1 = {open: ssOpen, terms: ssEd.terms.join(), name: ssEd.name};
+    ssStartEdit(ssAddRow());
+    ssCommitEdit('Panthers');
+    const ed2 = ssEd.terms.join();
+    ssSaveEditor();
+    const after = savedSearches().map(s => s.name + ':' + s.terms.join('|'));
+    const grp = currentGroup;
+    // Clean up
+    const ps = getPlaylistState(_activePlaylistKey);
+    ps.savedSearches = ps.savedSearches.slice(0, before);
+    for (const x of saved) {
+      x.c.name = x.name;
+      if (x.progs) epgData.set(x.c.tvgId, x.progs);
+      else epgData.delete(x.c.tvgId);
+    }
+    ssSaveAll();
+    currentGroup = 'all';
+    renderGroupsList();
+    refreshCurrentView();
+    return {keys, order, header, mark, block: /ss-match/.test(html), ed1, ed2,
+            after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e'),
+            tick: tick.join()};
+  });
+  check(
+      'saved search: below All, any term, word start, now, then 60 min, then name',
+      ss.keys === 'favorites,all,ss:e2e,ss:+,recent' && ss.order[0] === 0 &&
+          ss.order[1] === 1 && ss.order[2] === 2 && ss.order[3] === -1 &&
+          ss.order[4] === -1 && /Pgh/.test(ss.header) && ss.mark && ss.block &&
+          ss.tick === 'false,true,false',
+      JSON.stringify(ss));
+  check(
+      'saved search editor: prefill, add a term, save opens the new search',
+      ss.ed1.open && ss.ed1.terms === 'Pirates' && ss.ed2 === 'Pirates,Panthers' &&
+          ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
+          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
+      JSON.stringify(ss));
+  // The window of each saved search (hours), and no folder icons
+  const ssh = await page.evaluate(() => {
+    const now = Date.now(), H = 3600000;
+    const c = channels.find(x => x.tvgId && !_hiddenGroups.has(x.group));
+    const keep = epgData.get(c.tvgId);
+    epgData.set(c.tvgId, [
+      {start: now - H, stop: now + 2 * H, title: 'News'},
+      {start: now + 2 * H, stop: now + 3 * H, title: 'Zyxwv Final'}
+    ]);
+    const before = savedSearches().length;
+    const s = {id: 'hr', name: 'Hr', terms: ['Zyxwv'], hours: 1};
+    savedSearches().push(s);
+    const in1 = savedSearchChannels(s).includes(c);
+    s.hours = 3;
+    const in3 = savedSearchChannels(s).includes(c);
+    currentGroup = 'ss:hr';
+    renderGroupsList();
+    refreshCurrentView();
+    const mark3 = /ss-match/.test(epgProgsHtml(c));
+    // The editor: the window row, Left changes 3 h to 2 h, Save keeps it
+    openSavedSearchEditor(s, undefined, false);
+    const ed = {hours: ssEd.hours, row: ssHoursRow() === ssBtnRow() - 1};
+    ssEd.focus = ssHoursRow();
+    handleSavedSearchKey(
+        {key: 'ArrowLeft', keyCode: 37, preventDefault() {}});
+    ed.text = document.querySelector('#ssList .ss-hours').textContent;
+    ssEd.focus = ssBtnRow();
+    ssEd.btn = 0;
+    ssActivateButton();
+    const saved = savedSearches().find(x => x.id === 'hr').hours;
+    const in2 = savedSearchChannels(s).includes(c);
+    const icons = [...document.querySelectorAll('#groupsList .group-item')]
+                      .filter(d => d.querySelector('.group-folder')).length;
+    const head = document.querySelector('.groups-header span').textContent;
+    // Clean up
+    getPlaylistState(_activePlaylistKey).savedSearches =
+        savedSearches().slice(0, before);
+    if (keep) epgData.set(c.tvgId, keep);
+    else epgData.delete(c.tvgId);
+    ssSaveAll();
+    currentGroup = 'all';
+    renderGroupsList();
+    refreshCurrentView();
+    return {in1, in3, mark3, ed, saved, in2, icons, head: head.trim()};
+  });
+  check(
+      'saved search: window of 1 to 24 h for each search, set in the editor',
+      !ssh.in1 && ssh.in3 && ssh.mark3 && ssh.ed.hours === 3 && ssh.ed.row &&
+          /2 h/.test(ssh.ed.text) && ssh.saved === 2 && ssh.in2,
+      JSON.stringify(ssh));
+  check(
+      'group bar: no folder icon on the groups or on the heading',
+      ssh.icons === 0 && ssh.head === 'Groups', JSON.stringify(ssh));
+  // Corrections of the code review (2026-11-09)
+  const rv = await page.evaluate(async () => {
+    const out = {};
+    // A group name does not change when the function runs again
+    const g1 = normGroupName('ss: Sports');
+    out.group = [g1, normGroupName(g1), normGroupName('SS: News')];
+    // A new channel list with the same length gives a new match
+    const s = {id: 'rv', terms: ['News']};
+    const r1 = savedSearchChannels(s);
+    const keep = channels;
+    channels = channels.slice();
+    const r2 = savedSearchChannels(s);
+    out.cacheNew = r1 !== r2 && savedSearchChannels(s) === r2;
+    channels = keep;
+    _ssCache = null;
+    // Back in the editor goes to the list when the list opened it
+    savedSearches().push({id: 'rv', name: 'Rv', terms: ['News']});
+    openSavedSearchList();
+    ssEd.listFocus = savedSearches().length - 1;
+    ssListActivate();
+    const inEdit = ssEd.mode === 'edit' && ssEd.id === 'rv';
+    savedSearchBack();
+    out.back = [inEdit, ssEd.mode, ssOpen];
+    savedSearchBack();
+    out.back.push(ssOpen);
+    savedSearches().pop();
+    ssSaveAll();
+    // Event channels with 1 tvg-id keep their own titles
+    const ev = n => ({
+      name: `Xyz (XY) ${n}: 2025 Team ${n} vs B - Hockey - 22/10 15:00`,
+      group: 'US| TEST PPV',
+      tvgId: 'shared.ppv'
+    });
+    const evs = [ev(1), ev(2)];
+    channels = evs;
+    buildEventProgs();
+    out.untimed = evs.map(c => (untimedEventOf(c) || {}).title);
+    channels = keep;
+    buildEventProgs();
+    // The EPG clock offset changes only after 3 replies with the new value
+    const xt = _xt;
+    _xt = {epgOffsetMin: 0};
+    const ts = Math.floor(Date.now() / 60000) * 60;
+    const listing = off => ({
+      start_timestamp: String(ts),
+      start: new Date((ts + off * 60) * 1000)
+                 .toISOString()
+                 .replace('T', ' ')
+                 .slice(0, 19)
+    });
+    const offs = [];
+    for (const o of [60, 0, 60, 0, 60, 60, 60]) {
+      xtreamNoteEpgOffset(listing(o));
+      offs.push(_xt.epgOffsetMin);
+    }
+    out.offs = offs.join();
+    _xt = xt;
+    // A failed save does not change the saved playlist in memory
+    const p = savedPlaylists.find(x => x.type === 'xtream');
+    if (p) {
+      const before = JSON.stringify(p);
+      const set = storageSet;
+      storageSet = () => false;
+      addXtreamPlaylist(p.url, p.username, 'other-pass', 'Other name');
+      storageSet = set;
+      out.saveKept = JSON.stringify(p) === before;
+      updateStartStatus('Ready', false, false, false, 0);
+    }
+    // A range request reads only a range reply of the requested size
+    const base = 'http://localhost:8765';
+    const r = await fetchRange(base + '/movie/user/pass/1.mp4', 0, 99);
+    out.range = r && r.bytes.length === 100 && r.total > 100;
+    out.noRange = await fetchRange(base + '/xmltv.xml', 0, 99);
+    return out;
+  });
+  check(
+      'review fixes: group name, cache, editor Back, event titles, offset, save',
+      rv.group.join('|') === 'SS: Sports|SS: Sports|SS: News' && rv.cacheNew &&
+          rv.back.join() === 'true,list,true,false' &&
+          rv.untimed[0] !== rv.untimed[1] && /Team 1/.test(rv.untimed[0]) &&
+          rv.offs === '0,0,0,0,0,0,60' && rv.saveKept !== false &&
+          rv.range && rv.noRange === null,
+      JSON.stringify(rv));
+  // An event name with no usable time gives a title with no time
+  const ut = await page.evaluate(() => [
+    'Xyz (XY) 25: 2025 A vs B - Field Hockey - 22/10 15:00',
+    'Xyz (XY) 1: Cheer 24/7', 'Xyz (XY) 218:'
+  ].map(n => parseUntimedName({name: n, group: 'US| TEST PPV'})));
+  check(
+      'event names with no time zone give a title and the date of the name',
+      ut[0] && ut[0].title === 'A vs B · Field Hockey' &&
+          /^Listed for 22 Oct 2025, 15:00/.test(ut[0].note) && ut[1] &&
+          ut[1].title === 'Cheer 24/7' && ut[1].note === '' && ut[2] === null,
+      JSON.stringify(ut));
+  check(
+      'search mark keeps entities; a short EPG does not copy hasArchive false',
+      fix2.mark ===
+              'Women&#39;s <span class="search-match-highlight">39</span>ers' &&
+          fix2.archive === 'A:true,B:undefined,C:undefined',
+      JSON.stringify(fix2));
   check(
       'event group: sorted by start time, finished hidden (Sort, hide finished) or last (Sort), untouched when As listed',
       ev.hide === 'ev3.test,ev4.test,ev2.test,ev1.test,ev5.test' &&
@@ -5176,10 +5689,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     ev('keyup');
     const after = currentChannelIndex;
     closeVersions();
+    settings.bestVersion = false;  // this check selects the exact row
     ev('keydown');
     ev('keyup');
+    settings.bestVersion = true;
     const tuned = channels[currentChannelIndex].name;
-    window.__vsRestore();
     return {fi, open, focus, unchanged: after === before, tuned};
   });
   check(
@@ -5187,6 +5701,148 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       vlp.fi >= 0 && vlp.open && vlp.focus === 'Vers HD' && vlp.unchanged &&
           vlp.tuned === 'Vers HD',
       JSON.stringify(vlp));
+  // Best version: a selection plays the version with the best measured
+  // picture. The selected row stays the playing row.
+  const bv = await page.evaluate(() => {
+    const ev = (type) => {
+      const e = new KeyboardEvent(
+          type, {key: 'Enter', keyCode: 13, bubbles: true, cancelable: true});
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const out = {};
+    selectChannel(1);
+    out.best = bestVersionOf(31) === 32 && bestVersionOf(32) === -1;
+    selectChannel(31);
+    out.playing = channels[currentChannelIndex].name;
+    out.toast = document.getElementById('epgToastTitle').textContent;
+    const fi = currentFilteredChannels.indexOf(channels[31]);
+    out.active = epgRenderedRows.has(fi) &&
+        epgRenderedRows.get(fi).classList.contains('active');
+    out.isPlaying = isPlayingIdx(31) && isPlayingIdx(32);
+    epgFocusedRowIdx = fi;
+    updateEPGRowFocus();
+    ev('keydown');
+    ev('keyup');
+    out.player = livePlayer.active;
+    exitLivePlayer();
+    out.last = lastChannelIndex === 1;
+    // A new selection of the same row does not load the stream again
+    const load = loadLiveSource;
+    let loads = 0;
+    loadLiveSource = function() {
+      loads++;
+      return load.apply(this, arguments);
+    };
+    selectChannel(31);
+    loadLiveSource = load;
+    out.noReload = loads === 0 && currentChannelIndex === 32;
+    // A version that failed is not selected again
+    _bestFailed.add(32);
+    out.failed = bestVersionOf(31) === -1;
+    _bestFailed.delete(32);
+    // The Versions menu plays the version that you select
+    openVersions(31);
+    versionsFocus = _versionsRows.findIndex(r => r.i === 31);
+    versionsWatch();
+    out.exact = currentChannelIndex === 31 && lastChannelIndex === 1;
+    settings.bestVersion = false;
+    out.off = bestVersionOf(31) === -1;
+    settings.bestVersion = true;
+    return out;
+  });
+  check(
+      'best version: a selection plays the best measured version, the row stays active',
+      bv.best && bv.playing === 'Vers' && bv.toast === 'Best version' &&
+          bv.active && bv.isPlaying && bv.player && bv.last && bv.failed &&
+          bv.exact && bv.off && bv.noReload,
+      JSON.stringify(bv));
+  // A hold of OK on a guide row opens Versions, and the auto-repeat keydowns
+  // do not select a version. CH+ skips the rows of the stream that plays.
+  const vr = await page.evaluate(async () => {
+    const ev = (type, repeat) => {
+      const e = new KeyboardEvent(type, {
+        key: 'Enter',
+        keyCode: 13,
+        repeat: !!repeat,
+        bubbles: true,
+        cancelable: true
+      });
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const out = {};
+    selectChannel(1);
+    epgFocusedRowIdx = currentFilteredChannels.indexOf(channels[31]);
+    updateEPGRowFocus();
+    ev('keydown');
+    await sleep(500);
+    for (let i = 0; i < 5; i++) {
+      await sleep(100);
+      ev('keydown', true);
+    }
+    out.open = versionsOpen;
+    ev('keyup');
+    out.stillOpen = versionsOpen && currentChannelIndex === 1;
+    closeVersions();
+    selectChannel(31);
+    const list = currentFilteredChannels;
+    out.order = [30, 31, 32].map(i => list.indexOf(channels[i])).join();
+    zapChannel(1);
+    out.zap = currentChannelIndex;
+    return out;
+  });
+  check(
+      'a hold of OK keeps Versions open; CH+ skips the rows of the stream that plays',
+      vr.open && vr.stillOpen && vr.zap !== 32 && vr.zap !== 31,
+      JSON.stringify(vr));
+  // A hold of OK in the live player changes to the previous channel while you
+  // hold the key. The release does not pause.
+  const okHold = await page.evaluate(async () => {
+    const ev = (type, repeat) => {
+      const e = new KeyboardEvent(type, {
+        key: 'Enter',
+        keyCode: 13,
+        repeat: !!repeat,
+        bubbles: true,
+        cancelable: true
+      });
+      Object.defineProperty(e, 'keyCode', {get: () => 13});
+      document.dispatchEvent(e);
+    };
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const hold = async () => {
+      ev('keydown');
+      for (let i = 0; i < 7; i++) {
+        await sleep(100);
+        ev('keydown', true);
+      }
+      const during = currentChannelIndex;
+      ev('keyup');
+      return during;
+    };
+    selectChannel(2);
+    selectChannel(5);
+    enterLivePlayer();
+    const out = {toggles: 0};
+    const toggle = toggleLivePause;
+    toggleLivePause = () => out.toggles++;
+    out.first = await hold();
+    out.second = await hold();
+    out.third = await hold();
+    out.prev = getPlaylistState(_activePlaylistKey).prevChannel.url ===
+        channels[5].url;
+    toggleLivePause = toggle;
+    exitLivePlayer();
+    window.__vsRestore();
+    return out;
+  });
+  check(
+      'a hold of OK in the live player changes to the previous channel, again and again',
+      okHold.first === 2 && okHold.second === 5 && okHold.third === 2 &&
+          okHold.toggles === 0 && okHold.prev,
+      JSON.stringify(okHold));
 
   check(
       'no uncaught page errors', errors.length === 0,
