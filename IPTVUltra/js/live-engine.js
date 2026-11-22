@@ -277,6 +277,7 @@ function placeLiveNotice() {
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
   if (host && el.parentNode !== host) host.appendChild(el);
+  queueLiveCaptions();  // the caption layer goes to the same element
 }
 // ── Shaka Player: playlist filter
 // A response filter does the work of livePlaylistLoader() for Shaka Player:
@@ -310,6 +311,29 @@ function noteShakaRenditions(bases, text) {
     }
   }
 }
+// A query parameter that is a token: a token can change on each request.
+const _RE_TOKEN_PARAM =
+    /^(token|tok|auth|sig|signature|hash|md5|key|expires?|exp|st|e|t)$/i;
+/**
+ * Gives a segment URL with no token parameters. A short parameter that is not
+ * a token stays, because it can be the only name of the segment
+ * (`/seg.ts?n=7`). A value of 16 or more characters is a token.
+ * @param {string} url The segment URL.
+ * @return {string}
+ */
+function segmentKey(url) {
+  const h = url.indexOf('#');
+  if (h >= 0) url = url.slice(0, h);
+  const q = url.indexOf('?');
+  if (q < 0) return url;
+  const keep = url.slice(q + 1).split('&').filter(p => {
+    const eq = p.indexOf('=');
+    const name = eq < 0 ? p : p.slice(0, eq);
+    const value = eq < 0 ? '' : p.slice(eq + 1);
+    return p && !_RE_TOKEN_PARAM.test(name) && value.length < 16;
+  });
+  return url.slice(0, q) + (keep.length ? '?' + keep.join('&') : '');
+}
 /**
  * Tells if a media playlist starts again (a relay restart).
  * @param {string} uri The playlist URL.
@@ -319,11 +343,9 @@ function noteShakaRenditions(bases, text) {
  */
 function playlistRestarted(uri, text) {
   const m = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(text);
-  // A segment URL can have a token in the query, and the token can change on
-  // each request. Thus, compare the segment URLs without the query.
   const line =
       text.split(/\r?\n/).find(l => l.trim() && l.trim()[0] !== '#') || '';
-  const first = line.trim().replace(/[?#].*$/, '');
+  const first = segmentKey(line.trim());
   if (!m || !first) return false;
   const seq = +m[1], prev = _shakaSeq.get(uri);
   _shakaSeq.set(uri, {seq, first});
@@ -536,6 +558,8 @@ function liveHandToNative(url) {
 // occurred.
 function loadLiveSource(url, cause = '') {
   _lastStreamOpenAt = Date.now();
+  _capSentenceEnd = true;  // the first caption of a source starts a sentence
+  clearLiveCaptions();
   if (cause) {
     const ch = channels[currentChannelIndex];
     diagLog(`Live start (${cause}): ${ch ? ch.name.slice(0, 60) : url}`);
@@ -1886,6 +1910,18 @@ function _liveSeekToWall(wall) {
     }
   }
   if (wall < now - 1000 && rewindIntoArchive(wall)) return;
+  // The archive has no program at that time. Go to the oldest point of the
+  // buffer, so that the release does not do nothing. The native pipeline has
+  // no buffer: it stays at live.
+  if (wall < now - 1000) {
+    if (liveEngineActive()) {
+      try {
+        videoPlayer.currentTime = liveBufferRange().start;
+      } catch (_) { /* not seekable yet */
+      }
+    }
+    _flashTrickBadge('No archive at this time');
+  }
   videoPlayer.play().catch(() => {});
 }
 
