@@ -1973,7 +1973,13 @@ video {
   display: none;
 }
 
-.live-captions span {
+/* The global rule `* { font-size: 1rem }` must not apply in the layer. The
+   tags of a cue (<c> gives a span) get the font of the line. */
+.live-captions * {
+  font-size: inherit;
+}
+
+.live-cap-line > span {
   white-space: pre-line;
   padding: 0 0.25em;
   -webkit-box-decoration-break: clone;

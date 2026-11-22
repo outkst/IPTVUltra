@@ -4446,7 +4446,10 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       text: el ? el.textContent : '',
       italic: !!(el && el.querySelector('i')),
       px: el ? parseFloat(el.style.fontSize) : 0,
-      want: host ? Math.round(64 * host.clientHeight / 1080) : -1,
+      // The global rule `* { font-size: 1rem }` must not apply
+      spanPx: el ? parseFloat(getComputedStyle(el.querySelector('i')).fontSize) :
+                   0,
+      want: host ? Math.round(81 * host.clientHeight / 1080) : -1,
       layer: videoPlayer.classList.contains('cap-layer'),
       cueCss: /video\.cap-layer::cue \{ color: transparent/.test(
           document.getElementById('captionStyle').textContent)
@@ -4460,7 +4463,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'live cues show in the caption layer at the px height of the setting',
       clay.shown && clay.text === 'Live text' && clay.italic &&
-          clay.px === Math.max(12, clay.want) && clay.layer && clay.cueCss &&
+          clay.px === Math.max(12, clay.want) && clay.spanPx === clay.px &&
+          clay.layer && clay.cueCss &&
           clay.gone,
       JSON.stringify(clay));
   check(

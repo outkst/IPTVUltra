@@ -1660,15 +1660,19 @@ function captionCss() {
 // player shows the cues in its own layer (`#liveCaptions`) with a letter
 // height in pixels, and `::cue` stays transparent (class `cap-layer`). VOD
 // keeps the renderer of the TV.
-// The letter heights (px for a video height of 1080) use the ratio of the box
-// heights of the TV renderer (98, 122, 130, and 146). The value for "small" is
-// an estimate between the 2 earlier measurements (40 px too small, 61 px too
-// large). Measure it on the TV with a VOD subtitle.
+// The letter heights (px for a video height of 1080) agree with the TV
+// renderer. Measured on the C4 (2026-11-21): the renderer uses a 1280x720
+// plane (each box is centered at x 629 of `subtitlePosXByProgram`), thus its
+// values are 1.5 times smaller than the screen pixels. With that factor, the
+// width measurement of 2026-11-08 gives 61 px at "small". The other values
+// use the ratio of the box heights (98, 122, 130, and 146). The user compared
+// 61 px live (sentence case) with a VOD subtitle on the TV and said that it is
+// good (2026-11-21).
 const CAPTION_PX = {
-  small: 48,
-  medium: 60,
-  large: 64,
-  extraLarge: 72
+  small: 61,
+  medium: 76,
+  large: 81,
+  extraLarge: 91
 };
 let _capRaf = 0;
 /**
@@ -1751,7 +1755,7 @@ function applyCaptionStyle() {
       // The caption layer shows the text, thus Chromium shows nothing
       ' video.cap-layer::cue { color: transparent;' +
       ' background-color: transparent; text-shadow: none; }' +
-      ` .live-captions span { color: rgba(${rgb},${
+      ` .live-cap-line > span { color: rgba(${rgb},${
                        settings.subOpacity / 100});` +
       ` background-color: ${CAPTION_BGS[settings.subBg] || CAPTION_BGS.none};` +
       ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
