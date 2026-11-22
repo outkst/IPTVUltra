@@ -277,7 +277,7 @@ function placeLiveNotice() {
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
   if (host && el.parentNode !== host) host.appendChild(el);
-  queueLiveCaptions();  // the caption layer goes to the same element
+  queueLiveCaptions(true);  // the caption layer goes to the same element
 }
 // ── Shaka Player: playlist filter
 // A response filter does the work of livePlaylistLoader() for Shaka Player:
@@ -316,8 +316,9 @@ const _RE_TOKEN_PARAM =
     /^(token|tok|auth|sig|signature|hash|md5|key|expires?|exp|st|e|t)$/i;
 /**
  * Gives a segment URL with no token parameters. A short parameter that is not
- * a token stays, because it can be the only name of the segment
- * (`/seg.ts?n=7`). A value of 16 or more characters is a token.
+ * a token stays. Use this only when the query is the name of the segment
+ * (`/seg.ts?n=7`, see `playlistRestarted`). A value of 16 or more characters
+ * is a token.
  * @param {string} url The segment URL.
  * @return {string}
  */
@@ -343,9 +344,17 @@ function segmentKey(url) {
  */
 function playlistRestarted(uri, text) {
   const m = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(text);
-  const line =
-      text.split(/\r?\n/).find(l => l.trim() && l.trim()[0] !== '#') || '';
-  const first = segmentKey(line.trim());
+  const segs =
+      text.split(/\r?\n/).map(l => l.trim()).filter(l => l && l[0] !== '#');
+  // A query can have a token or a time that changes on each refresh. Thus,
+  // compare the paths with no query. Only when all segments (2 or more) have
+  // the same path, the query is the name of the segment.
+  const path = u => u.replace(/[?#].*$/, '');
+  const queryName =
+      segs.length > 1 && segs.every(u => path(u) === path(segs[0]));
+  const first = !segs.length ? '' :
+      queryName              ? segmentKey(segs[0]) :
+                               path(segs[0]);
   if (!m || !first) return false;
   const seq = +m[1], prev = _shakaSeq.get(uri);
   _shakaSeq.set(uri, {seq, first});
@@ -1910,9 +1919,10 @@ function _liveSeekToWall(wall) {
     }
   }
   if (wall < now - 1000 && rewindIntoArchive(wall)) return;
-  // The archive has no program at that time. Go to the oldest point of the
-  // buffer, so that the release does not do nothing. The native pipeline has
-  // no buffer: it stays at live.
+  // The archive has no program at that time, or the buffer start moved during
+  // the hold. Go to the oldest point of the buffer, so that the release does
+  // not do nothing. The native pipeline has no buffer: it stays at live. The
+  // message shows only on a channel with an archive.
   if (wall < now - 1000) {
     if (liveEngineActive()) {
       try {
@@ -1920,7 +1930,7 @@ function _liveSeekToWall(wall) {
       } catch (_) { /* not seekable yet */
       }
     }
-    _flashTrickBadge('No archive at this time');
+    if (archiveChannelIdx() >= 0) _flashTrickBadge('No archive at this time');
   }
   videoPlayer.play().catch(() => {});
 }

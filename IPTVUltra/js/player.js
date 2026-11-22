@@ -1116,6 +1116,9 @@ function captionSentenceCase(text) {
  * @param {!TextTrack} track The caption track.
  */
 function fixCaptionCues(track) {
+  // A hidden track also gets cues. It must not change the sentence state of
+  // the track that shows.
+  if (track.mode && track.mode !== 'showing') return;
   if (track !== _capTrack) {
     _capTrack = track;
     _capSentenceEnd = true;
@@ -1688,8 +1691,18 @@ function captionLayer() {
   }
   return el;
 }
-/** Shows the active cues in the caption layer in the next frame. */
-function queueLiveCaptions() {
+// The cues of the previous source. With 1 Shaka Player, a track can keep them
+// for a short time after a channel change.
+let _capStale = new WeakSet();
+let _capShown = [];   // the cues in the layer
+let _capFont = null;  // {host, size, h}: the font is correct for these
+/**
+ * Shows the active cues in the caption layer in the next frame.
+ * @param {boolean=} layout True when the element that shows the video, its
+ *     dimensions, or the subtitle settings can be different.
+ */
+function queueLiveCaptions(layout) {
+  if (layout === true) _capFont = null;
   if (!_capRaf) _capRaf = requestAnimationFrame(renderLiveCaptions);
 }
 /**
@@ -1701,26 +1714,45 @@ function renderLiveCaptions() {
   _capRaf = 0;
   const el = captionLayer();
   const on = !vodPlay.active;
-  videoPlayer.classList.toggle('cap-layer', on);
+  if (videoPlayer.classList.contains('cap-layer') !== on)
+    videoPlayer.classList.toggle('cap-layer', on);
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
-  if (host && el.parentNode !== host) host.appendChild(el);
-  el.textContent = '';
+  if (host && el.parentNode !== host) {
+    host.appendChild(el);
+    _capFont = null;
+  }
   const cues = [];
   if (on) {
     for (const t of Array.from(videoPlayer.textTracks || [])) {
       if (t.mode !== 'showing') continue;
-      for (const c of Array.from(t.activeCues || [])) cues.push(c);
+      for (const c of Array.from(t.activeCues || []))
+        if (!_capStale.has(c)) cues.push(c);
     }
   }
   if (!cues.length) {
+    if (_capShown.length) el.textContent = '';
+    _capShown = [];
     el.classList.add('hidden');
     return;
   }
-  const h = (host && host.clientHeight) || 1080;
-  const px = CAPTION_PX[settings.subSize] || CAPTION_PX.medium;
-  el.style.fontSize = `${Math.max(12, Math.round(px * h / 1080))}px`;
+  // The same cues: the layer is correct. Roll-up captions change frequently.
+  const same = cues.length === _capShown.length &&
+      cues.every((c, i) => c === _capShown[i] && c.iptvText === c.text);
+  // Read the height of the host only when the host or the setting changes
+  if (!_capFont || _capFont.host !== host ||
+      _capFont.size !== settings.subSize) {
+    const h = (host && host.clientHeight) || 1080;
+    const px = CAPTION_PX[settings.subSize] || CAPTION_PX.medium;
+    el.style.fontSize = `${Math.max(12, Math.round(px * h / 1080))}px`;
+    _capFont = {host, size: settings.subSize};
+  }
+  el.classList.remove('hidden');
+  if (same) return;
+  _capShown = cues;
+  el.textContent = '';
   for (const c of cues) {
+    c.iptvText = c.text;
     const line = document.createElement('div');
     line.className = 'live-cap-line';
     const span = document.createElement('span');
@@ -1732,10 +1764,20 @@ function renderLiveCaptions() {
     line.appendChild(span);
     el.appendChild(line);
   }
-  el.classList.remove('hidden');
 }
-/** Removes the cues of the previous source from the caption layer. */
+/**
+ * Removes the cues of the previous source from the caption layer. The cues
+ * that the tracks have at this time do not show again.
+ */
 function clearLiveCaptions() {
+  if (_capRaf) {
+    cancelAnimationFrame(_capRaf);
+    _capRaf = 0;
+  }
+  _capStale = new WeakSet();
+  for (const t of Array.from(videoPlayer.textTracks || []))
+    for (const c of Array.from(t.cues || [])) _capStale.add(c);
+  _capShown = [];
   const el = document.getElementById('liveCaptions');
   if (el) {
     el.textContent = '';
@@ -1759,7 +1801,7 @@ function applyCaptionStyle() {
                        settings.subOpacity / 100});` +
       ` background-color: ${CAPTION_BGS[settings.subBg] || CAPTION_BGS.none};` +
       ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
-  queueLiveCaptions();
+  queueLiveCaptions(true);
 }
 applyCaptionStyle();
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the

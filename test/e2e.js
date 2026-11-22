@@ -4421,14 +4421,18 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       captionSentenceCase('<c.white>THE FIRST DOWN. A BIG RUN</c>'),
       captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.'),
       (captionSentenceCase('AND THEN HE'), fixCaptionCues({activeCues: []}),
-       captionSentenceCase('WELCOME BACK.'))
+       captionSentenceCase('WELCOME BACK.')),
+      // A hidden track does not reset the sentence of the track that shows
+      (captionSentenceCase('AND THEN HE'),
+       fixCaptionCues({mode: 'hidden', activeCues: []}),
+       captionSentenceCase('WENT LEFT.'))
     ];
   });
   check(
       'captions in capital letters show in sentence case; tags stay',
       capc[0] === '<c.white>The first down. A big run</c>' &&
           capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.' &&
-          capc[3] === 'Welcome back.',
+          capc[3] === 'Welcome back.' && capc[4] === 'went left.',
       JSON.stringify(capc));
   // The live cues show in the caption layer with the letter height in px
   const clay = await page.evaluate(async () => {
@@ -4454,6 +4458,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       cueCss: /video\.cap-layer::cue \{ color: transparent/.test(
           document.getElementById('captionStyle').textContent)
     };
+    // The same cues: the layer keeps its lines
+    const line = el.querySelector('.live-cap-line');
+    queueLiveCaptions();
+    await new Promise(r => setTimeout(r, 300));
+    out.kept = el.querySelector('.live-cap-line') === line;
+    // A new source: the cues of the track do not show again
+    clearLiveCaptions();
+    queueLiveCaptions();
+    await new Promise(r => setTimeout(r, 300));
+    out.stale = el.classList.contains('hidden');
     t.mode = 'disabled';
     settings.subSize = was;
     await new Promise(r => setTimeout(r, 300));
@@ -4464,8 +4478,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'live cues show in the caption layer at the px height of the setting',
       clay.shown && clay.text === 'Live text' && clay.italic &&
           clay.px === Math.max(12, clay.want) && clay.spanPx === clay.px &&
-          clay.layer && clay.cueCss &&
-          clay.gone,
+          clay.layer && clay.cueCss && clay.kept && clay.stale && clay.gone,
       JSON.stringify(clay));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
@@ -4747,18 +4760,26 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const skey = await page.evaluate(() => {
     _shakaSeq.clear();
     const u = 'http://seq.test/b.m3u8';
-    const pl = s => `#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n${s}\n`;
+    const pl = (...s) => '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n' +
+        s.map(x => `#EXTINF:2.0,\n${x}\n`).join('');
+    const v = 'http://seq.test/c.m3u8';
     return [
       segmentKey('/s.ts?token=abc&n=7'),
       segmentKey('/s.ts?x=0123456789abcdef0123'),
-      playlistRestarted(u, pl('/s.ts?n=7&token=a1')),
-      playlistRestarted(u, pl('/s.ts?n=7&token=b2')),  // only the token
-      playlistRestarted(u, pl('/s.ts?n=1&token=c3')),  // a new segment
+      // The query is the name: all segments have the same path
+      playlistRestarted(u, pl('/s.ts?n=7&token=a1', '/s.ts?n=8&token=a1')),
+      playlistRestarted(u, pl('/s.ts?n=7&token=b2', '/s.ts?n=8&token=b2')),
+      playlistRestarted(u, pl('/s.ts?n=1&token=c3', '/s.ts?n=2&token=c3')),
+      // Different paths: a short time in the query does not count
+      playlistRestarted(v, pl('/a7.ts?ts=1700000100', '/a8.ts?ts=1700000100')),
+      playlistRestarted(v, pl('/a7.ts?ts=1700000104', '/a8.ts?ts=1700000104')),
+      playlistRestarted(v, pl('/a1.ts?ts=1700000108', '/a2.ts?ts=1700000108')),
     ];
   });
   check(
-      'segmentKey keeps a short segment name and removes the tokens',
-      skey.join() === '/s.ts?n=7,/s.ts,false,false,true', JSON.stringify(skey));
+      'segmentKey: a query is a segment name only when all paths are the same',
+      skey.join() === '/s.ts?n=7,/s.ts,false,false,true,false,false,true',
+      JSON.stringify(skey));
   const lcache = await page.evaluate(() => {
     epgPastHours();
     const before = _epgPastHoursFor === channels;
