@@ -1955,6 +1955,31 @@ video {
   display: none;
 }
 
+/* The live captions (the cues of a <track>), with the letter height in px
+   from CAPTION_PX. The script sets the font-size and the colors. */
+.live-captions {
+  position: absolute;
+  left: 5%;
+  right: 5%;
+  bottom: 6%;
+  text-align: center;
+  line-height: 1.3;
+  font-weight: 400;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.live-captions.hidden {
+  display: none;
+}
+
+.live-captions span {
+  white-space: pre-line;
+  padding: 0 0.25em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 .live-notice-title {
   font-size: 1.3rem;
   font-weight: 700;

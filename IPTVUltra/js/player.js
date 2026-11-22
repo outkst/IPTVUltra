@@ -60,6 +60,8 @@ function startVodPlayback(p) {
     _errRetryTimer = null;
   }
   vodPlay.active = true;
+  clearLiveCaptions();
+  queueLiveCaptions();  // removes the class cap-layer
   vodPlay.kind = p.kind;
   vodPlay.key = key;
   vodPlay.item = p.item;
@@ -1131,8 +1133,12 @@ function fixCaptionCues(track) {
 }
 videoPlayer.textTracks.addEventListener('addtrack', e => {
   const track = e.track;
-  if (!track || !CAPTION_TRACK.test(track.label || '')) return;
-  track.addEventListener('cuechange', () => fixCaptionCues(track));
+  if (!track) return;
+  if (CAPTION_TRACK.test(track.label || ''))
+    track.addEventListener('cuechange', () => fixCaptionCues(track));
+  // All live text tracks (captions and the subtitles of hls.js) go to the
+  // caption layer
+  track.addEventListener('cuechange', queueLiveCaptions);
 });
 // Settings language preferences applied to the tracks of Shaka Player when a
 // channel announces them. A selection by the user stays.
@@ -1601,6 +1607,9 @@ const CAPTION_COLORS = {
   cyan: '0,255,255',
   green: '0,255,0'
 };
+// Since 2026-11-21, the live cues show in the caption layer (CAPTION_PX), and
+// these percentages apply only to a VOD <track> (the fallback when the media
+// service is not available, for example on a desktop browser).
 // The sizes agree with the subtitles of the media service (VOD and the native
 // pipeline). Chromium sets the cue font to 5 % of the video height, and these
 // values are a percentage of that font. The media service uses its own
@@ -1644,6 +1653,92 @@ function captionCss() {
       ` font-size: ${CAPTION_SIZES[settings.subSize] || 100}%;` +
       ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
 }
+// ── Live caption layer
+// The user saw the live captions smaller than the VOD subtitles (2026-11-21),
+// in the letter height and the line width. A `::cue` font is a percentage of
+// 5 % of the video height, and Chromium sets the line box. Thus, the live
+// player shows the cues in its own layer (`#liveCaptions`) with a letter
+// height in pixels, and `::cue` stays transparent (class `cap-layer`). VOD
+// keeps the renderer of the TV.
+// The letter heights (px for a video height of 1080) use the ratio of the box
+// heights of the TV renderer (98, 122, 130, and 146). The value for "small" is
+// an estimate between the 2 earlier measurements (40 px too small, 61 px too
+// large). Measure it on the TV with a VOD subtitle.
+const CAPTION_PX = {
+  small: 48,
+  medium: 60,
+  large: 64,
+  extraLarge: 72
+};
+let _capRaf = 0;
+/**
+ * Gives the caption layer, and makes it the first time.
+ * @return {!HTMLElement}
+ */
+function captionLayer() {
+  let el = document.getElementById('liveCaptions');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'liveCaptions';
+    el.className = 'live-captions hidden';
+  }
+  return el;
+}
+/** Shows the active cues in the caption layer in the next frame. */
+function queueLiveCaptions() {
+  if (!_capRaf) _capRaf = requestAnimationFrame(renderLiveCaptions);
+}
+/**
+ * Shows the active cues of the tracks that show (`mode` showing) in the
+ * caption layer, on the element that shows the video. During VOD, the layer
+ * is empty and the `::cue` rule applies.
+ */
+function renderLiveCaptions() {
+  _capRaf = 0;
+  const el = captionLayer();
+  const on = !vodPlay.active;
+  videoPlayer.classList.toggle('cap-layer', on);
+  const host = livePlayer.active ? document.getElementById('vodPlayer') :
+                                   videoPlayer.parentNode;
+  if (host && el.parentNode !== host) host.appendChild(el);
+  el.textContent = '';
+  const cues = [];
+  if (on) {
+    for (const t of Array.from(videoPlayer.textTracks || [])) {
+      if (t.mode !== 'showing') continue;
+      for (const c of Array.from(t.activeCues || [])) cues.push(c);
+    }
+  }
+  if (!cues.length) {
+    el.classList.add('hidden');
+    return;
+  }
+  const h = (host && host.clientHeight) || 1080;
+  const px = CAPTION_PX[settings.subSize] || CAPTION_PX.medium;
+  el.style.fontSize = `${Math.max(12, Math.round(px * h / 1080))}px`;
+  for (const c of cues) {
+    const line = document.createElement('div');
+    line.className = 'live-cap-line';
+    const span = document.createElement('span');
+    // getCueAsHTML gives safe nodes for the tags of the cue (<c>, <i>, <b>)
+    span.appendChild(
+        typeof c.getCueAsHTML === 'function' ?
+            c.getCueAsHTML() :
+            document.createTextNode(String(c.text || '')));
+    line.appendChild(span);
+    el.appendChild(line);
+  }
+  el.classList.remove('hidden');
+}
+/** Removes the cues of the previous source from the caption layer. */
+function clearLiveCaptions() {
+  const el = document.getElementById('liveCaptions');
+  if (el) {
+    el.textContent = '';
+    el.classList.add('hidden');
+  }
+}
+videoPlayer.textTracks.addEventListener('change', queueLiveCaptions);
 function applyCaptionStyle() {
   let el = document.getElementById('captionStyle');
   if (!el) {
@@ -1651,7 +1746,16 @@ function applyCaptionStyle() {
     el.id = 'captionStyle';
     document.head.appendChild(el);
   }
-  el.textContent = captionCss();
+  const rgb = CAPTION_COLORS[settings.subColor] || CAPTION_COLORS.white;
+  el.textContent = captionCss() +
+      // The caption layer shows the text, thus Chromium shows nothing
+      ' video.cap-layer::cue { color: transparent;' +
+      ' background-color: transparent; text-shadow: none; }' +
+      ` .live-captions span { color: rgba(${rgb},${
+                       settings.subOpacity / 100});` +
+      ` background-color: ${CAPTION_BGS[settings.subBg] || CAPTION_BGS.none};` +
+      ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
+  queueLiveCaptions();
 }
 applyCaptionStyle();
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the

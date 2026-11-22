@@ -4430,6 +4430,39 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.' &&
           capc[3] === 'Welcome back.',
       JSON.stringify(capc));
+  // The live cues show in the caption layer with the letter height in px
+  const clay = await page.evaluate(async () => {
+    const t = videoPlayer.addTextTrack('captions', 'CC9', 'en');
+    t.mode = 'showing';
+    t.addCue(new VTTCue(0, 1e7, 'Live <i>text</i>'));
+    const was = settings.subSize;
+    settings.subSize = 'large';
+    queueLiveCaptions();
+    await new Promise(r => setTimeout(r, 300));
+    const el = document.getElementById('liveCaptions');
+    const host = el && el.parentNode;
+    const out = {
+      shown: !!el && !el.classList.contains('hidden'),
+      text: el ? el.textContent : '',
+      italic: !!(el && el.querySelector('i')),
+      px: el ? parseFloat(el.style.fontSize) : 0,
+      want: host ? Math.round(64 * host.clientHeight / 1080) : -1,
+      layer: videoPlayer.classList.contains('cap-layer'),
+      cueCss: /video\.cap-layer::cue \{ color: transparent/.test(
+          document.getElementById('captionStyle').textContent)
+    };
+    t.mode = 'disabled';
+    settings.subSize = was;
+    await new Promise(r => setTimeout(r, 300));
+    out.gone = el.classList.contains('hidden');
+    return out;
+  });
+  check(
+      'live cues show in the caption layer at the px height of the setting',
+      clay.shown && clay.text === 'Live text' && clay.italic &&
+          clay.px === Math.max(12, clay.want) && clay.layer && clay.cueCss &&
+          clay.gone,
+      JSON.stringify(clay));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
       scue.line === 'auto' && scue.snap && scue.position === 'auto' &&

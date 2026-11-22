@@ -277,6 +277,7 @@ function placeLiveNotice() {
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
   if (host && el.parentNode !== host) host.appendChild(el);
+  queueLiveCaptions();  // the caption layer goes to the same element
 }
 // ── Shaka Player: playlist filter
 // A response filter does the work of livePlaylistLoader() for Shaka Player:
@@ -558,6 +559,7 @@ function liveHandToNative(url) {
 function loadLiveSource(url, cause = '') {
   _lastStreamOpenAt = Date.now();
   _capSentenceEnd = true;  // the first caption of a source starts a sentence
+  clearLiveCaptions();
   if (cause) {
     const ch = channels[currentChannelIndex];
     diagLog(`Live start (${cause}): ${ch ? ch.name.slice(0, 60) : url}`);
