@@ -4419,13 +4419,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     _capSentenceEnd = true;
     return [
       captionSentenceCase('<c.white>THE FIRST DOWN. A BIG RUN</c>'),
-      captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.')
+      captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.'),
+      (captionSentenceCase('AND THEN HE'), fixCaptionCues({activeCues: []}),
+       captionSentenceCase('WELCOME BACK.'))
     ];
   });
   check(
       'captions in capital letters show in sentence case; tags stay',
       capc[0] === '<c.white>The first down. A big run</c>' &&
-          capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.',
+          capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.' &&
+          capc[3] === 'Welcome back.',
       JSON.stringify(capc));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
@@ -4704,6 +4707,30 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'the relay restart detector: a lower sequence or a new first segment',
       srst.join() === 'false,false,false,true,true,false',
       JSON.stringify(srst));
+  const skey = await page.evaluate(() => {
+    _shakaSeq.clear();
+    const u = 'http://seq.test/b.m3u8';
+    const pl = s => `#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n${s}\n`;
+    return [
+      segmentKey('/s.ts?token=abc&n=7'),
+      segmentKey('/s.ts?x=0123456789abcdef0123'),
+      playlistRestarted(u, pl('/s.ts?n=7&token=a1')),
+      playlistRestarted(u, pl('/s.ts?n=7&token=b2')),  // only the token
+      playlistRestarted(u, pl('/s.ts?n=1&token=c3')),  // a new segment
+    ];
+  });
+  check(
+      'segmentKey keeps a short segment name and removes the tokens',
+      skey.join() === '/s.ts?n=7,/s.ts,false,false,true', JSON.stringify(skey));
+  const lcache = await page.evaluate(() => {
+    epgPastHours();
+    const before = _epgPastHoursFor === channels;
+    buildChannelIndexMap();
+    return [before, _epgPastHoursFor, _ssCache];
+  });
+  check(
+      'a new channel list clears the caches that keep the old list',
+      lcache.join() === 'true,,', JSON.stringify(lcache));
   await page.evaluate(u => {
     channels[1].url = u;
     settings.liveBuffer = 0;
@@ -5482,7 +5509,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       group: 'US| TEST PPV',
       tvgId: 'shared.ppv'
     });
-    const evs = [ev(1), ev(2)];
+    const evs = [ev(1), ev(2), Object.assign(ev(3), {tvgId: ''})];
     channels = evs;
     buildEventProgs();
     out.untimed = evs.map(c => (untimedEventOf(c) || {}).title);
@@ -5529,6 +5556,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       rv.group.join('|') === 'SS: Sports|SS: Sports|SS: News' && rv.cacheNew &&
           rv.back.join() === 'true,list,true,false' &&
           rv.untimed[0] !== rv.untimed[1] && /Team 1/.test(rv.untimed[0]) &&
+          /Team 3/.test(rv.untimed[2]) &&
           rv.offs === '0,0,0,0,0,0,60' && rv.saveKept !== false &&
           rv.range && rv.noRange === null,
       JSON.stringify(rv));

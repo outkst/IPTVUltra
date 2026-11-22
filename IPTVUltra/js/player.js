@@ -1073,12 +1073,10 @@ function shakaTextLabel(t, i) {
 // line was at the top. Thus, each caption cue gets the full width, centered,
 // at the bottom of the frame.
 const CAPTION_TRACK = /^(CC\d|svc\d+)$/;
-/**
- * Moves the active cues of a caption track to the bottom center.
- * @param {!TextTrack} track The caption track.
- */
-// True when the previous caption ended a sentence
+// True when the previous caption ended a sentence. A new track or a new live
+// source (`loadLiveSource`) sets it to true again.
 let _capSentenceEnd = true;
+let _capTrack = null;  // the track of the previous caption
 /**
  * Changes a caption in capital letters to sentence case: "THE FIRST DOWN. A
  * BIG RUN." gives "The first down. A big run." A caption with small letters
@@ -1111,7 +1109,15 @@ function captionSentenceCase(text) {
   _capSentenceEnd = /[.!?]["')\]]*\s*$/.test(plain);
   return text;
 }
+/**
+ * Moves the active cues of a caption track to the bottom center.
+ * @param {!TextTrack} track The caption track.
+ */
 function fixCaptionCues(track) {
+  if (track !== _capTrack) {
+    _capTrack = track;
+    _capSentenceEnd = true;
+  }
   for (const c of Array.from(track.activeCues || [])) {
     if (c.iptvFixed || typeof c.snapToLines !== 'boolean') continue;
     c.iptvFixed = true;

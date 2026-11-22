@@ -842,7 +842,8 @@ function updateVodCatFocus(scroll) {
 }
 
 async function openVodList(list, catId, query = '') {
-  _vodListOpens++;
+  const opens = ++_vodListOpens;
+  vodNav.loading = false;  // only the load of this call can set it
   vodNav.list = list;
   vodNav.catId = catId || null;
   vodNav.focus = 0;
@@ -879,7 +880,8 @@ async function openVodList(list, catId, query = '') {
         showVodEmpty(`Could not load: ${err.message}`);
       return false;
     } finally {
-      vodNav.loading = false;
+      // An earlier load that ends must not clear the flag of a later load.
+      if (_vodListOpens === opens) vodNav.loading = false;
     }
     if (vodMode !== mode || vodNav.list !== list ||
         vodNav.catId !== (catId || null))

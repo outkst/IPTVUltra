@@ -59,7 +59,17 @@ function chanIndexByUrl(url) {
   const i = _chanByUrl.get(url);
   return i !== undefined ? i : _chanByUrl.get(decodeUrlSafe(url));
 }
+/**
+ * Removes the caches that keep a reference to a channel list. A cache of an
+ * old list keeps all its channel objects in memory.
+ */
+function clearChannelListCaches() {
+  _epgPastHoursFor = null;
+  _epgPastHoursLen = -1;
+  _ssCache = null;
+}
 function buildChannelIndexMap() {
+  clearChannelListCaches();
   channelIndexMap = new Map();
   _chanByNum = new Map();
   _chanByUrl = new Map();
@@ -354,7 +364,8 @@ function buildEventProgs() {
   _untimedEvents = new WeakMap();
   for (const ch of channels) {
     const ev = eventOf(ch);
-    if (!ev && ch.tvgId && _RE_UT_GROUP.test(ch.group || '')) {
+    // The key is the channel, thus a channel with no tvg-id also gets it.
+    if (!ev && _RE_UT_GROUP.test(ch.group || '')) {
       let u = _untimedCache.get(ch);
       if (u === undefined) {
         u = parseUntimedName(ch);

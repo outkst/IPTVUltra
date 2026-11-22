@@ -737,6 +737,7 @@ function goToHomeScreen() {
   stdGroupFocusIdx = 0;
   _reloadAttempts = 0;
   channels = [];
+  clearChannelListCaches();
   currentFilteredChannels = [];
   groupsList = [];
   channelIndexMap.clear();
