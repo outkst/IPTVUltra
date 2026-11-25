@@ -158,6 +158,7 @@ let _vodLoadToken = 0;
 function vodClearLoadListeners() {
   if (_vodOnMeta) videoPlayer.removeEventListener('loadedmetadata', _vodOnMeta);
   _vodOnMeta = null;
+  audioCheckCancel();  // its range requests must not use the next stream
 }
 function stopVodPlayback(backToDetails) {
   if (!vodPlay.active) return;
@@ -2006,6 +2007,13 @@ const AUDIO_CHECK_MIN_VIDEO = 24;  // video blocks for a usable result
 const _EBML_SEGMENT = 0x18538067, _EBML_TRACKS = 0x1654AE6B,
       _EBML_CLUSTER = 0x1F43B675;
 const _audioCheckResults = new Map();  // url -> 'ok' | 'none' | null
+// The range requests of the active check. The provider lets the app use only
+// 1 connection. Thus, a stop or a new title stops them.
+let _audioCheck = null;
+function audioCheckCancel() {
+  if (_audioCheck) _audioCheck.abort();
+  _audioCheck = null;
+}
 
 /**
  * Reads an EBML variable-length integer.
@@ -2166,11 +2174,16 @@ function audioDataVerdict(tracks, counts) {
  * @param {string} url The file.
  * @param {number} start The first byte.
  * @param {number} end The last byte.
+ * @param {?AbortSignal=} signal Stops the request.
  * @return {!Promise<?{bytes: !Uint8Array, total: number}>} The bytes and the
  *     size of the file, or null if the server does not send a range.
  */
-async function fetchRange(url, start, end) {
+async function fetchRange(url, start, end, signal) {
   const ctl = new AbortController();
+  if (signal) {
+    if (signal.aborted) return null;
+    signal.addEventListener('abort', () => ctl.abort(), {once: true});
+  }
   const res = await fetch(
       url, {headers: {Range: `bytes=${start}-${end}`}, signal: ctl.signal});
   // Only the requested range: never the full file, and never more bytes than
@@ -2202,16 +2215,17 @@ async function fetchRange(url, start, end) {
 /**
  * Examines the audio data of a Matroska or WebM file.
  * @param {string} url The file.
+ * @param {?AbortSignal=} signal Stops the check (the title stopped).
  * @return {!Promise<?string>} 'none', 'ok', or null (no result).
  */
-async function audioDataOf(url) {
-  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1);
-  if (!head || !head.total) return null;
+async function audioDataOf(url, signal) {
+  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1, signal);
+  if (!head || !head.total || (signal && signal.aborted)) return null;
   const tracks = mkvTracks(head.bytes);
   if (!tracks) return null;
   const start = Math.floor(head.total * AUDIO_CHECK_PART_AT);
   const end = Math.min(head.total - 1, start + AUDIO_CHECK_PART_BYTES - 1);
-  const part = await fetchRange(url, start, end);
+  const part = await fetchRange(url, start, end, signal);
   if (!part) return null;
   return audioDataVerdict(tracks, mkvBlockCounts(part.bytes));
 }
@@ -2226,11 +2240,16 @@ async function vodAudioCheck(url, token) {
   if (!/\.(mkv|webm)$/i.test(url.split('?')[0])) return;
   let r = _audioCheckResults.get(url);
   if (r === undefined) {
+    audioCheckCancel();
+    const ctl = new AbortController();
+    _audioCheck = ctl;
     try {
-      r = await audioDataOf(url);
+      r = await audioDataOf(url, ctl.signal);
     } catch (_) {
       r = null;
     }
+    if (_audioCheck === ctl) _audioCheck = null;
+    if (ctl.signal.aborted) return;  // no result for the session
     _audioCheckResults.set(url, r);
   }
   if (!vodPlay.active || token !== _vodLoadToken) return;

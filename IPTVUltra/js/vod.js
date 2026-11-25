@@ -695,6 +695,11 @@ function cycleVodMode() {
 function setVodMode(mode) {
   if (mode === vodMode) return;
   if (mode !== 'live' && currentPlaylistType !== 'xtream') return;
+  // Text or a channel number that you typed in the previous mode has no
+  // effect in the new mode
+  clearTimeout(_vodSearchTimer);
+  _vodSearchTimer = null;
+  if (mode !== 'live') cancelDigitEntry();
   if (vodPlay.active) stopVodPlayback(false);
   if (livePlayer.active) exitLivePlayer();
   const prev = vodMode;
@@ -710,11 +715,14 @@ function setVodMode(mode) {
       ev.style.display = 'flex';
     else
       sv.style.display = 'flex';
+    vodNav.query = '';
     renderGroupsList();
     refreshCurrentView();
     if (prev !== 'live' && currentChannelIndex >= 0)
       reloadLiveChannel();  // live streams cannot resume; reload
                             // the channel
+    else if (prev !== 'live' && channels.length)
+      selectInitialChannel();  // no channel played before Movies or Series
     return;
   }
   if (prev === 'live') {
@@ -898,6 +906,7 @@ async function openVodList(list, catId, query = '') {
   return true;
 }
 function applyVodSearch() {
+  if (vodMode === 'live') return;  // the timer came after a change to Live
   const q = vodNav.query || '';
   if (vodNav.screen === 'home') {
     if (q.trim()) {
@@ -1463,7 +1472,7 @@ function vodDetailButtons() {
       label: w ? '✓ Watched · mark unwatched' : '✓ Mark as watched',
       act: () => {
         setMovieWatched(item, info, !w);
-        if (vodNav.detailBtn >= vodDetailButtons().length) vodNav.detailBtn = 0;
+        vodKeepDetailBtn('watched');
         renderVodDetails();
         showEPGToast(
             `${item.name} marked as ${w ? 'unwatched' : 'watched'}`, 'success',
@@ -1487,6 +1496,7 @@ function vodDetailButtons() {
                           `✓ Mark season ${season ? season.num : ''} watched`,
       act: () => {
         setSeasonWatched(item, season, info.seasons, !seasonDone);
+        vodKeepDetailBtn('season');
         renderVodDetails();
         showEPGToast(
             `Season ${season.num} marked as ${
@@ -1511,8 +1521,7 @@ function vodDetailButtons() {
             () => {
               for (const s of info.seasons)
                 setSeasonWatched(item, s, info.seasons, !allDone);
-              if (vodNav.detailBtn >= vodDetailButtons().length)
-                vodNav.detailBtn = 0;
+              vodKeepDetailBtn('all');
               renderVodDetails();
               showEPGToast(
                   `${item.name}: all episodes marked ${
@@ -1524,6 +1533,20 @@ function vodDetailButtons() {
     });
   }
   return btns;
+}
+/**
+ * Keeps the focus on a button of the details page after its action. The
+ * action can add or remove a button before it, for example "Remove from
+ * Continue Watching".
+ * @param {string} id The ID of the button.
+ */
+function vodKeepDetailBtn(id) {
+  const btns = vodDetailButtons();
+  const i = btns.findIndex(b => b.id === id);
+  if (i >= 0)
+    vodNav.detailBtn = i;
+  else if (vodNav.detailBtn >= btns.length)
+    vodNav.detailBtn = 0;
 }
 function renderVodDetails() {
   const d = vodNav.detail;

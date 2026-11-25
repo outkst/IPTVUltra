@@ -662,6 +662,7 @@ function showConfirmDialog(title, message, onYes) {
 }
 
 function goToHomeScreen() {
+  cancelDigitEntry();  // a channel number that you typed does not tune
   // Abort any in-flight fetches
   if (_epgAbortController) {
     _epgAbortController.abort();
@@ -806,8 +807,19 @@ function toggleGroupsColumn() {
     floatingBtn.style.display =
         (currentPlaylistType === 'xtream' && !groupsColumnVisible) ? '' :
                                                                      'none';
-  if (currentPlaylistType === 'xtream')
+  if (currentPlaylistType === 'xtream') {
     requestAnimationFrame(updateEPGNowMarker);
+    // The width of the guide changes during 0.3 s. Then the guide measures
+    // the viewport again, else the pan limits use the previous width.
+    if (epgMode)
+      setTimeout(() => {
+        if (!epgMode || currentPlaylistType !== 'xtream') return;
+        epgMeasureViewport();
+        _epgX = Math.min(_epgX, epgMaxPan());
+        epgApplyPan();
+        queueEPGRender();
+      }, 350);
+  }
 }
 
 

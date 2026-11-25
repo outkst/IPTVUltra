@@ -686,6 +686,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           () => /no such channel/.test(
                     document.getElementById('chNumOverlay').textContent) &&
               channels[currentChannelIndex].num === 51));
+  // The 2 s timer can come after a change of the view: no channel tunes
+  const late = await page.evaluate(() => {
+    onDigitKey(5);
+    onDigitKey(2);
+    vodMode = 'movies';
+    commitDigits();
+    vodMode = 'live';
+    const o = document.getElementById('chNumOverlay');
+    return {
+      num: channels[currentChannelIndex].num,
+      hidden: o.classList.contains('hidden'),
+      buf: _digitBuf
+    };
+  });
+  check(
+      'a number commit after a change to Movies does not tune a channel',
+      late.num === 51 && late.hidden && late.buf === '', JSON.stringify(late));
 
   // ---------- Search also matches what is on now (programme titles from loaded
   // EPG) ----------
@@ -1357,6 +1374,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               JSON.stringify(document.getElementById('epgSearchInput').value) +
               ' active=' +
               (document.activeElement && document.activeElement.id)));
+  // A space before, after, or between the words gives no empty term
+  const sq = await page.evaluate(
+      () =>
+          [searchChannels('00001 ').length,
+           searchChannels(' 00001').length, searchChannels('00001').length,
+           channels.length]);
+  check(
+      'a search with a space before or after the word ignores the space',
+      sq[0] === sq[2] && sq[1] === sq[2] && sq[2] < sq[3], JSON.stringify(sq));
   await key('ArrowDown', 40);  // leaves the search box
   check(
       'Down leaves the search box',
@@ -2231,8 +2257,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         /Mark season 1 watched/.test(sb.labels) &&
             /Mark all watched/.test(sb.labels),
         sb.labels);
-    await page.evaluate(
-        () => vodDetailButtons().find(b => b.id === 'season').act());
+    await page.evaluate(() => {
+      const btns = vodDetailButtons();
+      vodNav.detailBtn = btns.findIndex(b => b.id === 'season');
+      btns[vodNav.detailBtn].act();
+    });
     const sw = await page.evaluate(() => {
       const d = vodNav.detail;
       const s1 = d.info.seasons[0].episodes.map(ep => {
@@ -2245,9 +2274,14 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
             ep => episodeProgress(d.item.id, ep.id)),
         play: document.querySelector('.vod-btn.pri').textContent,
         season: (vodDetailButtons().find(b => b.id === 'season') || {}).label,
-        ticks: document.querySelectorAll('.vod-ep.watched').length
+        ticks: document.querySelectorAll('.vod-ep.watched').length,
+        focus: (vodDetailButtons()[vodNav.detailBtn] || {}).id
       };
     });
+    // The action adds "Remove from Continue Watching" before the button
+    check(
+        'the focus stays on the season button after Mark season watched',
+        sw.focus === 'season', JSON.stringify(sw));
     check(
         'Mark season watched marks all of season 1, Play moves to S2 E1, button flips to unwatched',
         sw.s1 === '111' && !sw.s2 && /Play S2 E1/.test(sw.play) &&
@@ -3630,6 +3664,36 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'hls.js live playlist with #EXT-X-ENDLIST stays live (cold relay)',
       fps.live, JSON.stringify(fps));
+  // A CMAF segment has more than 1 moof, after more than 64 KB of data
+  const segCount = await page.evaluate(() => {
+    const cat = (...a) => {
+      const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
+      let o = 0;
+      for (const x of a) {
+        out.set(x, o);
+        o += x.length;
+      }
+      return out;
+    };
+    const u32 = (...v) => {
+      const b = new Uint8Array(v.length * 4);
+      v.forEach((x, i) => new DataView(b.buffer).setUint32(i * 4, x));
+      return b;
+    };
+    const box = (type, body) => cat(
+        u32(8 + body.length), Uint8Array.from(type, c => c.charCodeAt(0)),
+        body);
+    const traf = (id, n) =>
+        box('traf', cat(box('tfhd', u32(0, id)), box('trun', u32(0, n))));
+    const chunk = () =>
+        cat(box('moof', cat(traf(1, 25), traf(2, 40))),
+            box('mdat', new Uint8Array(70000)));
+    const b = cat(chunk(), chunk(), chunk());
+    return [mp4SampleCount(b, 1), mp4SampleCount(b, 2), mp4SampleCount(b, 0)];
+  });
+  check(
+      'mp4SampleCount adds the samples of each moof of a segment (CMAF)',
+      segCount.join() === '75,120,75', JSON.stringify(segCount));
   // A relay that restarts sends MEDIA-SEQUENCE 0 again with a different
   // segment. hls.js starts again on the same URL and keeps the channel.
   await page.evaluate(() => {

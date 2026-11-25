@@ -320,11 +320,15 @@ function xtreamEnsureServerInfo() {
       .then(d => {
         if (_xt !== xt) return;
         xt.tz = (d && d.server_info && d.server_info.timezone) || 'UTC';
-        if (_activePlaylistKey)
-          cacheGet('playlists', _activePlaylistKey).then(rec => {
-            if (rec && _activePlaylistKey && rec.tz !== xt.tz) {
+        // The key of this playlist: a different playlist can open during the
+        // read, and its record must not get this list
+        const key = _activePlaylistKey;
+        if (key)
+          cacheGet('playlists', key).then(rec => {
+            if (rec && _xt === xt && _activePlaylistKey === key &&
+                rec.tz !== xt.tz) {
               rec.tz = xt.tz;
-              cachePut('playlists', _activePlaylistKey, rec);
+              cachePut('playlists', key, rec);
             }
           });
       })
@@ -2299,7 +2303,9 @@ function applyXtreamChannels(
   const key = _activePlaylistKey;  // a different playlist can open meanwhile
   if (channels.length)
     setTimeout(() => {
-      if (_activePlaylistKey === key) selectInitialChannel();
+      // In Movies or Series, setVodMode('live') starts the channel
+      if (_activePlaylistKey === key && vodMode === 'live')
+        selectInitialChannel();
     }, 500);
   // EPG is fetched lazily per visible row (see "Xtream lazy EPG"): cached
   // entries first, then favorites in the background

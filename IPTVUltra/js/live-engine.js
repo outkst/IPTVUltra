@@ -1032,13 +1032,16 @@ function mp4VideoTrackId(b) {
 }
 /**
  * Gives the number of samples of a track in an fMP4 media segment (the
- * `trun` of its `traf`).
+ * `trun` boxes of its `traf`). A segment can have more than 1 `moof` (CMAF
+ * chunks): the count is the total of all the `moof` boxes. The walk does
+ * not read the data of an `mdat`: it uses the length in its header.
  * @param {!Uint8Array} b The segment.
  * @param {number} trackId The track ID, or 0 for the first track.
  * @return {number} The sample count, or 0.
  */
 function mp4SampleCount(b, trackId) {
-  for (const moof of mp4Boxes(b, 0, Math.min(b.length, 65536))) {
+  let want = trackId, total = 0;
+  for (const moof of mp4Boxes(b, 0, b.length)) {
     if (moof.type !== 'moof') continue;
     for (const traf of mp4Boxes(b, moof.start + moof.hdr, moof.end)) {
       if (traf.type !== 'traf') continue;
@@ -1047,12 +1050,17 @@ function mp4SampleCount(b, trackId) {
         if (x.type === 'tfhd')
           id = mp4U32(b, x.start + x.hdr + 4);
         else if (x.type === 'trun')
-          n = mp4U32(b, x.start + x.hdr + 4);
+          n += mp4U32(b, x.start + x.hdr + 4);
       }
-      if (n && (!trackId || id === trackId)) return n;
+      if (!n) continue;
+      if (!want) want = id;
+      if (id === want) {
+        total += n;
+        break;
+      }
     }
   }
-  return 0;
+  return total;
 }
 /**
  * Notes a frame rate sample (video samples over the segment span).

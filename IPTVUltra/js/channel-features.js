@@ -488,6 +488,13 @@ function markPlayingRows() {
 function playsNow(idx) {
   return isPlayingIdx(idx) && (!!catchup || playingStreamHealthy());
 }
+// Gives `true` when OK on the row of the channel at `idx` opens the player.
+// When the automatic starts of a stream stopped (`showStreamError`, no
+// watchdog, no retry timer), OK starts the stream again, the same as a click.
+function okOpensPlayer(idx) {
+  return isPlayingIdx(idx) &&
+      (!!catchup || !!stallWatchdogTimer || !!_errRetryTimer);
+}
 // True when the channel at `idx` plays, also when the app plays a better
 // version of it (`_bestFrom`)
 function isPlayingIdx(idx) {
@@ -1037,6 +1044,16 @@ function onDigitKey(d) {
   }
   _digitTimer = setTimeout(commitDigits, 2000);
 }
+// Stops a channel number that you typed. The app calls it when it goes out of
+// the live view.
+function cancelDigitEntry() {
+  if (_digitTimer) {
+    clearTimeout(_digitTimer);
+    _digitTimer = null;
+  }
+  _digitBuf = '';
+  hideDigitOverlay();
+}
 function commitDigits() {
   if (_digitTimer) {
     clearTimeout(_digitTimer);
@@ -1044,12 +1061,14 @@ function commitDigits() {
   }
   const n = parseInt(_digitBuf, 10);
   _digitBuf = '';
-  if (!(n > 0)) {
+  // The timer can come after a change of the view, for example to Home or to
+  // Movies. Then the number does not tune a channel.
+  if (!(n > 0) || !digitEntryAllowed()) {
     hideDigitOverlay();
     return;
   }
   const idx = _chanByNum.get(n);
-  if (idx === undefined) {
+  if (idx === undefined || !channels[idx]) {
     showDigitOverlay(`${n} · no such channel`, 'missing');
     setTimeout(() => {
       if (!_digitBuf) hideDigitOverlay();
@@ -1196,7 +1215,8 @@ async function loadEPG(url) {
   if (epgLoading) return;
   epgLoading = true;
   if (_epgAbortController) _epgAbortController.abort();
-  _epgAbortController = new AbortController();
+  const ctl = new AbortController();
+  _epgAbortController = ctl;
   // Parse into fresh maps and swap them in on success, so a background
   // refresh never blanks the existing guide while it downloads.
   const newData = new Map();
@@ -1221,7 +1241,7 @@ async function loadEPG(url) {
 
   showEPGToast('Downloading EPG data …', 'loading');
   try {
-    const response = await fetch(url, {signal: _epgAbortController.signal});
+    const response = await fetch(url, {signal: ctl.signal});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const reader = response.body.getReader();
 
@@ -1372,6 +1392,8 @@ async function loadEPG(url) {
     }, 4000);
 
   } catch (err) {
+    // goToHomeScreen aborts the download: that is not an error
+    if (ctl.signal.aborted) return;
     statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
     showEPGToast(err.message, 'error');
     hideEPGToast(7000);
@@ -1380,8 +1402,11 @@ async function loadEPG(url) {
         statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
     }, 3000);
   } finally {
-    epgLoading = false;
-    _epgAbortController = null;
+    // After an abort, a new load can own these
+    if (_epgAbortController === ctl) {
+      epgLoading = false;
+      _epgAbortController = null;
+    }
     buffer = null;
   }
 }
