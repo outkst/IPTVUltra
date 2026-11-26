@@ -151,6 +151,8 @@ function epgMoveCursor(dir) {
     return;
   }
   const p = progs[j];
+  // A program outside the guide window has no block: keep the cursor
+  if (_epgWinStart && (p.stop <= _epgWinStart || p.start >= _epgWinEnd)) return;
   epgFocusT = p.start + Math.min(60000, Math.max(1, (p.stop - p.start) / 2));
   if (dir < 0 && ch && channelHasCatchup(ch) && j <= 2)
     epgMaybeFetchHistory(ch);

@@ -576,6 +576,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const off = await page.evaluate(async () => {
     const ch = currentFilteredChannels[49],
           past = epgData.get('ch50.test').find(p => p.hasArchive === true);
+    // A change of the correction makes new objects: read the current one
+    const pi = epgData.get('ch50.test').indexOf(past);
+    const cur = () => epgData.get('ch50.test')[pi];
     const before = {start: past.start, url: catchupUrl(ch, past)};
     const rows = () => settingsRows(),
           row = id => rows().find(r => r.id === id);
@@ -587,19 +590,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         'America/New_York',
         before.start);  // −240 or −300 depending on the date
     const auto = {
-      delta: past.start - before.start,
+      delta: cur().start - before.start,
       want: -nyNow * 60000,
-      url: catchupUrl(ch, past),
+      url: catchupUrl(ch, cur()),
       dstEnabled: !row('epgDst').disabled,
       label: row('epgTz').options.find(o => o.v === 'America/New_York').label,
       n: row('epgTz').options.length
     };
     row('epgDst').set('std');
-    const std = past.start - before.start;
+    const std = cur().start - before.start;
     row('epgDst').set('dst');
-    const dst = past.start - before.start;
+    const dst = cur().start - before.start;
     row('epgExtra').set(30);
-    const extra = past.start - before.start;
+    const extraStart = cur().start;
+    const extra = extraStart - before.start;
     const saved = JSON.parse(
         localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey];
     // A fetch made while the correction is on must land corrected in epgData
@@ -618,7 +622,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         cached.every(
             (p, i) => p.start === live[i].start - (4 * 60 + 30) * 60000 &&
                 p.stop === live[i].stop - (4 * 60 + 30) * 60000);
-    const refetchedUrl = catchupUrl(ch, live.find(p => p.start === past.start));
+    const refetchedUrl = catchupUrl(ch, live.find(p => p.start === extraStart));
     row('epgExtra').set(0);
     row('epgDst').set('auto');
     row('epgTz').set('');
@@ -1176,6 +1180,31 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         const b = document.querySelector('#epgBody .epg-prog-block');
         return !!b && !!b.dataset.start && !!b.dataset.stop;
       }));
+  // The programs start at the same x as the time strip (no row gap)
+  const align = await page.evaluate(() => {
+    const a = document.querySelector('#epgBody .epg-progs-clip');
+    const b = document.querySelector('.epg-time-marks-clip');
+    if (!a || !b) return {a: !!a, b: !!b};
+    return {
+      a: a.getBoundingClientRect().left,
+      b: b.getBoundingClientRect().left
+    };
+  });
+  check(
+      'guide programs start at the left edge of the time strip',
+      typeof align.a === 'number' && Math.abs(align.a - align.b) < 1,
+      JSON.stringify(align));
+  // A change of the EPG time correction makes new program objects
+  const offCopy = await page.evaluate(() => {
+    const k = [...epgData.keys()][0];
+    if (!k) return {skip: true};
+    const arr = epgData.get(k), start = arr[0].start;
+    epgOffsetChange();
+    return {ok: epgData.get(k) !== arr && arr[0].start === start};
+  });
+  check(
+      'an EPG offset change does not change the old program objects',
+      offCopy.skip || offCopy.ok, JSON.stringify(offCopy));
 
   // EPG cache TTL: expire one visible channel and make sure it is re-queued
   await fetch(BASE + '/__reset');
@@ -1266,15 +1295,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'a short EPG refresh keeps the archive programs before and after it',
       merge.titles === 'a,b2,c,z' && merge.arch, JSON.stringify(merge));
   // Left after the last program goes to that program
+  // (2 programs in the guide window: the mock data goes after its end)
   const lastLeft = await page.evaluate(() => {
     const ch = currentFilteredChannels[epgFocusedRowIdx];
-    const progs = ch && epgProgsOf(ch.tvgId);
-    if (!progs || !progs.length) return {skip: true};
-    const last = progs[progs.length - 1];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), e = _epgWinEnd;
+    const last = {start: e - 7200000, stop: e - 3600000, title: 'last'};
+    epgData.set(
+        id, [{start: e - 10800000, stop: e - 7200000, title: 'a'}, last]);
     const keepT = epgFocusT, keepX = _epgX;
     epgFocusT = last.stop + 60000;
     epgMoveCursor(-1);
     const p = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
     epgFocusT = keepT;
     _epgX = keepX;
     epgApplyPan();
@@ -1284,6 +1321,33 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Left after the last program of a row goes to that program',
       lastLeft.skip || lastLeft.ok, JSON.stringify(lastLeft));
+  // Right does not go to a program after the end of the guide window
+  const winEnd = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const e = _epgWinEnd;
+    epgData.set(id, [
+      {start: e - 3600000, stop: e + 600000, title: 'in'},
+      {start: e + 600000, stop: e + 4200000, title: 'out'}
+    ]);
+    epgFocusT = e - 1800000;
+    epgMoveCursor(1);
+    const t = epgFocusT;
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: t === e - 1800000, t, e};
+  });
+  check(
+      'Right stops at the last program in the guide window',
+      winEnd.skip || winEnd.ok, JSON.stringify(winEnd));
   // Back from a different app: the timeline and the cursor go to the time now
   const backNow = await page.evaluate(() => {
     const keepT = epgFocusT;

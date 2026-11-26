@@ -36,6 +36,8 @@ function extractGroups() {
                    .concat(savedSearchKeys(), ['recent'])
                    .concat(sortGroupNames(
                        allGroupNames().filter(g => !_hiddenGroups.has(g))));
+  // The index of the current group can change
+  stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
   renderGroupsList();
 }
 const PINNED_GROUPS = ['favorites', 'all', 'recent'];

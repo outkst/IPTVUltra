@@ -1348,6 +1348,7 @@ async function fetchXtreamEpgFor(tvgId) {
   }
   const progs = [];
   let ok = false;
+  let nearNow = null;  // the listing for the clock offset of the panel
   try {
     const resp = await fetch(`${xt.base}/player_api.php?username=${
         xt.u}&password=${xt.pw}&action=get_short_epg&stream_id=${
@@ -1359,7 +1360,7 @@ async function fetchXtreamEpgFor(tvgId) {
       if (Array.isArray(listings)) {
         const cutoff = Date.now() -
             2 * 3600000;  // keep a little history for the 1h-back guide window
-        xtreamNoteEpgOffset(epgListingNearNow(listings));
+        nearNow = epgListingNearNow(listings);
         for (const ep of listings) {
           const pStart = epgShiftTime(parseInt(ep.start_timestamp) * 1000);
           const pStop = epgShiftTime(parseInt(ep.stop_timestamp) * 1000);
@@ -1383,6 +1384,8 @@ async function fetchXtreamEpgFor(tvgId) {
   } catch (_) { /* network error — becomes eligible for retry below */
   }
   if (_xt !== xt) return;  // playlist changed while this request was in flight
+  // Only after the check: the offset applies to the current playlist
+  if (nearNow) xtreamNoteEpgOffset(nearNow);
   // A failed fetch is retried after 60 s instead of waiting out the full TTL.
   // An empty answer is retried after EPG_EMPTY_RETRY_MS (providers return empty
   // lists under load) and never replaces data already held.

@@ -36,6 +36,7 @@ function initialGroupFor(key) {
 function validateCurrentGroup() {
   if (groupsList.indexOf(currentGroup) === -1) {
     currentGroup = 'favorites';
+    stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
     renderGroupsList();
   }
 }
@@ -522,7 +523,7 @@ function settingsRows() {
           if (vodNav.screen === 'home')
             renderVodHome();
           else if (vodNav.screen === 'grid' && vodNav.list === 'all')
-            openVodList('all');
+            openVodList('all', null, vodNav.query);
         }
       }
     },
@@ -549,17 +550,30 @@ function settingsRows() {
     },
   ];
 }
+// A focused row that becomes disabled keeps the focus, but it does nothing.
+// Thus, the cursor does not go to a different setting.
+let _settingsKeepId = null;
 function settingsFocusables(rows) {
-  return rows.filter(r => !r.disabled).map(r => r.id).concat(['close']);
+  return rows.filter(r => !r.disabled || r.id === _settingsKeepId)
+      .map(r => r.id)
+      .concat(['close']);
 }
 
 function renderSettings() {
   const list = document.getElementById('settingsList');
   if (!list) return;
+  // Keep the focus on the same row ID, not on the same index
+  const prevId = _settingsRowsCache ?
+      settingsFocusables(_settingsRowsCache)[settingsFocusIdx] :
+      null;
   const rows = settingsRows();
   _settingsRowsCache = rows;
+  const prevRow = rows.find(r => r.id === prevId);
+  _settingsKeepId = prevRow && prevRow.disabled ? prevId : null;
   const foc = settingsFocusables(rows);
-  settingsFocusIdx = Math.max(0, Math.min(settingsFocusIdx, foc.length - 1));
+  const at = prevId ? foc.indexOf(prevId) : -1;
+  settingsFocusIdx =
+      at >= 0 ? at : Math.max(0, Math.min(settingsFocusIdx, foc.length - 1));
   const focusedId = foc[settingsFocusIdx];
   list.innerHTML = '';
   for (const r of rows) {
@@ -647,13 +661,13 @@ function handleSettingsKey(e) {
     // A held key does not go through the rows that load the stream again or
     // send a root command: each value opens a provider stream
     if (e.repeat && row && SETTINGS_NO_REPEAT.has(row.id)) return;
-    if (row && row.type !== 'action')
+    if (row && !row.disabled && row.type !== 'action')
       settingsChange(row, k === 'ArrowLeft' || kc === 37 ? -1 : 1);
   } else if (k === 'Enter' || kc === 13) {
     e.preventDefault();
     if (id === 'close')
       closeSettings();
-    else if (row)
+    else if (row && !row.disabled)
       settingsActivate(row);
   }
 }
@@ -663,6 +677,8 @@ function openSettings() {
   if (!ov) return;
   settingsOpen = true;
   settingsFocusIdx = 0;
+  _settingsRowsCache = null;  // the focus starts at the first row
+  _settingsKeepId = null;
   renderSettings();
   ov.classList.remove('hidden');
   if (document.activeElement && document.activeElement.blur)

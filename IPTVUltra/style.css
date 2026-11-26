@@ -1840,7 +1840,8 @@ video {
   z-index: 15;
 }
 
-.epg-row {
+/* Only the Now/Next lines: a guide row must not get a gap */
+.epg-now-next .epg-row {
   display: flex;
   align-items: center;
   gap: 8px;

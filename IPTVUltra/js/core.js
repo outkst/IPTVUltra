@@ -581,19 +581,21 @@ function epgShiftProgs(progs, dir) {
 // Settings change: re-map everything already in epgData through provider time
 // and redraw
 function epgOffsetChange() {
-  const lists = [...epgData.values()];
-  const raw = lists.map(
-      progs => progs.map(
+  const entries = [...epgData.entries()];
+  const raw = entries.map(
+      ([, progs]) => progs.map(
           p =>
               [epgUnshiftTime(p.start),
                p.stop ? epgUnshiftTime(p.stop) : p.stop]));
   epgOffsetLoad();
-  for (let i = 0; i < lists.length; i++) {
-    const progs = lists[i], r = raw[i];
-    for (let j = 0; j < progs.length; j++) {
-      progs[j].start = epgShiftTime(r[j][0]);
-      if (progs[j].stop) progs[j].stop = epgShiftTime(r[j][1]);
-    }
+  // Make new objects. The persist batch can hold the old objects, and it must
+  // keep the provider time.
+  for (let i = 0; i < entries.length; i++) {
+    const [k, progs] = entries[i], r = raw[i];
+    epgData.set(k, progs.map((p, j) => Object.assign({}, p, {
+      start: epgShiftTime(r[j][0]),
+      stop: p.stop ? epgShiftTime(r[j][1]) : p.stop
+    })));
   }
   _epgSkeletonWinStart = 0;
   _xmltvMerged.clear();  // its cut point uses the old times

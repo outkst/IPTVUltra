@@ -356,6 +356,9 @@ function adultCatIds(mode) {
 }
 function vodVisible(items, mode) {
   if (settings.showAdult) return items;
+  // With no category list, the names and the genres tell the adult titles
+  if (!(mode === 'movies' ? vodCats : seriesCats))
+    return items.filter(i => !isAdultName(i.name) && !isAdultName(i.genre));
   const adult = adultCatIds(mode);
   return adult.size ? items.filter(i => !adult.has(i.catId)) : items;
 }
@@ -880,8 +883,14 @@ async function openVodList(list, catId, query = '') {
     const mode = vodMode;
     vodNav.loading = true;  // a search waits for the list
     try {
-      items = list === 'all' ? vodVisible(await loadVodAll(mode), mode) :
-                               await loadVodCategory(mode, catId);
+      if (list === 'all') {
+        // The adult filter uses the category list
+        const [all] = await Promise.all(
+            [loadVodAll(mode), loadVodCats(mode).catch(() => {})]);
+        items = vodVisible(all, mode);
+      } else {
+        items = await loadVodCategory(mode, catId);
+      }
     } catch (err) {
       if (!err.stale && vodMode === mode && vodNav.list === list &&
           vodNav.catId === (catId || null))
@@ -902,7 +911,8 @@ async function openVodList(list, catId, query = '') {
       'default';
   vodNav.items = vodDerivedItems();
   renderVodGrid();
-  if (list === 'all') focusVodSearch();
+  // Settings can be open (the adult toggle): the input must not get the focus
+  if (list === 'all' && !settingsOpen) focusVodSearch();
   return true;
 }
 function applyVodSearch() {

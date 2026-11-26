@@ -624,6 +624,11 @@ function ssDeleteEditor() {
   ssSaveAll();
   if (currentGroup === key) {
     currentGroup = 'all';
+    stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
+    if (_activePlaylistKey) {
+      getPlaylistState(_activePlaylistKey).lastGroup = currentGroup;
+      savePlaylistState();
+    }
     renderGroupsList();
     refreshCurrentView();
   }
