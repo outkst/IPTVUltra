@@ -73,13 +73,13 @@ async function rewindIntoArchiveTests(page) {
   // During the load of hls.js, no engine is active, but Left does not start
   // the archive
   await page.evaluate(() => {
-    liveEngine.hlsWait = channels[currentChannelIndex].url;
+    liveEngine.engineWait = channels[currentChannelIndex].url;
   });
   await leftKey(50);
   await sleep(100);
   const ra3 = await archiveCall();
   await page.evaluate(() => {
-    liveEngine.hlsWait = '';
+    liveEngine.engineWait = '';
   });
   check(
       'Left during the load of hls.js does not start the archive',
@@ -196,6 +196,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'hls.js not loaded at start; live engine stays native with the buffer Off',
       await page.evaluate(
           () => typeof Hls === 'undefined' && settings.liveBuffer === 0 &&
+              typeof shaka === 'undefined' &&
+              !document.querySelector(`script[src="${SHAKA_SCRIPT}"]`) &&
               !hlsAvailable() && liveMseEngine() === '' &&
               isHlsUrl('http://x/live/u/p/1.m3u8') &&
               isHlsUrl('http://x/get.php?type=m3u8') &&
@@ -3776,7 +3778,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // evaluate as the selection: the dead manifest makes hls.js hand over to
   // native within milliseconds
   // index.html does not load hls.js: the first hls.js channel waits for the
-  // script (liveEngine.hlsWait), and then hls.js takes it
+  // script (liveEngine.engineWait), and then hls.js takes it
   const eng = await page.evaluate(async () => {
     const tags = () =>
         document.querySelectorAll(`script[src="${HLS_SCRIPT}"]`).length;
@@ -3786,7 +3788,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     saveSettings();
     channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8';
     selectChannel(2);
-    const wait = liveEngine.hlsWait === channels[2].url &&
+    const wait = liveEngine.engineWait === channels[2].url &&
         !videoPlayer.getAttribute('src');
     const ok = await loadHlsScript();
     return {
@@ -4068,7 +4070,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Shaka Player loaded; it is the default live engine (settings schema 5)',
       await page.evaluate(
-          () => typeof shaka !== 'undefined' &&
+          async () => await loadShakaScript() && typeof shaka !== 'undefined' &&
               shaka.Player.isBrowserSupported() &&
               DEFAULT_SETTINGS.liveEngine === 'shaka' &&
               DEFAULT_SETTINGS.schema === 5 &&
@@ -4607,7 +4609,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     liveGoLive();
     return {
       line,
-      diag: diagLines().includes(line),
+      // The frame count can change between 2 calls
+      diag: diagLines().some(l => l.startsWith('Shaka Player: frames ')),
       behind,
       after: liveBehindSecs(),
       cc: shakaTextLabel(

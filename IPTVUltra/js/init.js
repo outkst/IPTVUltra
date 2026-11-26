@@ -4,8 +4,8 @@
 
 // ----- Initialization -----
 
-// The app loads hls.js only when the settings select it
-preloadHlsScript();
+// The app loads the script of a live engine only when the settings select it
+preloadEngineScript();
 
 // Favorites are loaded per playlist when one is applied (favoritesLoad);
 // 'iptv_favorites' is only read to convert old ones

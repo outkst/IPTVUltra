@@ -590,7 +590,7 @@ function liveLeftIntoArchive(stepSec) {
   if (catchup || vodPlay.active || !livePlayer.active) return false;
   // During the load of hls.js, no engine is active, but the channel does not
   // use the native pipeline
-  if (liveEngine.hlsWait) return false;
+  if (liveEngine.engineWait) return false;
   if (!liveEngineActive())
     return rewindIntoArchive(Date.now() - ARCHIVE_NATIVE_BEHIND_MS);
   const t = videoPlayer.currentTime || 0;
@@ -690,7 +690,7 @@ function epgProgsHtml(ch) {
   const progs = epgProgsOf(ch.tvgId) || [];
   const parts =
       [`<div class="epg-progs-clip"><div class="epg-progs" style="width:${
-          _epgTotalGuideW}px">`];
+          _epgTotalGuideW}px;transform:translateX(${- _epgX}px)">`];
   let hadBlock = false;
   for (const p of progs) {
     if (p.stop <= _epgWinStart || p.start >= _epgWinEnd) continue;
@@ -854,9 +854,9 @@ function renderEPGVisibleRows() {
 }
 let _epgScrollDir = 1;
 
-// Horizontal position of the guide in px (0 = window start). Applied as a CSS
-// variable on the scroller that the time strip and every row's programme area
-// translate by; see .epg-progs in style.css.
+// Horizontal position of the guide in px (0 = window start). epgApplyPan
+// writes it as a transform on the time strip and on the `.epg-progs` of each
+// rendered row, and epgProgsHtml writes it on a new row.
 let _epgX = 0;
 // False until the guide puts the pan on the current time (the first render
 // after a new window width or a new playlist). A pan of 0 is a correct
@@ -908,7 +908,14 @@ function epgReturnToNow() {
 function epgApplyPan() {
   const so = document.getElementById('epgScrollOuter');
   if (!so) return;
-  so.style.setProperty('--epg-x', `${- _epgX}px`);
+  // A transform on each element, not an inherited CSS variable on the
+  // scroller: a change of the variable calculated the style of the full
+  // scroller again (506 elements and 9.1 ms for each Left key, against 45
+  // elements and 1.6 ms, with a CPU 4 times slower, 2026-11-26).
+  const t = `translateX(${- _epgX}px)`;
+  const marks = document.getElementById('epgTimeMarks');
+  if (marks) marks.style.transform = t;
+  for (const el of so.querySelectorAll('.epg-progs')) el.style.transform = t;
   updateEPGNowMarker();
   updateEPGNavVisibility();
 }
@@ -1692,18 +1699,62 @@ async function xmltvRestore() {
   const key = _activePlaylistKey, gen = _xmltv.gen;
   const rec = await cacheGet('playlists', 'xmltv|' + key);
   if (gen !== _xmltv.gen || _activePlaylistKey !== key || !rec ||
-      rec.url !== xmltvSources().join(' ') || !Array.isArray(rec.chans) ||
+      rec.url !== xmltvSources().join(' ') ||
       Date.now() - rec.at > XMLTV_AHEAD_MS)
     return 0;
+  let chans = null;
+  try {
+    chans = rec.v === 2 ? xmltvUnpack(rec.json) : rec.chans;
+  } catch (_) { /* a damaged record: download again */
+  }
+  if (!Array.isArray(chans)) return 0;
   const from = Date.now() - XMLTV_BACK_MS;
   const data = new Map();
-  for (const [k, progs] of rec.chans) {
+  for (const [k, progs] of chans) {
     const keep = progs.filter(p => p.stop >= from);
     if (keep.length) data.set(k, keep);
   }
   if (!data.size) return 0;
   xmltvApply(data, new Map(rec.alias || []), rec.at, 'cache');
   return data.size;
+}
+
+/**
+ * Writes the XMLTV data as 1 JSON string for the cache. IndexedDB copies 1
+ * string much faster than 90,000 objects: the copy of the objects took
+ * 492 ms in headless Chrome with a CPU 4 times slower (2026-11-26).
+ * @param {!Map<string, !Array<!Object>>} data
+ * @return {string} `[[key, [start, stop, title, desc, ...]], ...]`.
+ */
+function xmltvPack(data) {
+  const out = [];
+  for (const [k, progs] of data) {
+    const flat = [];
+    for (const p of progs) flat.push(p.start, p.stop, p.title, p.desc);
+    out.push([k, flat]);
+  }
+  return JSON.stringify(out);
+}
+
+/**
+ * Reads the JSON string of xmltvPack.
+ * @param {string} json
+ * @return {!Array<!Array>} `[[key, programs], ...]`.
+ */
+function xmltvUnpack(json) {
+  const out = [];
+  for (const [k, flat] of JSON.parse(json)) {
+    const progs = [];
+    for (let i = 0; i + 3 < flat.length; i += 4)
+      progs.push({
+        start: flat[i],
+        stop: flat[i + 1],
+        title: flat[i + 2],
+        desc: flat[i + 3]
+      });
+    out.push([k, progs]);
+  }
+  return out;
 }
 
 /**
@@ -1792,7 +1843,8 @@ async function loadXtreamXmltv(urls) {
     await cachePut('playlists', 'xmltv|' + key, {
       at: state.at,
       url: urls.join(' '),
-      chans: [...data],
+      v: 2,
+      json: xmltvPack(data),
       alias: [...alias]
     });
     return data.size;
@@ -1905,7 +1957,18 @@ async function xmltvParse(reader, live) {
       stop = 'playlist';
       break;
     }
-    t1 = Date.now();
+    // t1 is the start of the slice. A read of the stream does not yield to
+    // the event loop (it resolves as a microtask), thus a new t1 after each
+    // read made a long task of 2 s for a 70 MB file (headless Chrome with a
+    // CPU 4 times slower, 2026-11-26).
+    if (Date.now() - t1 > XMLTV_SLICE_MS) {
+      await new Promise(r => setTimeout(r, 0));
+      if (!live()) {
+        stop = 'playlist';
+        break;
+      }
+      t1 = Date.now();
+    }
     if (cur > 65536) {
       buf = buf.slice(cur);
       cur = 0;

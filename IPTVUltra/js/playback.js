@@ -25,7 +25,7 @@ function startStallWatchdog() {
         !vodPlay.active &&
         (_RE_LIVE_TS.test(videoPlayer.currentSrc || '') || _srcNoEnd);
     if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
-        liveEngine.hlsWait ||
+        liveEngine.engineWait ||
         (liveEngineActive() &&
          (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;
