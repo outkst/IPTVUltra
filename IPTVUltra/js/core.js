@@ -52,6 +52,12 @@ let _searchDebounceTimer = null;
 // applyTextScale() followed by refreshCurrentView().
 let TEXT_SCALE = 1.375;
 let EPG_ROW_INNER, EPG_ROW_H, EPG_TIME_STRIP_H, CH_ITEM_H, CH_ITEM_H_EPG;
+// The width of the channel name column of the guide in px at the default
+// text scale (1.375). The width changes with the text scale (the user,
+// 2026-11-26): 273 px at 1, 409 px at 1.5. applyTextScale writes it as
+// --epg-ch-w for .epg-ch-label, .epg-ch-corner, and .epg-time-nav-prev.
+const EPG_CH_W_BASE = 375;
+let EPG_CH_W = EPG_CH_W_BASE;
 function applyTextScale(scale) {
   TEXT_SCALE = scale;
   EPG_ROW_INNER = Math.round(62 * scale);
@@ -59,7 +65,9 @@ function applyTextScale(scale) {
   EPG_TIME_STRIP_H = Math.round(34 * scale);
   CH_ITEM_H = Math.round(52 * scale);      // channel list row (no EPG line)
   CH_ITEM_H_EPG = Math.round(68 * scale);  // channel list row with EPG line
+  EPG_CH_W = Math.round(EPG_CH_W_BASE * scale / 1.375);
   const st = document.documentElement.style;
+  st.setProperty('--epg-ch-w', EPG_CH_W + 'px');
   st.setProperty('--text-scale', String(scale));
   st.setProperty('--epg-row-h', EPG_ROW_INNER + 'px');
   st.setProperty('--epg-strip-h', EPG_TIME_STRIP_H + 'px');

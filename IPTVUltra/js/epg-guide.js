@@ -101,8 +101,6 @@ function hideEPGToast(delayMs = 0) {
 }
 
 // ── EPG Guide Layout ──────────────────────────────────────────
-const EPG_CH_W = 300;      // channel label column px (must match .epg-ch-label
-                           // width in style.css)
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
 const EPG_AHEAD_HOURS = 6;      // guide window ahead of now
 const EPG_PAST_HOURS_MIN = 1;   // behind now when no channel offers catch-up

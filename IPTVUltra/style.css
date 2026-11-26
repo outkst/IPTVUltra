@@ -5,6 +5,7 @@
   --text-scale: 1.375;
   --epg-row-h: 85px;
   --epg-strip-h: 47px;
+  --epg-ch-w: 375px; /* EPG_CH_W_BASE in js/core.js */
 }
 
 html {
@@ -772,7 +773,7 @@ body {
 
 /* Top-left corner cell */
 .epg-ch-corner {
-  width: 300px;
+  width: var(--epg-ch-w);
   min-width: 200px;
   flex-shrink: 0;
   position: relative;
@@ -1040,7 +1041,7 @@ body {
 }
 
 .epg-time-nav-prev {
-  left: 305px;
+  left: calc(var(--epg-ch-w) + 5px);
 }
 
 .epg-time-nav-next {
@@ -1054,7 +1055,7 @@ body {
 
 /* Channel label — fixed column; the programme area next to it pans */
 .epg-ch-label {
-  width: 300px;
+  width: var(--epg-ch-w);
   height: 100%;
   min-width: 200px;
   position: relative;
