@@ -547,7 +547,8 @@ document.addEventListener('keydown', (e) => {
 document.addEventListener('keydown', (e) => {
   const kc = e.keyCode;
   if (kc !== 415 && kc !== 19 && kc !== 427 && kc !== 428) return;
-  if (!mainApp || mainApp.style.display === 'none' || currentChannelIndex < 0)
+  if (!mainApp || mainApp.style.display === 'none' ||
+      (currentChannelIndex < 0 && !vodPlay.active))
     return;
   if (confirmDialog && !confirmDialog.classList.contains('hidden')) return;
   if (settingsOpen || catsOpen || diagOpen || versionsOpen || ssOpen) return;

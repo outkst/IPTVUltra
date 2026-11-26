@@ -118,6 +118,15 @@ function epgEnsureTimeVisible(a, b) {
 function epgMoveCursor(dir) {
   const {ch, progs} = epgFocusedProgs();
   const t = epgCursorTime();
+  // After an hour rollover, the cursor can be before the guide window. The
+  // key then puts it on the edge of the window: the next program is also
+  // outside the window.
+  if (epgFocusT && _epgWinStart && (t < _epgWinStart || t >= _epgWinEnd)) {
+    epgFocusT = Math.max(_epgWinStart, Math.min(_epgWinEnd - 1, t));
+    epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
+    updateEPGBlockFocus();
+    return;
+  }
   if (!progs.length) {
     scrollEPGTimeBy(dir * 30);
     // Keep the cursor in the guide window.

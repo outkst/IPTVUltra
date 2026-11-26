@@ -466,11 +466,11 @@ const EPG_EXTRA_OPTIONS = (() => {  // ±3 h in half hours
 })();
 const _tzFmtCache = new Map();  // zone -> Intl.DateTimeFormat
 let _tzOffCache =
-    new Map();  // "zone|hourBucket" -> minutes (DST changes on hour boundaries;
-                // a few buckets cover a whole guide)
+    new Map();  // "zone|quarterBucket" -> minutes (some zones change at
+                // half hours, for example St. John's and Adelaide)
 const _tzStdCache = new Map();  // "zone|year" -> { std, dst } minutes
 function tzOffsetMin(zone, t) {
-  const k = zone + '|' + Math.floor(t / 3600000);
+  const k = zone + '|' + Math.floor(t / 900000);
   let v = _tzOffCache.get(k);
   if (v !== undefined) return v;
   try {
@@ -660,6 +660,7 @@ const vodPlay = {
   sub: '',
   osdTimer: null,
   saveAt: 0,
+  srcSet: false,  // the VOD source is on the element (saveVodProgress)
   nextTimer: null,
   nextCountdown: 0,
   nextEp: null,

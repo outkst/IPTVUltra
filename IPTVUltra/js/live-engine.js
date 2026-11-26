@@ -1499,7 +1499,17 @@ function consFull(ci) {
   return !!ci && ci.max > 0 && ci.active >= ci.max;
 }
 let _consRecheckTimer = null;  // 1 recheck for the app, not for each channel
-let _lastStreamOpenAt = 0;     // set by loadLiveSource
+/**
+ * Clears the account check state. goToHomeScreen calls it: the result of a
+ * playlist must not apply to the next playlist.
+ */
+function resetAccountCheck() {
+  clearTimeout(_consRecheckTimer);
+  _consRecheckTimer = null;
+  _consInfo = null;
+  _consCheckAt = 0;
+}
+let _lastStreamOpenAt = 0;  // set by loadLiveSource
 function noteStreamFailureForAccount(idx) {
   if (!_xt || currentPlaylistType !== 'xtream') return;
   xtreamCheckConnections().then(ci => {

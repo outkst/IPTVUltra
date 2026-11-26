@@ -520,10 +520,19 @@ function settingsRows() {
         saveSettings();
         if (vodMode !== 'live') {
           renderGroupsList();
-          if (vodNav.screen === 'home')
+          // An open adult category, or a title of it, goes to Home.
+          const adult = v ? new Set() : adultCatIds(vodMode);
+          const d = vodNav.detail;
+          const inAdult = (vodNav.list === 'cat' && adult.has(vodNav.catId)) ||
+              (vodNav.screen === 'details' && d && d.item &&
+               adult.has(d.item.catId));
+          if (inAdult && vodNav.screen !== 'player')
+            openVodList('home');
+          else if (vodNav.screen === 'home')
             renderVodHome();
           else if (vodNav.screen === 'grid' && vodNav.list === 'all')
             openVodList('all', null, vodNav.query);
+          vodNav.catIdx = vodActiveCatIdx();
         }
       }
     },

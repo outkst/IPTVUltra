@@ -73,6 +73,7 @@ function startVodPlayback(p) {
   vodPlay.dur = (p.ep ? p.ep.duration : (p.info && p.info.duration)) ||
       (saved && saved.dur) || 0;
   vodPlay.saveAt = 0;
+  vodPlay.srcSet = false;
   vodPlay.ended = false;
   vodPlay.noAudio = false;
   vodPlay.subManual = false;
@@ -124,6 +125,7 @@ function startVodPlayback(p) {
     if (!vodPlay.active || loadToken !== _vodLoadToken) return;
     videoPlayer.src = url;
     videoPlayer.load();
+    vodPlay.srcSet = true;
     umsAttach();
     _vodOnMeta = () => {
       _vodOnMeta = null;
@@ -200,7 +202,9 @@ function stopVodPlayback(backToDetails) {
   }
 }
 function saveVodProgress(force) {
-  if (!vodPlay.active || !vodPlay.key) return;
+  // Before the VOD source is on the element, currentTime is the position of
+  // the live stream (a Shaka Player detach is asynchronous).
+  if (!vodPlay.active || !vodPlay.key || !vodPlay.srcSet) return;
   const now = Date.now();
   if (!force && now - vodPlay.saveAt < 10000) return;
   const pos = videoPlayer.currentTime || 0;

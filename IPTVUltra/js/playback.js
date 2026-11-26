@@ -730,6 +730,7 @@ function goToHomeScreen() {
 
   // Clear all data
   resetLazyEpg();
+  resetAccountCheck();
   epgData.clear();
   epgIdMap.clear();
   epgLoading = false;

@@ -1377,6 +1377,48 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Right after the last program and Left before the first keep direction',
       pastDir.skip || pastDir.ok, JSON.stringify(pastDir));
+  // After an hour rollover, a cursor before the guide window goes to the
+  // start of the window
+  const outWin = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinStart || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const s = _epgWinStart;
+    epgData.set(id, [
+      {start: s - 3600000, stop: s - 1800000, title: 'a'},
+      {start: s - 1800000, stop: s, title: 'b'},
+      {start: s, stop: s + 1800000, title: 'c'}
+    ]);
+    epgFocusT = s - 3540000;
+    epgMoveCursor(1);
+    const p = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: !!p && p.title === 'c', p: p && p.title};
+  });
+  check(
+      'Right on a cursor before the guide window goes to the window start',
+      outWin.skip || outWin.ok, JSON.stringify(outWin));
+  // St. John's changes to DST at 05:30 UTC: the cache must not keep the
+  // offset of 05:00 for 05:45
+  const halfHourTz = await page.evaluate(() => {
+    const z = 'America/St_Johns';
+    return [
+      tzOffsetMin(z, Date.UTC(2026, 2, 8, 5, 0)),
+      tzOffsetMin(z, Date.UTC(2026, 2, 8, 5, 45))
+    ];
+  });
+  check(
+      'the EPG timezone offset changes at a half-hour DST change',
+      halfHourTz[0] === -210 && halfHourTz[1] === -150,
+      JSON.stringify(halfHourTz));
   // Back from a different app: the timeline and the cursor go to the time now
   const backNow = await page.evaluate(() => {
     const keepT = epgFocusT;
