@@ -268,6 +268,37 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'guide opened with lazy EPG (requests ≈ favorites + visible rows)',
       s.epg_requests > 0 && s.epg_requests <= rendered + 10,
       `requests=${s.epg_requests} renderedRows=${rendered} channels=3000`);
+  // The name column has the width of EPG_CH_W, and Prev is to its right
+  const chCol = await page.evaluate(() => {
+    const label = document.querySelector('.epg-ch-label');
+    const corner = document.getElementById('epgChCorner');
+    const prev = document.getElementById('epgTimePrevBtn');
+    return {
+      w: EPG_CH_W,
+      label: label ? label.offsetWidth : -1,
+      corner: corner.offsetWidth,
+      prev: Math.round(prev.getBoundingClientRect().left -
+                       corner.getBoundingClientRect().left)
+    };
+  });
+  // Each row has the full name. Before, the code cut a name after 20
+  // characters, also when the column had space for it.
+  check(
+      'guide name column: each row has the full channel name (CSS cuts it)',
+      await page.evaluate(() => {
+        const ch = currentFilteredChannels[0];
+        const was = ch.name;
+        ch.name = 'US: A LONG CHANNEL NAME WITH 40 CHARACTERS';
+        const el = buildEPGRow(0);
+        const name = el.querySelector('.epg-ch-name').textContent;
+        ch.name = was;
+        return name === 'US: A LONG CHANNEL NAME WITH 40 CHARACTERS';
+      }));
+  check(
+      'guide name column: EPG_CH_W wide (375 px at 137%), Prev to its right',
+      chCol.w === 375 && chCol.label === 375 && chCol.corner === 375 &&
+          chCol.prev === 380,
+      JSON.stringify(chCol));
   check(
       'favorites (group) view shows favorite rows',
       await page.evaluate(
@@ -3624,19 +3655,28 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                     .getPropertyValue('--epg-row-h')
                     .trim(),
         item: renderedItems.get(0) && renderedItems.get(0).style.height,
-        stored: JSON.parse(localStorage.getItem('iptv_settings')).textScale
+        stored: JSON.parse(localStorage.getItem('iptv_settings')).textScale,
+        // The guide name column changes with the text: 375 px at 137%
+        chW: EPG_CH_W,
+        chVar: getComputedStyle(document.documentElement)
+                   .getPropertyValue('--epg-ch-w')
+                   .trim()
       }));
   check(
       'text size Left → 125%, rows and CSS var follow, persisted',
       ts.s === 1.25 && ts.rowH === 79 && ts.cssVar === '78px' &&
           ts.item === '63px' && ts.stored === 1.25,
       JSON.stringify(ts));
+  check(
+      'text size 125%: the guide name column is 341 px (375 px at 137%)',
+      ts.chW === 341 && ts.chVar === '341px', JSON.stringify(ts));
   await key('ArrowRight', 39);
   await sleep(150);
   check(
       'text size Right → back to 137%',
       await page.evaluate(
-          () => settings.textScale === 1.375 && EPG_ROW_H === 86));
+          () => settings.textScale === 1.375 && EPG_ROW_H === 86 &&
+              EPG_CH_W === 375));
   await key('ArrowDown', 40);
   await key('ArrowRight', 39);
   await sleep(100);

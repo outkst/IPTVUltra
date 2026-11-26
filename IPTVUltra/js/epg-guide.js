@@ -101,8 +101,6 @@ function hideEPGToast(delayMs = 0) {
 }
 
 // ── EPG Guide Layout ──────────────────────────────────────────
-const EPG_CH_W = 300;      // channel label column px (must match .epg-ch-label
-                           // width in style.css)
 const EPG_PX_PER_MIN = 8;  // pixels per minute — ~3.6h visible on 1920px screen
 const EPG_AHEAD_HOURS = 6;      // guide window ahead of now
 const EPG_PAST_HOURS_MIN = 1;   // behind now when no channel offers catch-up
@@ -763,9 +761,8 @@ function buildEPGRow(i) {
       logoSrc ? `<img class="epg-ch-logo" data-src="${
                     logoSrc}" decoding="async" onerror="epgLogoFailed(this)">` :
                 ''}</div><span class="epg-ch-name">${
-      escapeHtml(
-          ch.name.length > 22 ? ch.name.slice(0, 20) + '…' :
-                                ch.name)}</span><button class="epg-fav-btn${
+      // The full name: text-overflow cuts it at the width of the column
+      escapeHtml(ch.name)}</span><button class="epg-fav-btn${
       isFav ? ' fav-active' : ''}" data-fav-id="${escapeHtml(favId)}">${
       isFav ? '★' : '☆'}</button></div>`;
 
