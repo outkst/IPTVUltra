@@ -755,7 +755,7 @@ body {
 }
 
 /* Time strip row — sticks to the top as you scroll vertically.
-   The guide pans in time with a transform (--epg-x on #epgScrollOuter) instead of horizontal
+   The guide pans in time with a transform (epgApplyPan on each element) instead of horizontal
    scrolling, so nothing in a row needs position: sticky. Sticky labels in every row were each a
    compositor layer on the TV, repainted and repositioned on every scroll step. */
 .epg-time-strip {
@@ -852,7 +852,7 @@ body {
   position: relative;
   height: var(--epg-strip-h);
   flex-shrink: 0;
-  transform: translateX(var(--epg-x, 0px));
+  /* transform: epgApplyPan */
 }
 
 .epg-time-marks .epg-time-marker:first-child {
@@ -1127,7 +1127,7 @@ body {
 }
 
 /* Programme area — the clip fills the row next to the label; inside it the full-width (7 h)
-   programme strip is translated by --epg-x so blocks line up with the time strip */
+   programme strip has the same transform as the time strip (epgApplyPan) */
 .epg-progs-clip {
   flex: 1;
   min-width: 0;
@@ -1140,7 +1140,7 @@ body {
   position: relative;
   flex-shrink: 0;
   height: var(--epg-row-h);
-  transform: translateX(var(--epg-x, 0px));
+  /* transform: epgApplyPan and epgProgsHtml */
 }
 
 .epg-ch-name {
@@ -1840,7 +1840,8 @@ video {
   z-index: 15;
 }
 
-.epg-row {
+/* Only the Now/Next lines: a guide row must not get a gap */
+.epg-now-next .epg-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2078,14 +2079,19 @@ video {
   z-index: 9999;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
   transform: translateX(calc(100% + 40px));
-  transition:
-    transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
-    border-left-color 0.2s;
+  /* No transition: the slide made 53 frames with full paints for each toast
+     (67 ms of main thread with a CPU 4 times slower, 2026-11-26). Toasts
+     come often during a guide scroll. */
   pointer-events: none;
 }
 
 .epg-toast.epg-toast--visible {
   transform: translateX(0);
+}
+
+/* A hidden toast does not turn its spinner. */
+.epg-toast:not(.epg-toast--visible) .epg-toast-spinner {
+  animation: none;
 }
 
 .epg-toast.epg-toast--loading {
@@ -2537,10 +2543,9 @@ video {
   overflow: hidden;
   background: linear-gradient(160deg, #1f2642, #0e1224);
   border: 2px solid transparent;
-  transition:
-    transform 0.12s,
-    border-color 0.12s,
-    box-shadow 0.12s;
+  /* Only transform: a box-shadow and border-color transition made 20 style
+     calculations and 11 full paints for each key (2026-11-26). */
+  transition: transform 0.12s;
 }
 
 .vod-poster img {

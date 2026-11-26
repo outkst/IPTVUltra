@@ -488,6 +488,13 @@ function markPlayingRows() {
 function playsNow(idx) {
   return isPlayingIdx(idx) && (!!catchup || playingStreamHealthy());
 }
+// Gives `true` when OK on the row of the channel at `idx` opens the player.
+// When the automatic starts of a stream stopped (`showStreamError`, no
+// watchdog, no retry timer), OK starts the stream again, the same as a click.
+function okOpensPlayer(idx) {
+  return isPlayingIdx(idx) &&
+      (!!catchup || !!stallWatchdogTimer || !!_errRetryTimer);
+}
 // True when the channel at `idx` plays, also when the app plays a better
 // version of it (`_bestFrom`)
 function isPlayingIdx(idx) {
@@ -1037,6 +1044,16 @@ function onDigitKey(d) {
   }
   _digitTimer = setTimeout(commitDigits, 2000);
 }
+// Stops a channel number that you typed. The app calls it when it goes out of
+// the live view.
+function cancelDigitEntry() {
+  if (_digitTimer) {
+    clearTimeout(_digitTimer);
+    _digitTimer = null;
+  }
+  _digitBuf = '';
+  hideDigitOverlay();
+}
 function commitDigits() {
   if (_digitTimer) {
     clearTimeout(_digitTimer);
@@ -1044,12 +1061,14 @@ function commitDigits() {
   }
   const n = parseInt(_digitBuf, 10);
   _digitBuf = '';
-  if (!(n > 0)) {
+  // The timer can come after a change of the view, for example to Home or to
+  // Movies. Then the number does not tune a channel.
+  if (!(n > 0) || !digitEntryAllowed()) {
     hideDigitOverlay();
     return;
   }
   const idx = _chanByNum.get(n);
-  if (idx === undefined) {
+  if (idx === undefined || !channels[idx]) {
     showDigitOverlay(`${n} · no such channel`, 'missing');
     setTimeout(() => {
       if (!_digitBuf) hideDigitOverlay();
@@ -1105,9 +1124,11 @@ function _epgBinarySearch(progs, target) {
 function parseXMLTVDate(str) {
   if (!str) return null;
   const m = str.match(
-      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-])(\d{2})(\d{2})/);
+      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?/);
   if (!m) return null;
   const utc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  // The XMLTV DTD: a time with no zone is UTC
+  if (!m[7]) return utc;
   const sign = m[7] === '+' ? 1 : -1;
   return utc - sign * ((+m[8]) * 60 + (+m[9])) * 60000;
 }
@@ -1196,7 +1217,8 @@ async function loadEPG(url) {
   if (epgLoading) return;
   epgLoading = true;
   if (_epgAbortController) _epgAbortController.abort();
-  _epgAbortController = new AbortController();
+  const ctl = new AbortController();
+  _epgAbortController = ctl;
   // Parse into fresh maps and swap them in on success, so a background
   // refresh never blanks the existing guide while it downloads.
   const newData = new Map();
@@ -1215,13 +1237,18 @@ async function loadEPG(url) {
   let bytesRead = 0;
   let cut = '';          // why the parse stopped before the end of the file
   let elementCount = 0;  // all <programme> elements, for the yields
+  // The last kept program of each channel with no stop attribute. If a later
+  // program of the channel starts before the window, the waiting program
+  // stops before the window too, and the parse removes it at once. Thus, past
+  // programs do not count toward EPG_M3U_MAX_PROGS.
+  const noStopWait = new Map();
   const now = Date.now();
   const windowStart = now - 120000;
   const windowEnd = now + 6 * 3600000;  // 6h
 
   showEPGToast('Downloading EPG data …', 'loading');
   try {
-    const response = await fetch(url, {signal: _epgAbortController.signal});
+    const response = await fetch(url, {signal: ctl.signal});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const reader = response.body.getReader();
 
@@ -1283,6 +1310,16 @@ async function loadEPG(url) {
               pStart = epgShiftTime(pStart);
               if (pStop !== null) pStop = epgShiftTime(pStop);
             }
+            const w = pStart !== null ? noStopWait.get(chM[1]) : null;
+            if (w && pStart > w.start) {
+              const arr = newData.get(chM[1]);
+              if (pStart < windowStart && arr && arr[arr.length - 1] === w) {
+                arr.pop();
+                programmeCount--;
+                if (!arr.length) newData.delete(chM[1]);
+              }
+              noStopWait.delete(chM[1]);
+            }
             if (pStart !== null && pStart <= windowEnd &&
                 (pStop === null || pStop >= windowStart)) {
               const cid = chM[1];
@@ -1291,11 +1328,13 @@ async function loadEPG(url) {
                 newData.set(k, []);
                 newIdMap.set(k.toLowerCase(), k);
               }
-              newData.get(cid).push({
+              const prog = {
                 start: pStart,
                 stop: pStop || 0,
                 title: tiM ? copyStr(unescapeXml(tiM[1].trim())) : ''
-              });
+              };
+              newData.get(cid).push(prog);
+              if (pStop === null) noStopWait.set(copyStr(cid), prog);
               programmeCount++;
               if (programmeCount >= EPG_M3U_MAX_PROGS) {
                 cut = `${EPG_M3U_MAX_PROGS.toLocaleString()} programs limit`;
@@ -1316,6 +1355,8 @@ async function loadEPG(url) {
           statusArea.innerText = `📅 EPG: ${_progMsg}`;
           showEPGToast(_progMsg, 'loading');
           await new Promise(r => setTimeout(r, 0));
+          // goToHomeScreen or a new load aborted this parse
+          if (ctl.signal.aborted) return;
           // Re-trim after yield so resumed work starts on a small buffer
           if (cursor > 65536) {
             buffer = buffer.slice(cursor);
@@ -1343,9 +1384,31 @@ async function loadEPG(url) {
       }
     }
 
+    // An abort during the last yield does not reject a read of a closed
+    // stream. Thus, do not swap in the data of an aborted load.
+    if (ctl.signal.aborted) return;
     // Sort each channel's programme list chronologically for fast lookup
-    for (const progs of newData.values()) {
+    for (const [cid, progs] of newData) {
       progs.sort((a, b) => a.start - b.start);
+      // The stop attribute is optional in XMLTV. A program with no stop stops
+      // at the start of the next program (the last one after 1 h). Then
+      // remove the programs that stop before the window.
+      let noStop = false;
+      for (let i = 0; i < progs.length; i++) {
+        if (progs[i].stop) continue;
+        noStop = true;
+        progs[i].stop = i + 1 < progs.length ? progs[i + 1].start :
+                                               progs[i].start + 3600000;
+      }
+      if (noStop) {
+        const kept =
+            progs.filter(p => p.stop > p.start && p.stop >= windowStart);
+        programmeCount -= progs.length - kept.length;
+        if (kept.length)
+          newData.set(cid, kept);
+        else
+          newData.delete(cid);
+      }
     }
     epgData = newData;
     epgIdMap = newIdMap;
@@ -1372,6 +1435,8 @@ async function loadEPG(url) {
     }, 4000);
 
   } catch (err) {
+    // goToHomeScreen aborts the download: that is not an error
+    if (ctl.signal.aborted) return;
     statusArea.innerText = `⚠️ EPG failed: ${err.message}`;
     showEPGToast(err.message, 'error');
     hideEPGToast(7000);
@@ -1380,8 +1445,11 @@ async function loadEPG(url) {
         statusArea.innerText = `▶️ ${channels[currentChannelIndex].name}`;
     }, 3000);
   } finally {
-    epgLoading = false;
-    _epgAbortController = null;
+    // After an abort, a new load can own these
+    if (_epgAbortController === ctl) {
+      epgLoading = false;
+      _epgAbortController = null;
+    }
     buffer = null;
   }
 }

@@ -25,7 +25,7 @@ function startStallWatchdog() {
         !vodPlay.active &&
         (_RE_LIVE_TS.test(videoPlayer.currentSrc || '') || _srcNoEnd);
     if ((videoPlayer.paused && !liveEnded) || currentChannelIndex < 0 ||
-        liveEngine.hlsWait ||
+        liveEngine.engineWait ||
         (liveEngineActive() &&
          (videoPlayer.readyState === 0 || liveEngine.placeholder))) {
       stallCount = 0;
@@ -282,7 +282,9 @@ function selectChannel(index) {
   }
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
-  _cancelHold();   // a seek of the previous channel must not go to this one
+  _cancelHold();  // a seek of the previous channel must not go to this one
+  // The tracks menu holds the tracks of the previous stream
+  closeVodTracks();
   catchup = null;  // any channel selection returns to live
   surfCancel();
   if (_selectingAlt) {
@@ -662,10 +664,15 @@ function showConfirmDialog(title, message, onYes) {
 }
 
 function goToHomeScreen() {
+  cancelDigitEntry();  // a channel number that you typed does not tune
   // Abort any in-flight fetches
   if (_epgAbortController) {
     _epgAbortController.abort();
     _epgAbortController = null;
+  }
+  if (_playlistRefreshCtl) {
+    _playlistRefreshCtl.abort();
+    _playlistRefreshCtl = null;
   }
   if (_m3uAbortController) {
     _m3uAbortController.abort();
@@ -723,18 +730,26 @@ function goToHomeScreen() {
 
   // Clear all data
   resetLazyEpg();
+  resetAccountCheck();
   epgData.clear();
   epgIdMap.clear();
   epgLoading = false;
   _epgLoadedAt = 0;
   currentEpgUrl = '';
   xmltvSetSource('');
+  // The closure of the M3U list holds the old channels. An Xtream playlist
+  // does not render that list, thus remove the listener here.
+  if (currentScrollListener) {
+    channelListDiv.removeEventListener('scroll', currentScrollListener);
+    currentScrollListener = null;
+  }
   renderedItems.clear();
   _stdRenderVisible = null;
   _stdItemH = 0;
   stdFocusZone = 'channels';
   stdFocusIdx = 0;
   stdGroupFocusIdx = 0;
+  _stdListKey = null;
   _reloadAttempts = 0;
   channels = [];
   clearChannelListCaches();
@@ -806,8 +821,19 @@ function toggleGroupsColumn() {
     floatingBtn.style.display =
         (currentPlaylistType === 'xtream' && !groupsColumnVisible) ? '' :
                                                                      'none';
-  if (currentPlaylistType === 'xtream')
+  if (currentPlaylistType === 'xtream') {
     requestAnimationFrame(updateEPGNowMarker);
+    // The width of the guide changes during 0.3 s. Then the guide measures
+    // the viewport again, else the pan limits use the previous width.
+    if (epgMode)
+      setTimeout(() => {
+        if (!epgMode || currentPlaylistType !== 'xtream') return;
+        epgMeasureViewport();
+        _epgX = Math.min(_epgX, epgMaxPan());
+        epgApplyPan();
+        queueEPGRender();
+      }, 350);
+  }
 }
 
 

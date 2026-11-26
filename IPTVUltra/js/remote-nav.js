@@ -118,6 +118,15 @@ function epgEnsureTimeVisible(a, b) {
 function epgMoveCursor(dir) {
   const {ch, progs} = epgFocusedProgs();
   const t = epgCursorTime();
+  // After an hour rollover, the cursor can be before the guide window. The
+  // key then puts it on the edge of the window: the next program is also
+  // outside the window.
+  if (epgFocusT && _epgWinStart && (t < _epgWinStart || t >= _epgWinEnd)) {
+    epgFocusT = Math.max(_epgWinStart, Math.min(_epgWinEnd - 1, t));
+    epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
+    updateEPGBlockFocus();
+    return;
+  }
   if (!progs.length) {
     scrollEPGTimeBy(dir * 30);
     // Keep the cursor in the guide window.
@@ -138,20 +147,33 @@ function epgMoveCursor(dir) {
     if (ch && channelHasCatchup(ch) &&
         progs[0].start > Date.now() - ch.archive * 86400000)
       epgMaybeFetchHistory(ch);
-    epgFocusT = Math.max(_epgWinStart || 0, progs[0].start - 1800000);
+    // Move only back in time: if the first program starts after the cursor,
+    // step 30 min back
+    let to = progs[0].start - 1800000;
+    if (to >= t) to = t - 1800000;
+    epgFocusT = Math.max(_epgWinStart || 0, to);
     epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
     updateEPGBlockFocus();
     return;
   }
   if (j >= progs.length) {
-    epgFocusT =
-        Math.min(_epgWinEnd || Infinity, progs[progs.length - 1].stop + 1);
+    // Move only forward in time: if the last program stops before the cursor,
+    // step 30 min forward
+    let to = progs[progs.length - 1].stop + 1;
+    if (to <= t) to = t + 1800000;
+    epgFocusT = Math.min(_epgWinEnd ? _epgWinEnd - 1 : Infinity, to);
     epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
     updateEPGBlockFocus();
     return;
   }
   const p = progs[j];
-  epgFocusT = p.start + Math.min(60000, Math.max(1, (p.stop - p.start) / 2));
+  // A program outside the guide window has no block: keep the cursor
+  if (_epgWinStart && (p.stop <= _epgWinStart || p.start >= _epgWinEnd)) return;
+  // A program can start before the window. The cursor stays in the window,
+  // else the next key only moves it to the edge of the window.
+  epgFocusT = Math.max(
+      _epgWinStart || 0,
+      p.start + Math.min(60000, Math.max(1, (p.stop - p.start) / 2)));
   if (dir < 0 && ch && channelHasCatchup(ch) && j <= 2)
     epgMaybeFetchHistory(ch);
   epgEnsureTimeVisible(p.start, p.stop);
@@ -230,7 +252,7 @@ function selectEPGFocusedChannel() {
     startCatchup(idx, p);
     return;
   }
-  if (isPlayingIdx(idx)) {
+  if (okOpensPlayer(idx)) {
     toggleLivePlayer();
     return;
   }
@@ -433,7 +455,7 @@ function handleRemoteNav(e) {
         if (!ch) return;
         const idx = getChannelIndex(ch);
         rowOkPress(e, idx, () => {
-          if (isPlayingIdx(idx))
+          if (okOpensPlayer(idx))
             toggleLivePlayer();  // OK on the playing row opens the player
           else
             selectChannel(idx);

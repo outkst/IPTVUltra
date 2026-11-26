@@ -466,11 +466,11 @@ const EPG_EXTRA_OPTIONS = (() => {  // ±3 h in half hours
 })();
 const _tzFmtCache = new Map();  // zone -> Intl.DateTimeFormat
 let _tzOffCache =
-    new Map();  // "zone|hourBucket" -> minutes (DST changes on hour boundaries;
-                // a few buckets cover a whole guide)
+    new Map();  // "zone|quarterBucket" -> minutes (some zones change at
+                // half hours, for example St. John's and Adelaide)
 const _tzStdCache = new Map();  // "zone|year" -> { std, dst } minutes
 function tzOffsetMin(zone, t) {
-  const k = zone + '|' + Math.floor(t / 3600000);
+  const k = zone + '|' + Math.floor(t / 900000);
   let v = _tzOffCache.get(k);
   if (v !== undefined) return v;
   try {
@@ -581,19 +581,21 @@ function epgShiftProgs(progs, dir) {
 // Settings change: re-map everything already in epgData through provider time
 // and redraw
 function epgOffsetChange() {
-  const lists = [...epgData.values()];
-  const raw = lists.map(
-      progs => progs.map(
+  const entries = [...epgData.entries()];
+  const raw = entries.map(
+      ([, progs]) => progs.map(
           p =>
               [epgUnshiftTime(p.start),
                p.stop ? epgUnshiftTime(p.stop) : p.stop]));
   epgOffsetLoad();
-  for (let i = 0; i < lists.length; i++) {
-    const progs = lists[i], r = raw[i];
-    for (let j = 0; j < progs.length; j++) {
-      progs[j].start = epgShiftTime(r[j][0]);
-      if (progs[j].stop) progs[j].stop = epgShiftTime(r[j][1]);
-    }
+  // Make new objects. The persist batch can hold the old objects, and it must
+  // keep the provider time.
+  for (let i = 0; i < entries.length; i++) {
+    const [k, progs] = entries[i], r = raw[i];
+    epgData.set(k, progs.map((p, j) => Object.assign({}, p, {
+      start: epgShiftTime(r[j][0]),
+      stop: p.stop ? epgShiftTime(r[j][1]) : p.stop
+    })));
   }
   _epgSkeletonWinStart = 0;
   _xmltvMerged.clear();  // its cut point uses the old times
@@ -658,6 +660,7 @@ const vodPlay = {
   sub: '',
   osdTimer: null,
   saveAt: 0,
+  srcSet: false,  // the VOD source is on the element (saveVodProgress)
   nextTimer: null,
   nextCountdown: 0,
   nextEp: null,

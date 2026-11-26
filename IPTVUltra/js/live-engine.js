@@ -39,7 +39,7 @@ const liveEngine = {
   videoTrackId: 0,
   lastReply: '',
   manifestFails: 0,
-  hlsWait: ''  // the URL that waits for the load of hls.js
+  engineWait: ''  // the URL that waits for the load of hls.js
 };
 const _hlsBroken = new Set();
 // Measured on the C4 (2026-10-06): a SourceBuffer refuses appends ("full,
@@ -100,12 +100,42 @@ function hlsAvailable() {
     return !_hlsScriptFailed && typeof MediaSource !== 'undefined';
   return Hls.isSupported();
 }
+// index.html also does not load Shaka Player (888 KB). In headless Chrome
+// with a CPU 6 times slower (2026-11-26), its compile took 430 to 560 ms
+// before the first paint, and only 10 % of its code ran at start-up.
+const SHAKA_SCRIPT = 'shaka-player.compiled.js';
+let _shakaScript = null;  // the promise of the load
+let _shakaScriptFailed = false;
 /**
- * Starts the load of hls.js before the first channel when the settings
- * select it. Thus, the first channel does not wait for the script.
+ * Loads Shaka Player one time.
+ * @return {!Promise<boolean>} True when the `shaka` global is available.
  */
-function preloadHlsScript() {
-  if (liveMseEngine() === 'hls') loadHlsScript();
+function loadShakaScript() {
+  if (typeof shaka !== 'undefined') return Promise.resolve(true);
+  if (_shakaScript) return _shakaScript;
+  _shakaScript = new Promise(resolve => {
+                   const el = document.createElement('script');
+                   el.src = SHAKA_SCRIPT;
+                   el.onload = () => resolve(typeof shaka !== 'undefined');
+                   el.onerror = () => resolve(false);
+                   document.head.appendChild(el);
+                 }).then(ok => {
+    if (!ok) {
+      _shakaScriptFailed = true;
+      diagLog(`Shaka Player did not load (${SHAKA_SCRIPT})`);
+    }
+    return ok;
+  });
+  return _shakaScript;
+}
+/**
+ * Starts the load of the engine that the settings select, before the first
+ * channel. Thus, the first channel does not wait for the script.
+ */
+function preloadEngineScript() {
+  const engine = liveMseEngine();
+  if (engine === 'hls') loadHlsScript();
+  if (engine === 'shaka') loadShakaScript();
 }
 function liveEngineActive() {
   return !!(liveEngine.hls || liveEngine.shaka);
@@ -119,9 +149,16 @@ function liveEngineName() {
       liveEngine.hls      ? 'hls.js' :
                             'native';
 }
+/**
+ * Tells if the settings can use Shaka Player. Before the load of the script,
+ * this function examines only the MediaSource API.
+ * @return {boolean} True when Shaka Player can play an HLS channel.
+ */
 function shakaAvailable() {
-  return settings.liveBuffer > 0 && typeof shaka !== 'undefined' &&
-      shaka.Player.isBrowserSupported();
+  if (!(settings.liveBuffer > 0)) return false;
+  if (typeof shaka === 'undefined')
+    return !_shakaScriptFailed && typeof MediaSource !== 'undefined';
+  return shaka.Player.isBrowserSupported();
 }
 /**
  * Gives the MSE engine that the settings select for an HLS channel.
@@ -277,7 +314,7 @@ function placeLiveNotice() {
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
   if (host && el.parentNode !== host) host.appendChild(el);
-  queueLiveCaptions();  // the caption layer goes to the same element
+  queueLiveCaptions(true);  // the caption layer goes to the same element
 }
 // ── Shaka Player: playlist filter
 // A response filter does the work of livePlaylistLoader() for Shaka Player:
@@ -316,8 +353,9 @@ const _RE_TOKEN_PARAM =
     /^(token|tok|auth|sig|signature|hash|md5|key|expires?|exp|st|e|t)$/i;
 /**
  * Gives a segment URL with no token parameters. A short parameter that is not
- * a token stays, because it can be the only name of the segment
- * (`/seg.ts?n=7`). A value of 16 or more characters is a token.
+ * a token stays. Use this only when the query is the name of the segment
+ * (`/seg.ts?n=7`, see `playlistRestarted`). A value of 16 or more characters
+ * is a token.
  * @param {string} url The segment URL.
  * @return {string}
  */
@@ -343,9 +381,17 @@ function segmentKey(url) {
  */
 function playlistRestarted(uri, text) {
   const m = /^#EXT-X-MEDIA-SEQUENCE:(\d+)/m.exec(text);
-  const line =
-      text.split(/\r?\n/).find(l => l.trim() && l.trim()[0] !== '#') || '';
-  const first = segmentKey(line.trim());
+  const segs =
+      text.split(/\r?\n/).map(l => l.trim()).filter(l => l && l[0] !== '#');
+  // A query can have a token or a time that changes on each refresh. Thus,
+  // compare the paths with no query. Only when all segments (2 or more) have
+  // the same path, the query is the name of the segment.
+  const path = u => u.replace(/[?#].*$/, '');
+  const queryName =
+      segs.length > 1 && segs.every(u => path(u) === path(segs[0]));
+  const first = !segs.length ? '' :
+      queryName              ? segmentKey(segs[0]) :
+                               path(segs[0]);
   if (!m || !first) return false;
   const seq = +m[1], prev = _shakaSeq.get(uri);
   _shakaSeq.set(uri, {seq, first});
@@ -502,7 +548,7 @@ function liveEngineDestroy(keepShaka = false) {
   }
   _shakaLoad = null;
   shakaReleaseRequests();
-  liveEngine.hlsWait = '';
+  liveEngine.engineWait = '';
   liveEngine.nativeWait = '';
   liveEngine.url = '';
   liveEngine.tech = '';
@@ -597,32 +643,46 @@ function loadLiveSource(url, cause = '') {
   liveEngine.audioManual = false;
   // The engine attaches its MediaSource
   if (!reuse) videoPlayer.removeAttribute('src');
-  if (engine === 'shaka') {
-    loadShakaSource(url);
-    return true;
-  }
-  if (typeof Hls === 'undefined') {
-    // The first hls.js channel waits for the script. A different source
-    // clears liveEngine.hlsWait (liveEngineDestroy).
-    liveEngine.hlsWait = url;
+  const loaded = engine === 'shaka' ? typeof shaka !== 'undefined' :
+                                      typeof Hls !== 'undefined';
+  if (!loaded) {
+    // The first channel of an engine waits for its script. A different
+    // source clears liveEngine.engineWait (liveEngineDestroy).
+    liveEngine.engineWait = url;
     // Stop the previous source immediately. The provider account has 1
     // connection.
     afterLiveTeardown(() => {
-      if (liveEngine.hlsWait === url) videoPlayer.load();
+      if (liveEngine.engineWait === url) videoPlayer.load();
     });
-    loadHlsScript().then(ok => {
-      if (liveEngine.hlsWait !== url) return;
-      liveEngine.hlsWait = '';
-      // The settings can change during the load (buffer Off)
-      if (ok && liveMseEngine() === 'hls')
-        loadHlsSource(url);
+    const load = engine === 'shaka' ? loadShakaScript() : loadHlsScript();
+    load.then(ok => {
+      if (liveEngine.engineWait !== url) return;
+      liveEngine.engineWait = '';
+      // The settings can change during the load (buffer Off). If Shaka
+      // Player did not load, hls.js can play the channel.
+      const now = liveMseEngine();
+      if (ok && now === engine)
+        startEngineSource(engine, url);
+      else if (now && now !== engine)
+        loadLiveSource(url);
       else
         liveHandToNative(url);
     });
     return true;
   }
-  loadHlsSource(url);
+  startEngineSource(engine, url);
   return true;
+}
+/**
+ * Starts the engine on a live URL. The script of the engine must be loaded.
+ * @param {string} engine 'shaka' or 'hls'.
+ * @param {string} url The URL of the channel.
+ */
+function startEngineSource(engine, url) {
+  if (engine === 'shaka')
+    loadShakaSource(url);
+  else
+    loadHlsSource(url);
 }
 /**
  * Starts hls.js on a live URL. `Hls` must be loaded.
@@ -1023,13 +1083,16 @@ function mp4VideoTrackId(b) {
 }
 /**
  * Gives the number of samples of a track in an fMP4 media segment (the
- * `trun` of its `traf`).
+ * `trun` boxes of its `traf`). A segment can have more than 1 `moof` (CMAF
+ * chunks): the count is the total of all the `moof` boxes. The walk does
+ * not read the data of an `mdat`: it uses the length in its header.
  * @param {!Uint8Array} b The segment.
  * @param {number} trackId The track ID, or 0 for the first track.
  * @return {number} The sample count, or 0.
  */
 function mp4SampleCount(b, trackId) {
-  for (const moof of mp4Boxes(b, 0, Math.min(b.length, 65536))) {
+  let want = trackId, total = 0;
+  for (const moof of mp4Boxes(b, 0, b.length)) {
     if (moof.type !== 'moof') continue;
     for (const traf of mp4Boxes(b, moof.start + moof.hdr, moof.end)) {
       if (traf.type !== 'traf') continue;
@@ -1038,12 +1101,17 @@ function mp4SampleCount(b, trackId) {
         if (x.type === 'tfhd')
           id = mp4U32(b, x.start + x.hdr + 4);
         else if (x.type === 'trun')
-          n = mp4U32(b, x.start + x.hdr + 4);
+          n += mp4U32(b, x.start + x.hdr + 4);
       }
-      if (n && (!trackId || id === trackId)) return n;
+      if (!n) continue;
+      if (!want) want = id;
+      if (id === want) {
+        total += n;
+        break;
+      }
     }
   }
-  return 0;
+  return total;
 }
 /**
  * Notes a frame rate sample (video samples over the segment span).
@@ -1482,7 +1550,17 @@ function consFull(ci) {
   return !!ci && ci.max > 0 && ci.active >= ci.max;
 }
 let _consRecheckTimer = null;  // 1 recheck for the app, not for each channel
-let _lastStreamOpenAt = 0;     // set by loadLiveSource
+/**
+ * Clears the account check state. goToHomeScreen calls it: the result of a
+ * playlist must not apply to the next playlist.
+ */
+function resetAccountCheck() {
+  clearTimeout(_consRecheckTimer);
+  _consRecheckTimer = null;
+  _consInfo = null;
+  _consCheckAt = 0;
+}
+let _lastStreamOpenAt = 0;  // set by loadLiveSource
 function noteStreamFailureForAccount(idx) {
   if (!_xt || currentPlaylistType !== 'xtream') return;
   xtreamCheckConnections().then(ci => {
@@ -1879,7 +1957,7 @@ function _liveScrubLimits() {
     max = now - Math.max(0, r.live - r.end) * 1000;
   }
   const ai = archiveChannelIdx(), ch = ai >= 0 ? channels[ai] : null;
-  if (ch && !liveEngine.hlsWait) {
+  if (ch && !liveEngine.engineWait) {
     min = Math.min(min, now - ch.archive * 86400000 + 60000);
     if (!liveEngineActive()) max = now - ARCHIVE_NATIVE_BEHIND_MS;
   }
@@ -1910,9 +1988,10 @@ function _liveSeekToWall(wall) {
     }
   }
   if (wall < now - 1000 && rewindIntoArchive(wall)) return;
-  // The archive has no program at that time. Go to the oldest point of the
-  // buffer, so that the release does not do nothing. The native pipeline has
-  // no buffer: it stays at live.
+  // The archive has no program at that time, or the buffer start moved during
+  // the hold. Go to the oldest point of the buffer, so that the release does
+  // not do nothing. The native pipeline has no buffer: it stays at live. The
+  // message shows only on a channel with an archive.
   if (wall < now - 1000) {
     if (liveEngineActive()) {
       try {
@@ -1920,7 +1999,7 @@ function _liveSeekToWall(wall) {
       } catch (_) { /* not seekable yet */
       }
     }
-    _flashTrickBadge('No archive at this time');
+    if (archiveChannelIdx() >= 0) _flashTrickBadge('No archive at this time');
   }
   videoPlayer.play().catch(() => {});
 }
@@ -1958,7 +2037,7 @@ function _queueStep() {
  */
 function playerStep(sign) {
   if (_liveTrick()) {
-    if (liveEngine.hlsWait) return;
+    if (liveEngine.engineWait) return;
     if (!liveEngineActive()) {
       // The native pipeline: Left goes into the archive of an archive channel
       if (sign < 0 && !liveLeftIntoArchive(3))
@@ -1991,7 +2070,7 @@ function _startHold(dir) {
   _stepPos = _stepWall = null;
   const live = _liveTrick();
   if (live) {
-    if (liveEngine.hlsWait) return;
+    if (liveEngine.engineWait) return;
     // The native pipeline plays at the live point: no fast forward
     if (dir === 'right' && !liveEngineActive()) {
       _flashTrickBadge('● Live');

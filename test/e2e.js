@@ -73,13 +73,13 @@ async function rewindIntoArchiveTests(page) {
   // During the load of hls.js, no engine is active, but Left does not start
   // the archive
   await page.evaluate(() => {
-    liveEngine.hlsWait = channels[currentChannelIndex].url;
+    liveEngine.engineWait = channels[currentChannelIndex].url;
   });
   await leftKey(50);
   await sleep(100);
   const ra3 = await archiveCall();
   await page.evaluate(() => {
-    liveEngine.hlsWait = '';
+    liveEngine.engineWait = '';
   });
   check(
       'Left during the load of hls.js does not start the archive',
@@ -196,6 +196,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'hls.js not loaded at start; live engine stays native with the buffer Off',
       await page.evaluate(
           () => typeof Hls === 'undefined' && settings.liveBuffer === 0 &&
+              typeof shaka === 'undefined' &&
+              !document.querySelector(`script[src="${SHAKA_SCRIPT}"]`) &&
               !hlsAvailable() && liveMseEngine() === '' &&
               isHlsUrl('http://x/live/u/p/1.m3u8') &&
               isHlsUrl('http://x/get.php?type=m3u8') &&
@@ -576,6 +578,9 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const off = await page.evaluate(async () => {
     const ch = currentFilteredChannels[49],
           past = epgData.get('ch50.test').find(p => p.hasArchive === true);
+    // A change of the correction makes new objects: read the current one
+    const pi = epgData.get('ch50.test').indexOf(past);
+    const cur = () => epgData.get('ch50.test')[pi];
     const before = {start: past.start, url: catchupUrl(ch, past)};
     const rows = () => settingsRows(),
           row = id => rows().find(r => r.id === id);
@@ -587,19 +592,20 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         'America/New_York',
         before.start);  // −240 or −300 depending on the date
     const auto = {
-      delta: past.start - before.start,
+      delta: cur().start - before.start,
       want: -nyNow * 60000,
-      url: catchupUrl(ch, past),
+      url: catchupUrl(ch, cur()),
       dstEnabled: !row('epgDst').disabled,
       label: row('epgTz').options.find(o => o.v === 'America/New_York').label,
       n: row('epgTz').options.length
     };
     row('epgDst').set('std');
-    const std = past.start - before.start;
+    const std = cur().start - before.start;
     row('epgDst').set('dst');
-    const dst = past.start - before.start;
+    const dst = cur().start - before.start;
     row('epgExtra').set(30);
-    const extra = past.start - before.start;
+    const extraStart = cur().start;
+    const extra = extraStart - before.start;
     const saved = JSON.parse(
         localStorage.getItem('iptv_playlist_state'))[_activePlaylistKey];
     // A fetch made while the correction is on must land corrected in epgData
@@ -618,7 +624,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         cached.every(
             (p, i) => p.start === live[i].start - (4 * 60 + 30) * 60000 &&
                 p.stop === live[i].stop - (4 * 60 + 30) * 60000);
-    const refetchedUrl = catchupUrl(ch, live.find(p => p.start === past.start));
+    const refetchedUrl = catchupUrl(ch, live.find(p => p.start === extraStart));
     row('epgExtra').set(0);
     row('epgDst').set('auto');
     row('epgTz').set('');
@@ -686,6 +692,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
           () => /no such channel/.test(
                     document.getElementById('chNumOverlay').textContent) &&
               channels[currentChannelIndex].num === 51));
+  // The 2 s timer can come after a change of the view: no channel tunes
+  const late = await page.evaluate(() => {
+    onDigitKey(5);
+    onDigitKey(2);
+    vodMode = 'movies';
+    commitDigits();
+    vodMode = 'live';
+    const o = document.getElementById('chNumOverlay');
+    return {
+      num: channels[currentChannelIndex].num,
+      hidden: o.classList.contains('hidden'),
+      buf: _digitBuf
+    };
+  });
+  check(
+      'a number commit after a change to Movies does not tune a channel',
+      late.num === 51 && late.hidden && late.buf === '', JSON.stringify(late));
 
   // ---------- Search also matches what is on now (programme titles from loaded
   // EPG) ----------
@@ -1159,6 +1182,31 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         const b = document.querySelector('#epgBody .epg-prog-block');
         return !!b && !!b.dataset.start && !!b.dataset.stop;
       }));
+  // The programs start at the same x as the time strip (no row gap)
+  const align = await page.evaluate(() => {
+    const a = document.querySelector('#epgBody .epg-progs-clip');
+    const b = document.querySelector('.epg-time-marks-clip');
+    if (!a || !b) return {a: !!a, b: !!b};
+    return {
+      a: a.getBoundingClientRect().left,
+      b: b.getBoundingClientRect().left
+    };
+  });
+  check(
+      'guide programs start at the left edge of the time strip',
+      typeof align.a === 'number' && Math.abs(align.a - align.b) < 1,
+      JSON.stringify(align));
+  // A change of the EPG time correction makes new program objects
+  const offCopy = await page.evaluate(() => {
+    const k = [...epgData.keys()][0];
+    if (!k) return {skip: true};
+    const arr = epgData.get(k), start = arr[0].start;
+    epgOffsetChange();
+    return {ok: epgData.get(k) !== arr && arr[0].start === start};
+  });
+  check(
+      'an EPG offset change does not change the old program objects',
+      offCopy.skip || offCopy.ok, JSON.stringify(offCopy));
 
   // EPG cache TTL: expire one visible channel and make sure it is re-queued
   await fetch(BASE + '/__reset');
@@ -1249,15 +1297,23 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'a short EPG refresh keeps the archive programs before and after it',
       merge.titles === 'a,b2,c,z' && merge.arch, JSON.stringify(merge));
   // Left after the last program goes to that program
+  // (2 programs in the guide window: the mock data goes after its end)
   const lastLeft = await page.evaluate(() => {
     const ch = currentFilteredChannels[epgFocusedRowIdx];
-    const progs = ch && epgProgsOf(ch.tvgId);
-    if (!progs || !progs.length) return {skip: true};
-    const last = progs[progs.length - 1];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), e = _epgWinEnd;
+    const last = {start: e - 7200000, stop: e - 3600000, title: 'last'};
+    epgData.set(
+        id, [{start: e - 10800000, stop: e - 7200000, title: 'a'}, last]);
     const keepT = epgFocusT, keepX = _epgX;
     epgFocusT = last.stop + 60000;
     epgMoveCursor(-1);
     const p = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
     epgFocusT = keepT;
     _epgX = keepX;
     epgApplyPan();
@@ -1267,6 +1323,137 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Left after the last program of a row goes to that program',
       lastLeft.skip || lastLeft.ok, JSON.stringify(lastLeft));
+  // Right does not go to a program after the end of the guide window
+  const winEnd = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const e = _epgWinEnd;
+    epgData.set(id, [
+      {start: e - 3600000, stop: e + 600000, title: 'in'},
+      {start: e + 600000, stop: e + 4200000, title: 'out'}
+    ]);
+    epgFocusT = e - 1800000;
+    epgMoveCursor(1);
+    const t = epgFocusT;
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: t === e - 1800000, t, e};
+  });
+  check(
+      'Right stops at the last program in the guide window',
+      winEnd.skip || winEnd.ok, JSON.stringify(winEnd));
+  // Right after the last program goes forward in time, and Left before the
+  // first program goes back in time
+  const pastDir = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const now = Date.now();
+    epgData.set(id, [{start: now - 7200000, stop: now - 3600000, title: 'a'}]);
+    epgFocusT = 0;
+    epgMoveCursor(1);
+    const right = epgFocusT;
+    epgData.set(id, [{start: now + 7200000, stop: now + 9000000, title: 'b'}]);
+    epgFocusT = 0;
+    epgMoveCursor(-1);
+    const left = epgFocusT;
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: right > now && left > 0 && left < now, right, left, now};
+  });
+  check(
+      'Right after the last program and Left before the first keep direction',
+      pastDir.skip || pastDir.ok, JSON.stringify(pastDir));
+  // After an hour rollover, a cursor before the guide window goes to the
+  // start of the window
+  const outWin = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinStart || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const s = _epgWinStart;
+    epgData.set(id, [
+      {start: s - 3600000, stop: s - 1800000, title: 'a'},
+      {start: s - 1800000, stop: s, title: 'b'},
+      {start: s, stop: s + 1800000, title: 'c'}
+    ]);
+    epgFocusT = s - 3540000;
+    epgMoveCursor(1);
+    const p = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: !!p && p.title === 'c', p: p && p.title};
+  });
+  check(
+      'Right on a cursor before the guide window goes to the window start',
+      outWin.skip || outWin.ok, JSON.stringify(outWin));
+  // A program that starts before the window: the cursor stays in the window,
+  // and the next Right goes to the next program
+  const edgeProg = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinStart || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const s = _epgWinStart;
+    epgData.set(id, [
+      {start: s - 1800000, stop: s + 1800000, title: 'a'},
+      {start: s + 1800000, stop: s + 3600000, title: 'b'}
+    ]);
+    epgFocusT = s + 2400000;
+    epgMoveCursor(-1);
+    const t = epgFocusT, p1 = epgFocusedProg();
+    epgMoveCursor(1);
+    const p2 = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {
+      ok: t >= s && !!p1 && p1.title === 'a' && !!p2 && p2.title === 'b',
+      inWin: t >= s, p1: p1 && p1.title, p2: p2 && p2.title
+    };
+  });
+  check(
+      'Left to a program from before the window, then Right goes to the next',
+      edgeProg.skip || edgeProg.ok, JSON.stringify(edgeProg));
+  // St. John's changes to DST at 05:30 UTC: the cache must not keep the
+  // offset of 05:00 for 05:45
+  const halfHourTz = await page.evaluate(() => {
+    const z = 'America/St_Johns';
+    return [
+      tzOffsetMin(z, Date.UTC(2026, 2, 8, 5, 0)),
+      tzOffsetMin(z, Date.UTC(2026, 2, 8, 5, 45))
+    ];
+  });
+  check(
+      'the EPG timezone offset changes at a half-hour DST change',
+      halfHourTz[0] === -210 && halfHourTz[1] === -150,
+      JSON.stringify(halfHourTz));
   // Back from a different app: the timeline and the cursor go to the time now
   const backNow = await page.evaluate(() => {
     const keepT = epgFocusT;
@@ -1357,6 +1544,15 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
               JSON.stringify(document.getElementById('epgSearchInput').value) +
               ' active=' +
               (document.activeElement && document.activeElement.id)));
+  // A space before, after, or between the words gives no empty term
+  const sq = await page.evaluate(
+      () =>
+          [searchChannels('00001 ').length,
+           searchChannels(' 00001').length, searchChannels('00001').length,
+           channels.length]);
+  check(
+      'a search with a space before or after the word ignores the space',
+      sq[0] === sq[2] && sq[1] === sq[2] && sq[2] < sq[3], JSON.stringify(sq));
   await key('ArrowDown', 40);  // leaves the search box
   check(
       'Down leaves the search box',
@@ -2231,8 +2427,11 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
         /Mark season 1 watched/.test(sb.labels) &&
             /Mark all watched/.test(sb.labels),
         sb.labels);
-    await page.evaluate(
-        () => vodDetailButtons().find(b => b.id === 'season').act());
+    await page.evaluate(() => {
+      const btns = vodDetailButtons();
+      vodNav.detailBtn = btns.findIndex(b => b.id === 'season');
+      btns[vodNav.detailBtn].act();
+    });
     const sw = await page.evaluate(() => {
       const d = vodNav.detail;
       const s1 = d.info.seasons[0].episodes.map(ep => {
@@ -2245,9 +2444,14 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
             ep => episodeProgress(d.item.id, ep.id)),
         play: document.querySelector('.vod-btn.pri').textContent,
         season: (vodDetailButtons().find(b => b.id === 'season') || {}).label,
-        ticks: document.querySelectorAll('.vod-ep.watched').length
+        ticks: document.querySelectorAll('.vod-ep.watched').length,
+        focus: (vodDetailButtons()[vodNav.detailBtn] || {}).id
       };
     });
+    // The action adds "Remove from Continue Watching" before the button
+    check(
+        'the focus stays on the season button after Mark season watched',
+        sw.focus === 'season', JSON.stringify(sw));
     check(
         'Mark season watched marks all of season 1, Play moves to S2 E1, button flips to unwatched',
         sw.s1 === '111' && !sw.s2 && /Play S2 E1/.test(sw.play) &&
@@ -3066,6 +3270,30 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       saveSettings();
       renderGroupsList();
     });
+    // Adult categories hidden while the player shows: the player closes to
+    // Home, not to the hidden title or category.
+    const adultStop = await page.evaluate(() => {
+      const id = [...adultCatIds(vodMode)][0];
+      vodPlay.active = true;
+      vodNav.list = 'cat';
+      vodNav.catId = id;
+      vodNav.screen = 'player';
+      vodNav.detail = {item: {kind: 'movie', catId: id}};
+      stopVodPlayback(true);
+      return {id, screen: vodNav.screen, detail: !!vodNav.detail};
+    });
+    check(
+        'Adult hidden during play: the player closes to Home',
+        adultStop.id !== undefined && adultStop.screen === 'home' &&
+            !adultStop.detail,
+        JSON.stringify(adultStop));
+    check(
+        'An XMLTV time with no zone is UTC',
+        await page.evaluate(
+            () => parseXMLTVDate('20261126200000') ===
+                    Date.UTC(2026, 10, 26, 20) &&
+                parseXMLTVDate('20261126200000 +0100') ===
+                    Date.UTC(2026, 10, 26, 19)));
     // Back from Home → Live, channel resumes
     await back();
     await page.waitForFunction(() => vodMode === 'live', {timeout: 5000});
@@ -3302,6 +3530,24 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(
           () => !livePlayer.active && videoPlayer.parentNode === videoArea &&
               stdFocusIdx === 2));
+  // A render of the same list keeps the row. A different group starts at
+  // row 0 and at the top.
+  const stdKey = await page.evaluate(() => {
+    renderChannelList();
+    const same = stdFocusIdx, g = currentGroup;
+    currentGroup = groupsList.find(x => !isPinnedGroup(x)) || 'favorites';
+    renderChannelList();
+    const other = stdFocusIdx, top = channelListDiv.scrollTop;
+    currentGroup = g;
+    renderChannelList();
+    stdFocusIdx = 2;
+    updateStdChannelFocus();
+    return {same, other, top};
+  });
+  check(
+      'standard view: a new group starts at row 0, a new render keeps the row',
+      stdKey.same === 2 && stdKey.other === 0 && stdKey.top === 0,
+      JSON.stringify(stdKey));
   await key('ArrowLeft', 37);
   check(
       'standard view: Left moves to groups column',
@@ -3532,7 +3778,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   // evaluate as the selection: the dead manifest makes hls.js hand over to
   // native within milliseconds
   // index.html does not load hls.js: the first hls.js channel waits for the
-  // script (liveEngine.hlsWait), and then hls.js takes it
+  // script (liveEngine.engineWait), and then hls.js takes it
   const eng = await page.evaluate(async () => {
     const tags = () =>
         document.querySelectorAll(`script[src="${HLS_SCRIPT}"]`).length;
@@ -3542,7 +3788,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     saveSettings();
     channels[2].url = 'http://localhost:8765/no-such-stream/live.m3u8';
     selectChannel(2);
-    const wait = liveEngine.hlsWait === channels[2].url &&
+    const wait = liveEngine.engineWait === channels[2].url &&
         !videoPlayer.getAttribute('src');
     const ok = await loadHlsScript();
     return {
@@ -3630,6 +3876,36 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'hls.js live playlist with #EXT-X-ENDLIST stays live (cold relay)',
       fps.live, JSON.stringify(fps));
+  // A CMAF segment has more than 1 moof, after more than 64 KB of data
+  const segCount = await page.evaluate(() => {
+    const cat = (...a) => {
+      const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
+      let o = 0;
+      for (const x of a) {
+        out.set(x, o);
+        o += x.length;
+      }
+      return out;
+    };
+    const u32 = (...v) => {
+      const b = new Uint8Array(v.length * 4);
+      v.forEach((x, i) => new DataView(b.buffer).setUint32(i * 4, x));
+      return b;
+    };
+    const box = (type, body) => cat(
+        u32(8 + body.length), Uint8Array.from(type, c => c.charCodeAt(0)),
+        body);
+    const traf = (id, n) =>
+        box('traf', cat(box('tfhd', u32(0, id)), box('trun', u32(0, n))));
+    const chunk = () =>
+        cat(box('moof', cat(traf(1, 25), traf(2, 40))),
+            box('mdat', new Uint8Array(70000)));
+    const b = cat(chunk(), chunk(), chunk());
+    return [mp4SampleCount(b, 1), mp4SampleCount(b, 2), mp4SampleCount(b, 0)];
+  });
+  check(
+      'mp4SampleCount adds the samples of each moof of a segment (CMAF)',
+      segCount.join() === '75,120,75', JSON.stringify(segCount));
   // A relay that restarts sends MEDIA-SEQUENCE 0 again with a different
   // segment. hls.js starts again on the same URL and keeps the channel.
   await page.evaluate(() => {
@@ -3794,7 +4070,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Shaka Player loaded; it is the default live engine (settings schema 5)',
       await page.evaluate(
-          () => typeof shaka !== 'undefined' &&
+          async () => await loadShakaScript() && typeof shaka !== 'undefined' &&
               shaka.Player.isBrowserSupported() &&
               DEFAULT_SETTINGS.liveEngine === 'shaka' &&
               DEFAULT_SETTINGS.schema === 5 &&
@@ -4333,7 +4609,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     liveGoLive();
     return {
       line,
-      diag: diagLines().includes(line),
+      // The frame count can change between 2 calls
+      diag: diagLines().some(l => l.startsWith('Shaka Player: frames ')),
       behind,
       after: liveBehindSecs(),
       cc: shakaTextLabel(
@@ -4421,14 +4698,18 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       captionSentenceCase('<c.white>THE FIRST DOWN. A BIG RUN</c>'),
       captionSentenceCase('BY SANDERS.'), captionSentenceCase('Mixed Case.'),
       (captionSentenceCase('AND THEN HE'), fixCaptionCues({activeCues: []}),
-       captionSentenceCase('WELCOME BACK.'))
+       captionSentenceCase('WELCOME BACK.')),
+      // A hidden track does not reset the sentence of the track that shows
+      (captionSentenceCase('AND THEN HE'),
+       fixCaptionCues({mode: 'hidden', activeCues: []}),
+       captionSentenceCase('WENT LEFT.'))
     ];
   });
   check(
       'captions in capital letters show in sentence case; tags stay',
       capc[0] === '<c.white>The first down. A big run</c>' &&
           capc[1] === 'by sanders.' && capc[2] === 'Mixed Case.' &&
-          capc[3] === 'Welcome back.',
+          capc[3] === 'Welcome back.' && capc[4] === 'went left.',
       JSON.stringify(capc));
   // The live cues show in the caption layer with the letter height in px
   const clay = await page.evaluate(async () => {
@@ -4454,6 +4735,16 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       cueCss: /video\.cap-layer::cue \{ color: transparent/.test(
           document.getElementById('captionStyle').textContent)
     };
+    // The same cues: the layer keeps its lines
+    const line = el.querySelector('.live-cap-line');
+    queueLiveCaptions();
+    await new Promise(r => setTimeout(r, 300));
+    out.kept = el.querySelector('.live-cap-line') === line;
+    // A new source: the cues of the track do not show again
+    clearLiveCaptions();
+    queueLiveCaptions();
+    await new Promise(r => setTimeout(r, 300));
+    out.stale = el.classList.contains('hidden');
     t.mode = 'disabled';
     settings.subSize = was;
     await new Promise(r => setTimeout(r, 300));
@@ -4464,8 +4755,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'live cues show in the caption layer at the px height of the setting',
       clay.shown && clay.text === 'Live text' && clay.italic &&
           clay.px === Math.max(12, clay.want) && clay.spanPx === clay.px &&
-          clay.layer && clay.cueCss &&
-          clay.gone,
+          clay.layer && clay.cueCss && clay.kept && clay.stale && clay.gone,
       JSON.stringify(clay));
   check(
       'a caption cue of Shaka Player goes to the bottom center with the full width',
@@ -4747,18 +5037,26 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   const skey = await page.evaluate(() => {
     _shakaSeq.clear();
     const u = 'http://seq.test/b.m3u8';
-    const pl = s => `#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:2.0,\n${s}\n`;
+    const pl = (...s) => '#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:0\n' +
+        s.map(x => `#EXTINF:2.0,\n${x}\n`).join('');
+    const v = 'http://seq.test/c.m3u8';
     return [
       segmentKey('/s.ts?token=abc&n=7'),
       segmentKey('/s.ts?x=0123456789abcdef0123'),
-      playlistRestarted(u, pl('/s.ts?n=7&token=a1')),
-      playlistRestarted(u, pl('/s.ts?n=7&token=b2')),  // only the token
-      playlistRestarted(u, pl('/s.ts?n=1&token=c3')),  // a new segment
+      // The query is the name: all segments have the same path
+      playlistRestarted(u, pl('/s.ts?n=7&token=a1', '/s.ts?n=8&token=a1')),
+      playlistRestarted(u, pl('/s.ts?n=7&token=b2', '/s.ts?n=8&token=b2')),
+      playlistRestarted(u, pl('/s.ts?n=1&token=c3', '/s.ts?n=2&token=c3')),
+      // Different paths: a short time in the query does not count
+      playlistRestarted(v, pl('/a7.ts?ts=1700000100', '/a8.ts?ts=1700000100')),
+      playlistRestarted(v, pl('/a7.ts?ts=1700000104', '/a8.ts?ts=1700000104')),
+      playlistRestarted(v, pl('/a1.ts?ts=1700000108', '/a2.ts?ts=1700000108')),
     ];
   });
   check(
-      'segmentKey keeps a short segment name and removes the tokens',
-      skey.join() === '/s.ts?n=7,/s.ts,false,false,true', JSON.stringify(skey));
+      'segmentKey: a query is a segment name only when all paths are the same',
+      skey.join() === '/s.ts?n=7,/s.ts,false,false,true,false,false,true',
+      JSON.stringify(skey));
   const lcache = await page.evaluate(() => {
     epgPastHours();
     const before = _epgPastHoursFor === channels;
@@ -5433,6 +5731,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const grp = currentGroup;
     // Clean up
     const ps = getPlaylistState(_activePlaylistKey);
+    const last = ps.lastGroup;
+    ps.lastGroup = 'all';
     ps.savedSearches = ps.savedSearches.slice(0, before);
     for (const x of saved) {
       x.c.name = x.name;
@@ -5445,7 +5745,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     refreshCurrentView();
     return {keys, order, header, mark, block: /ss-match/.test(html), ed1, ed2,
             after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e'),
-            tick: tick.join()};
+            tick: tick.join(), last};
   });
   check(
       'saved search: below All, any term, word start, now, then 60 min, then name',
@@ -5458,7 +5758,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'saved search editor: prefill, add a term, save opens the new search',
       ss.ed1.open && ss.ed1.terms === 'Pirates' && ss.ed2 === 'Pirates,Panthers' &&
           ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
-          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
+          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1 &&
+          ss.last === ss.grp,
       JSON.stringify(ss));
   // The window of each saved search (hours), and no folder icons
   const ssh = await page.evaluate(() => {

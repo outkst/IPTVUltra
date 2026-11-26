@@ -356,6 +356,9 @@ function adultCatIds(mode) {
 }
 function vodVisible(items, mode) {
   if (settings.showAdult) return items;
+  // With no category list, the names and the genres tell the adult titles
+  if (!(mode === 'movies' ? vodCats : seriesCats))
+    return items.filter(i => !isAdultName(i.name) && !isAdultName(i.genre));
   const adult = adultCatIds(mode);
   return adult.size ? items.filter(i => !adult.has(i.catId)) : items;
 }
@@ -408,7 +411,7 @@ function toggleVodFav(item) {
   saveJson('iptv_vod_favorites', vodFavs);
 }
 function vodFavItems() {
-  return Object.values(vodFavBucket())
+  return vodVisible(Object.values(vodFavBucket()), vodMode)
       .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -695,6 +698,11 @@ function cycleVodMode() {
 function setVodMode(mode) {
   if (mode === vodMode) return;
   if (mode !== 'live' && currentPlaylistType !== 'xtream') return;
+  // Text or a channel number that you typed in the previous mode has no
+  // effect in the new mode
+  clearTimeout(_vodSearchTimer);
+  _vodSearchTimer = null;
+  if (mode !== 'live') cancelDigitEntry();
   if (vodPlay.active) stopVodPlayback(false);
   if (livePlayer.active) exitLivePlayer();
   const prev = vodMode;
@@ -710,11 +718,14 @@ function setVodMode(mode) {
       ev.style.display = 'flex';
     else
       sv.style.display = 'flex';
+    vodNav.query = '';
     renderGroupsList();
     refreshCurrentView();
     if (prev !== 'live' && currentChannelIndex >= 0)
       reloadLiveChannel();  // live streams cannot resume; reload
                             // the channel
+    else if (prev !== 'live' && channels.length)
+      selectInitialChannel();  // no channel played before Movies or Series
     return;
   }
   if (prev === 'live') {
@@ -872,8 +883,14 @@ async function openVodList(list, catId, query = '') {
     const mode = vodMode;
     vodNav.loading = true;  // a search waits for the list
     try {
-      items = list === 'all' ? vodVisible(await loadVodAll(mode), mode) :
-                               await loadVodCategory(mode, catId);
+      if (list === 'all') {
+        // The adult filter uses the category list
+        const [all] = await Promise.all(
+            [loadVodAll(mode), loadVodCats(mode).catch(() => {})]);
+        items = vodVisible(all, mode);
+      } else {
+        items = await loadVodCategory(mode, catId);
+      }
     } catch (err) {
       if (!err.stale && vodMode === mode && vodNav.list === list &&
           vodNav.catId === (catId || null))
@@ -894,10 +911,12 @@ async function openVodList(list, catId, query = '') {
       'default';
   vodNav.items = vodDerivedItems();
   renderVodGrid();
-  if (list === 'all') focusVodSearch();
+  // Settings can be open (the adult toggle): the input must not get the focus
+  if (list === 'all' && !settingsOpen) focusVodSearch();
   return true;
 }
 function applyVodSearch() {
+  if (vodMode === 'live') return;  // the timer came after a change to Live
   const q = vodNav.query || '';
   if (vodNav.screen === 'home') {
     if (q.trim()) {
@@ -923,7 +942,8 @@ function focusVodSearch() {
 // ── home rows ────────────────────────────────────────────────
 function vodHomeRows() {
   const rows = [];
-  const cw = continueWatchingItems(vodMode);
+  // Hidden adult categories also hide their titles in Continue Watching
+  const cw = vodVisible(continueWatchingItems(vodMode), vodMode);
   if (cw.length)
     rows.push({
       key: 'cw',
@@ -1352,7 +1372,13 @@ function closeVodDetails() {
     if (vodNav.list === 'favs') {
       vodNav.baseItems = vodFavItems();
       vodNav.items = vodDerivedItems();
+    } else if (vodNav.list === 'all' && !settings.showAdult) {
+      // Settings can hide the adult categories while the details or the
+      // player show
+      vodNav.baseItems = vodVisible(vodNav.baseItems, vodMode);
+      vodNav.items = vodDerivedItems();
     }
+    vodNav.focus = Math.max(0, Math.min(vodNav.focus, vodNav.items.length - 1));
     renderVodGrid();
     updateVodGridFocus();
   }
@@ -1463,7 +1489,7 @@ function vodDetailButtons() {
       label: w ? '✓ Watched · mark unwatched' : '✓ Mark as watched',
       act: () => {
         setMovieWatched(item, info, !w);
-        if (vodNav.detailBtn >= vodDetailButtons().length) vodNav.detailBtn = 0;
+        vodKeepDetailBtn('watched');
         renderVodDetails();
         showEPGToast(
             `${item.name} marked as ${w ? 'unwatched' : 'watched'}`, 'success',
@@ -1487,6 +1513,7 @@ function vodDetailButtons() {
                           `✓ Mark season ${season ? season.num : ''} watched`,
       act: () => {
         setSeasonWatched(item, season, info.seasons, !seasonDone);
+        vodKeepDetailBtn('season');
         renderVodDetails();
         showEPGToast(
             `Season ${season.num} marked as ${
@@ -1511,8 +1538,7 @@ function vodDetailButtons() {
             () => {
               for (const s of info.seasons)
                 setSeasonWatched(item, s, info.seasons, !allDone);
-              if (vodNav.detailBtn >= vodDetailButtons().length)
-                vodNav.detailBtn = 0;
+              vodKeepDetailBtn('all');
               renderVodDetails();
               showEPGToast(
                   `${item.name}: all episodes marked ${
@@ -1524,6 +1550,20 @@ function vodDetailButtons() {
     });
   }
   return btns;
+}
+/**
+ * Keeps the focus on a button of the details page after its action. The
+ * action can add or remove a button before it, for example "Remove from
+ * Continue Watching".
+ * @param {string} id The ID of the button.
+ */
+function vodKeepDetailBtn(id) {
+  const btns = vodDetailButtons();
+  const i = btns.findIndex(b => b.id === id);
+  if (i >= 0)
+    vodNav.detailBtn = i;
+  else if (vodNav.detailBtn >= btns.length)
+    vodNav.detailBtn = 0;
 }
 function renderVodDetails() {
   const d = vodNav.detail;

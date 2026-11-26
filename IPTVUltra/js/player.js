@@ -73,6 +73,7 @@ function startVodPlayback(p) {
   vodPlay.dur = (p.ep ? p.ep.duration : (p.info && p.info.duration)) ||
       (saved && saved.dur) || 0;
   vodPlay.saveAt = 0;
+  vodPlay.srcSet = false;
   vodPlay.ended = false;
   vodPlay.noAudio = false;
   vodPlay.subManual = false;
@@ -124,6 +125,7 @@ function startVodPlayback(p) {
     if (!vodPlay.active || loadToken !== _vodLoadToken) return;
     videoPlayer.src = url;
     videoPlayer.load();
+    vodPlay.srcSet = true;
     umsAttach();
     _vodOnMeta = () => {
       _vodOnMeta = null;
@@ -158,6 +160,7 @@ let _vodLoadToken = 0;
 function vodClearLoadListeners() {
   if (_vodOnMeta) videoPlayer.removeEventListener('loadedmetadata', _vodOnMeta);
   _vodOnMeta = null;
+  audioCheckCancel();  // its range requests must not use the next stream
 }
 function stopVodPlayback(backToDetails) {
   if (!vodPlay.active) return;
@@ -184,8 +187,19 @@ function stopVodPlayback(backToDetails) {
   hideVodOsd();
   restoreLiveVideoSlot();
   if (backToDetails !== false && vodMode !== 'live') {
-    vodNav.screen = 'details';
     const d = vodNav.detail;
+    // Settings can hide the adult categories while the player shows. Then the
+    // title and its category must not come back: go to Home.
+    if (!settings.showAdult) {
+      const adult = adultCatIds(vodMode);
+      if ((vodNav.list === 'cat' && adult.has(vodNav.catId)) ||
+          (d && d.item && adult.has(d.item.catId))) {
+        openVodList('home');
+        vodNav.catIdx = vodActiveCatIdx();
+        return;
+      }
+    }
+    vodNav.screen = 'details';
     if (d && d.item.kind === 'series' && d.info && d.info.seasons.length) {
       // Put the cursor on the episode to watch next
       const t = seriesPlayTarget(d.item, d.info);
@@ -199,7 +213,9 @@ function stopVodPlayback(backToDetails) {
   }
 }
 function saveVodProgress(force) {
-  if (!vodPlay.active || !vodPlay.key) return;
+  // Before the VOD source is on the element, currentTime is the position of
+  // the live stream (a Shaka Player detach is asynchronous).
+  if (!vodPlay.active || !vodPlay.key || !vodPlay.srcSet) return;
   const now = Date.now();
   if (!force && now - vodPlay.saveAt < 10000) return;
   const pos = videoPlayer.currentTime || 0;
@@ -1116,6 +1132,9 @@ function captionSentenceCase(text) {
  * @param {!TextTrack} track The caption track.
  */
 function fixCaptionCues(track) {
+  // A hidden track also gets cues. It must not change the sentence state of
+  // the track that shows.
+  if (track.mode && track.mode !== 'showing') return;
   if (track !== _capTrack) {
     _capTrack = track;
     _capSentenceEnd = true;
@@ -1688,8 +1707,18 @@ function captionLayer() {
   }
   return el;
 }
-/** Shows the active cues in the caption layer in the next frame. */
-function queueLiveCaptions() {
+// The cues of the previous source. With 1 Shaka Player, a track can keep them
+// for a short time after a channel change.
+let _capStale = new WeakSet();
+let _capShown = [];   // the cues in the layer
+let _capFont = null;  // {host, size, h}: the font is correct for these
+/**
+ * Shows the active cues in the caption layer in the next frame.
+ * @param {boolean=} layout True when the element that shows the video, its
+ *     dimensions, or the subtitle settings can be different.
+ */
+function queueLiveCaptions(layout) {
+  if (layout === true) _capFont = null;
   if (!_capRaf) _capRaf = requestAnimationFrame(renderLiveCaptions);
 }
 /**
@@ -1701,26 +1730,45 @@ function renderLiveCaptions() {
   _capRaf = 0;
   const el = captionLayer();
   const on = !vodPlay.active;
-  videoPlayer.classList.toggle('cap-layer', on);
+  if (videoPlayer.classList.contains('cap-layer') !== on)
+    videoPlayer.classList.toggle('cap-layer', on);
   const host = livePlayer.active ? document.getElementById('vodPlayer') :
                                    videoPlayer.parentNode;
-  if (host && el.parentNode !== host) host.appendChild(el);
-  el.textContent = '';
+  if (host && el.parentNode !== host) {
+    host.appendChild(el);
+    _capFont = null;
+  }
   const cues = [];
   if (on) {
     for (const t of Array.from(videoPlayer.textTracks || [])) {
       if (t.mode !== 'showing') continue;
-      for (const c of Array.from(t.activeCues || [])) cues.push(c);
+      for (const c of Array.from(t.activeCues || []))
+        if (!_capStale.has(c)) cues.push(c);
     }
   }
   if (!cues.length) {
+    if (_capShown.length) el.textContent = '';
+    _capShown = [];
     el.classList.add('hidden');
     return;
   }
-  const h = (host && host.clientHeight) || 1080;
-  const px = CAPTION_PX[settings.subSize] || CAPTION_PX.medium;
-  el.style.fontSize = `${Math.max(12, Math.round(px * h / 1080))}px`;
+  // The same cues: the layer is correct. Roll-up captions change frequently.
+  const same = cues.length === _capShown.length &&
+      cues.every((c, i) => c === _capShown[i] && c.iptvText === c.text);
+  // Read the height of the host only when the host or the setting changes
+  if (!_capFont || _capFont.host !== host ||
+      _capFont.size !== settings.subSize) {
+    const h = (host && host.clientHeight) || 1080;
+    const px = CAPTION_PX[settings.subSize] || CAPTION_PX.medium;
+    el.style.fontSize = `${Math.max(12, Math.round(px * h / 1080))}px`;
+    _capFont = {host, size: settings.subSize};
+  }
+  el.classList.remove('hidden');
+  if (same) return;
+  _capShown = cues;
+  el.textContent = '';
   for (const c of cues) {
+    c.iptvText = c.text;
     const line = document.createElement('div');
     line.className = 'live-cap-line';
     const span = document.createElement('span');
@@ -1732,10 +1780,20 @@ function renderLiveCaptions() {
     line.appendChild(span);
     el.appendChild(line);
   }
-  el.classList.remove('hidden');
 }
-/** Removes the cues of the previous source from the caption layer. */
+/**
+ * Removes the cues of the previous source from the caption layer. The cues
+ * that the tracks have at this time do not show again.
+ */
 function clearLiveCaptions() {
+  if (_capRaf) {
+    cancelAnimationFrame(_capRaf);
+    _capRaf = 0;
+  }
+  _capStale = new WeakSet();
+  for (const t of Array.from(videoPlayer.textTracks || []))
+    for (const c of Array.from(t.cues || [])) _capStale.add(c);
+  _capShown = [];
   const el = document.getElementById('liveCaptions');
   if (el) {
     el.textContent = '';
@@ -1759,7 +1817,7 @@ function applyCaptionStyle() {
                        settings.subOpacity / 100});` +
       ` background-color: ${CAPTION_BGS[settings.subBg] || CAPTION_BGS.none};` +
       ` text-shadow: ${CAPTION_EDGES[settings.subEdge] || 'none'}; }`;
-  queueLiveCaptions();
+  queueLiveCaptions(true);
 }
 applyCaptionStyle();
 // Subtitle appearance (Settings) and the per-title sync offset, applied to the
@@ -1964,6 +2022,13 @@ const AUDIO_CHECK_MIN_VIDEO = 24;  // video blocks for a usable result
 const _EBML_SEGMENT = 0x18538067, _EBML_TRACKS = 0x1654AE6B,
       _EBML_CLUSTER = 0x1F43B675;
 const _audioCheckResults = new Map();  // url -> 'ok' | 'none' | null
+// The range requests of the active check. The provider lets the app use only
+// 1 connection. Thus, a stop or a new title stops them.
+let _audioCheck = null;
+function audioCheckCancel() {
+  if (_audioCheck) _audioCheck.abort();
+  _audioCheck = null;
+}
 
 /**
  * Reads an EBML variable-length integer.
@@ -2124,11 +2189,16 @@ function audioDataVerdict(tracks, counts) {
  * @param {string} url The file.
  * @param {number} start The first byte.
  * @param {number} end The last byte.
+ * @param {?AbortSignal=} signal Stops the request.
  * @return {!Promise<?{bytes: !Uint8Array, total: number}>} The bytes and the
  *     size of the file, or null if the server does not send a range.
  */
-async function fetchRange(url, start, end) {
+async function fetchRange(url, start, end, signal) {
   const ctl = new AbortController();
+  if (signal) {
+    if (signal.aborted) return null;
+    signal.addEventListener('abort', () => ctl.abort(), {once: true});
+  }
   const res = await fetch(
       url, {headers: {Range: `bytes=${start}-${end}`}, signal: ctl.signal});
   // Only the requested range: never the full file, and never more bytes than
@@ -2160,16 +2230,17 @@ async function fetchRange(url, start, end) {
 /**
  * Examines the audio data of a Matroska or WebM file.
  * @param {string} url The file.
+ * @param {?AbortSignal=} signal Stops the check (the title stopped).
  * @return {!Promise<?string>} 'none', 'ok', or null (no result).
  */
-async function audioDataOf(url) {
-  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1);
-  if (!head || !head.total) return null;
+async function audioDataOf(url, signal) {
+  const head = await fetchRange(url, 0, AUDIO_CHECK_HEAD_BYTES - 1, signal);
+  if (!head || !head.total || (signal && signal.aborted)) return null;
   const tracks = mkvTracks(head.bytes);
   if (!tracks) return null;
   const start = Math.floor(head.total * AUDIO_CHECK_PART_AT);
   const end = Math.min(head.total - 1, start + AUDIO_CHECK_PART_BYTES - 1);
-  const part = await fetchRange(url, start, end);
+  const part = await fetchRange(url, start, end, signal);
   if (!part) return null;
   return audioDataVerdict(tracks, mkvBlockCounts(part.bytes));
 }
@@ -2184,11 +2255,16 @@ async function vodAudioCheck(url, token) {
   if (!/\.(mkv|webm)$/i.test(url.split('?')[0])) return;
   let r = _audioCheckResults.get(url);
   if (r === undefined) {
+    audioCheckCancel();
+    const ctl = new AbortController();
+    _audioCheck = ctl;
     try {
-      r = await audioDataOf(url);
+      r = await audioDataOf(url, ctl.signal);
     } catch (_) {
       r = null;
     }
+    if (_audioCheck === ctl) _audioCheck = null;
+    if (ctl.signal.aborted) return;  // no result for the session
     _audioCheckResults.set(url, r);
   }
   if (!vodPlay.active || token !== _vodLoadToken) return;

@@ -36,6 +36,8 @@ function extractGroups() {
                    .concat(savedSearchKeys(), ['recent'])
                    .concat(sortGroupNames(
                        allGroupNames().filter(g => !_hiddenGroups.has(g))));
+  // The index of the current group can change
+  stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
   renderGroupsList();
 }
 const PINNED_GROUPS = ['favorites', 'all', 'recent'];
@@ -488,17 +490,19 @@ function highlightText(text, query) {
 }
 
 function searchChannels(query) {
-  if (!query.trim()) return [...channels];
+  // A space before, after, or between the words gives no empty term (an
+  // empty term matches each channel)
+  const q = query.trim().toLowerCase();
+  if (!q) return [...channels];
   // The result stays until the query, the channel list, or the hidden
   // groups change. A new result for new EPG data can change the sequence of
   // the rows under the cursor.
-  const cacheKey = query;
+  const cacheKey = q;
   if (_searchCache.query === cacheKey) return _searchCache.result;
-  const terms = query.toLowerCase().split(/\s+/);
+  const terms = q.split(/\s+/);
   // Matches channel names and groups, and also what is on now: a programme
   // title match (from the EPG already loaded, lazily per channel) ranks just
   // below a name match. Hidden categories are excluded.
-  const q = query.toLowerCase();
   const scored = channels.map((ch, idx) => {
     if (_hiddenGroups.size && _hiddenGroups.has(ch.group))
       return {idx, score: 0};
@@ -540,6 +544,8 @@ function searchChannels(query) {
 }
 
 // ----- Virtual Scrolling Channel List -----
+// The group and the search of the rendered M3U list (see renderChannelList)
+let _stdListKey = null;
 function renderChannelList() {
   // Update channels header title
   const headerTitle = document.getElementById('channelsHeaderTitle');
@@ -584,6 +590,17 @@ function renderChannelList() {
   }
   currentFilteredChannels = filtered;
   ssUpdateMark();
+  // A different group or search starts at the top, the same as the guide. A
+  // render of the same list keeps the cursor and the scroll position.
+  const listKey = epgListKey();
+  const newList = listKey !== _stdListKey;
+  if (currentPlaylistType !== 'xtream') {
+    _stdListKey = listKey;
+    if (newList) {
+      stdFocusIdx = 0;
+      channelListDiv.scrollTop = 0;
+    }
+  }
   if (stdFocusIdx >= filtered.length)
     stdFocusIdx = Math.max(0, filtered.length - 1);
   if (currentPlaylistType === 'xtream') return;
@@ -621,6 +638,9 @@ function renderChannelList() {
 
   // Function to render visible items
   const renderVisible = () => {
+    // A frame of an earlier render can come after a new render: it must not
+    // change the rows of the new list
+    if (_stdRenderVisible !== renderVisible) return;
     const scrollTop = channelListDiv.scrollTop;
     const containerHeight = channelListDiv.clientHeight;
     const startIdx = Math.floor(scrollTop / ITEM_H);

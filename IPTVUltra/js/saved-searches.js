@@ -602,9 +602,16 @@ function ssSaveEditor() {
   }
   closeSavedSearchEditor();
   ssSaveAll();
-  // Open the saved search
+  // Open the saved search. A changed search is a different list: it starts
+  // at the top, also when it was open before.
   currentGroup = SS_PREFIX + s.id;
+  _stdListKey = null;
+  _epgListKey = null;
   stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
+  if (_activePlaylistKey) {
+    getPlaylistState(_activePlaylistKey).lastGroup = currentGroup;
+    savePlaylistState();
+  }
   if (currentSearchQuery) {
     currentSearchQuery = '';
     searchInput.value = '';
@@ -624,6 +631,11 @@ function ssDeleteEditor() {
   ssSaveAll();
   if (currentGroup === key) {
     currentGroup = 'all';
+    stdGroupFocusIdx = Math.max(0, groupsList.indexOf(currentGroup));
+    if (_activePlaylistKey) {
+      getPlaylistState(_activePlaylistKey).lastGroup = currentGroup;
+      savePlaylistState();
+    }
     renderGroupsList();
     refreshCurrentView();
   }
