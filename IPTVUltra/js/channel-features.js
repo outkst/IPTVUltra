@@ -1124,9 +1124,11 @@ function _epgBinarySearch(progs, target) {
 function parseXMLTVDate(str) {
   if (!str) return null;
   const m = str.match(
-      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-])(\d{2})(\d{2})/);
+      /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:\s*([+-])(\d{2})(\d{2}))?/);
   if (!m) return null;
   const utc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  // The XMLTV DTD: a time with no zone is UTC
+  if (!m[7]) return utc;
   const sign = m[7] === '+' ? 1 : -1;
   return utc - sign * ((+m[8]) * 60 + (+m[9])) * 60000;
 }
@@ -1369,8 +1371,27 @@ async function loadEPG(url) {
     // stream. Thus, do not swap in the data of an aborted load.
     if (ctl.signal.aborted) return;
     // Sort each channel's programme list chronologically for fast lookup
-    for (const progs of newData.values()) {
+    for (const [cid, progs] of newData) {
       progs.sort((a, b) => a.start - b.start);
+      // The stop attribute is optional in XMLTV. A program with no stop stops
+      // at the start of the next program (the last one after 1 h). Then
+      // remove the programs that stop before the window.
+      let noStop = false;
+      for (let i = 0; i < progs.length; i++) {
+        if (progs[i].stop) continue;
+        noStop = true;
+        progs[i].stop = i + 1 < progs.length ? progs[i + 1].start :
+                                               progs[i].start + 3600000;
+      }
+      if (noStop) {
+        const kept =
+            progs.filter(p => p.stop > p.start && p.stop >= windowStart);
+        programmeCount -= progs.length - kept.length;
+        if (kept.length)
+          newData.set(cid, kept);
+        else
+          newData.delete(cid);
+      }
     }
     epgData = newData;
     epgIdMap = newIdMap;

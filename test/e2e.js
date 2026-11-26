@@ -3235,6 +3235,30 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       saveSettings();
       renderGroupsList();
     });
+    // Adult categories hidden while the player shows: the player closes to
+    // Home, not to the hidden title or category.
+    const adultStop = await page.evaluate(() => {
+      const id = [...adultCatIds(vodMode)][0];
+      vodPlay.active = true;
+      vodNav.list = 'cat';
+      vodNav.catId = id;
+      vodNav.screen = 'player';
+      vodNav.detail = {item: {kind: 'movie', catId: id}};
+      stopVodPlayback(true);
+      return {id, screen: vodNav.screen, detail: !!vodNav.detail};
+    });
+    check(
+        'Adult hidden during play: the player closes to Home',
+        adultStop.id !== undefined && adultStop.screen === 'home' &&
+            !adultStop.detail,
+        JSON.stringify(adultStop));
+    check(
+        'An XMLTV time with no zone is UTC',
+        await page.evaluate(
+            () => parseXMLTVDate('20261126200000') ===
+                    Date.UTC(2026, 10, 26, 20) &&
+                parseXMLTVDate('20261126200000 +0100') ===
+                    Date.UTC(2026, 10, 26, 19)));
     // Back from Home → Live, channel resumes
     await back();
     await page.waitForFunction(() => vodMode === 'live', {timeout: 5000});

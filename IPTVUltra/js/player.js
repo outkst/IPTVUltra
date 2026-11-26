@@ -187,8 +187,19 @@ function stopVodPlayback(backToDetails) {
   hideVodOsd();
   restoreLiveVideoSlot();
   if (backToDetails !== false && vodMode !== 'live') {
-    vodNav.screen = 'details';
     const d = vodNav.detail;
+    // Settings can hide the adult categories while the player shows. Then the
+    // title and its category must not come back: go to Home.
+    if (!settings.showAdult) {
+      const adult = adultCatIds(vodMode);
+      if ((vodNav.list === 'cat' && adult.has(vodNav.catId)) ||
+          (d && d.item && adult.has(d.item.catId))) {
+        openVodList('home');
+        vodNav.catIdx = vodActiveCatIdx();
+        return;
+      }
+    }
+    vodNav.screen = 'details';
     if (d && d.item.kind === 'series' && d.info && d.info.seasons.length) {
       // Put the cursor on the episode to watch next
       const t = seriesPlayTarget(d.item, d.info);

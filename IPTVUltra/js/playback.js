@@ -737,6 +737,12 @@ function goToHomeScreen() {
   _epgLoadedAt = 0;
   currentEpgUrl = '';
   xmltvSetSource('');
+  // The closure of the M3U list holds the old channels. An Xtream playlist
+  // does not render that list, thus remove the listener here.
+  if (currentScrollListener) {
+    channelListDiv.removeEventListener('scroll', currentScrollListener);
+    currentScrollListener = null;
+  }
   renderedItems.clear();
   _stdRenderVisible = null;
   _stdItemH = 0;
