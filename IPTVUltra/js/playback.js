@@ -282,7 +282,9 @@ function selectChannel(index) {
   }
   if (vodPlay.active) stopVodPlayback(false);
   stopStallWatchdog();
-  _cancelHold();   // a seek of the previous channel must not go to this one
+  _cancelHold();  // a seek of the previous channel must not go to this one
+  // The tracks menu holds the tracks of the previous stream
+  closeVodTracks();
   catchup = null;  // any channel selection returns to live
   surfCancel();
   if (_selectingAlt) {
@@ -668,6 +670,10 @@ function goToHomeScreen() {
     _epgAbortController.abort();
     _epgAbortController = null;
   }
+  if (_playlistRefreshCtl) {
+    _playlistRefreshCtl.abort();
+    _playlistRefreshCtl = null;
+  }
   if (_m3uAbortController) {
     _m3uAbortController.abort();
     _m3uAbortController = null;
@@ -736,6 +742,7 @@ function goToHomeScreen() {
   stdFocusZone = 'channels';
   stdFocusIdx = 0;
   stdGroupFocusIdx = 0;
+  _stdListKey = null;
   _reloadAttempts = 0;
   channels = [];
   clearChannelListCaches();

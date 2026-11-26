@@ -544,6 +544,8 @@ function searchChannels(query) {
 }
 
 // ----- Virtual Scrolling Channel List -----
+// The group and the search of the rendered M3U list (see renderChannelList)
+let _stdListKey = null;
 function renderChannelList() {
   // Update channels header title
   const headerTitle = document.getElementById('channelsHeaderTitle');
@@ -588,6 +590,17 @@ function renderChannelList() {
   }
   currentFilteredChannels = filtered;
   ssUpdateMark();
+  // A different group or search starts at the top, the same as the guide. A
+  // render of the same list keeps the cursor and the scroll position.
+  const listKey = epgListKey();
+  const newList = listKey !== _stdListKey;
+  if (currentPlaylistType !== 'xtream') {
+    _stdListKey = listKey;
+    if (newList) {
+      stdFocusIdx = 0;
+      channelListDiv.scrollTop = 0;
+    }
+  }
   if (stdFocusIdx >= filtered.length)
     stdFocusIdx = Math.max(0, filtered.length - 1);
   if (currentPlaylistType === 'xtream') return;

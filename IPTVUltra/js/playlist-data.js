@@ -47,7 +47,15 @@ function showLoading(show, message = 'Loading playlist...') {
 }
 
 function setLoadSelectedButtonEnabled(enabled) {
-  if (loadSelectedBtn) loadSelectedBtn.disabled = !enabled;
+  if (!loadSelectedBtn || loadSelectedBtn.disabled === !enabled) return;
+  loadSelectedBtn.disabled = !enabled;
+  // The remote moves only through focusableElements, which has only an
+  // enabled button. Keep the focus on the same element.
+  if (startPage.classList.contains('hidden')) return;
+  const el = focusableElements[currentFocusIndex];
+  updateFocusableElements();
+  const at = focusableElements.indexOf(el);
+  if (at >= 0) currentFocusIndex = at;
 }
 
 const HTML_ESCAPES = {
@@ -110,7 +118,14 @@ function parseExtinf(line) {
   return {name: cut >= 0 ? line.slice(cut + 1).trim() : null, attrs};
 }
 
-async function parseM3UStreaming(content) {
+/**
+ * @param {string} content The text of the M3U file.
+ * @param {function(): boolean=} alive For a background refresh: the parse
+ *     writes no start page status, and it stops with null when this gives
+ *     false.
+ * @return {!Promise<?Array<!Object>>} The channels.
+ */
+async function parseM3UStreaming(content, alive) {
   const lines = content.split(/\r?\n/);
   const total = lines.length;
   const channelsList = [];
@@ -145,6 +160,11 @@ async function parseM3UStreaming(content) {
       }
     }
     i = end;
+    if (alive) {
+      if (!alive()) return null;
+      await new Promise(r => setTimeout(r, 5));
+      continue;
+    }
     const percent = Math.min(100, Math.round((i / total) * 100));
     updateStartStatus(
         `Parsing: ${i.toLocaleString()} / ${total.toLocaleString()} lines (${
@@ -171,6 +191,9 @@ let _cacheDbPromise = null;
 let _playlistCacheAt =
     0;  // when the applied channel list was fetched from the provider
 let _playlistRefreshing = '';  // the playlist key of the refresh that runs
+// The AbortController of the M3U download of the refresh (goToHomeScreen
+// aborts it)
+let _playlistRefreshCtl = null;
 let _m3uSource =
     null;  // { url, epgUrl } of the loaded M3U, for background refresh
 function cacheDb() {
@@ -556,14 +579,19 @@ async function refreshPlaylistInBackground(force) {
     return false;
   const key = _activePlaylistKey;
   _playlistRefreshing = key;  // a refresh of a different playlist can run
+  let ctl = null;
   try {
     let parsed;
     if (currentPlaylistType === 'xtream' && _xt)
       parsed = await xtreamFetchChannels(_xt.base, _xt.user, _xt.pass, null);
     else if (_m3uSource) {
-      const resp = await fetch(_m3uSource.url);
+      ctl = new AbortController();
+      _playlistRefreshCtl = ctl;
+      const resp = await fetch(_m3uSource.url, {signal: ctl.signal});
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      parsed = await parseM3UStreaming(await resp.text());
+      const text = await resp.text();
+      parsed = await parseM3UStreaming(
+          text, () => !ctl.signal.aborted && _activePlaylistKey === key);
     }
     if (_activePlaylistKey !== key || !parsed || !parsed.length) return false;
     const changed =
@@ -590,6 +618,8 @@ async function refreshPlaylistInBackground(force) {
     }
     return changed;
   } catch (e) {
+    // goToHomeScreen aborts the download: that is not an error
+    if (ctl && ctl.signal.aborted) return false;
     if (force) {
       showEPGToast(
           `Playlist refresh failed: ${e.message}`, 'error', 'Playlist');
@@ -598,6 +628,7 @@ async function refreshPlaylistInBackground(force) {
     return false;
   } finally {
     if (_playlistRefreshing === key) _playlistRefreshing = '';
+    if (_playlistRefreshCtl === ctl) _playlistRefreshCtl = null;
   }
 }
 function fmtAge(ts) {

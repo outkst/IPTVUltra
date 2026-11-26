@@ -29,6 +29,7 @@ if (settings.autoLoad) {
   if (idx >= 0) {
     const p = savedPlaylists[idx];
     selectedPlaylistId = idx;
+    renderSavedPlaylists();  // show the selected item
     updateStartStatus(`Auto-loading "${p.name}" …`, false, false, true, 0);
     setTimeout(() => {
       if (p.type === 'xtream')

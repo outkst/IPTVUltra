@@ -138,14 +138,21 @@ function epgMoveCursor(dir) {
     if (ch && channelHasCatchup(ch) &&
         progs[0].start > Date.now() - ch.archive * 86400000)
       epgMaybeFetchHistory(ch);
-    epgFocusT = Math.max(_epgWinStart || 0, progs[0].start - 1800000);
+    // Move only back in time: if the first program starts after the cursor,
+    // step 30 min back
+    let to = progs[0].start - 1800000;
+    if (to >= t) to = t - 1800000;
+    epgFocusT = Math.max(_epgWinStart || 0, to);
     epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
     updateEPGBlockFocus();
     return;
   }
   if (j >= progs.length) {
-    epgFocusT =
-        Math.min(_epgWinEnd || Infinity, progs[progs.length - 1].stop + 1);
+    // Move only forward in time: if the last program stops before the cursor,
+    // step 30 min forward
+    let to = progs[progs.length - 1].stop + 1;
+    if (to <= t) to = t + 1800000;
+    epgFocusT = Math.min(_epgWinEnd ? _epgWinEnd - 1 : Infinity, to);
     epgEnsureTimeVisible(epgFocusT, epgFocusT + 1800000);
     updateEPGBlockFocus();
     return;

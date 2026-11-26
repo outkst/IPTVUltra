@@ -1336,6 +1336,8 @@ async function loadEPG(url) {
           statusArea.innerText = `📅 EPG: ${_progMsg}`;
           showEPGToast(_progMsg, 'loading');
           await new Promise(r => setTimeout(r, 0));
+          // goToHomeScreen or a new load aborted this parse
+          if (ctl.signal.aborted) return;
           // Re-trim after yield so resumed work starts on a small buffer
           if (cursor > 65536) {
             buffer = buffer.slice(cursor);
@@ -1363,6 +1365,9 @@ async function loadEPG(url) {
       }
     }
 
+    // An abort during the last yield does not reject a read of a closed
+    // stream. Thus, do not swap in the data of an aborted load.
+    if (ctl.signal.aborted) return;
     // Sort each channel's programme list chronologically for fast lookup
     for (const progs of newData.values()) {
       progs.sort((a, b) => a.start - b.start);

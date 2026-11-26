@@ -1348,6 +1348,35 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Right stops at the last program in the guide window',
       winEnd.skip || winEnd.ok, JSON.stringify(winEnd));
+  // Right after the last program goes forward in time, and Left before the
+  // first program goes back in time
+  const pastDir = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinEnd || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const now = Date.now();
+    epgData.set(id, [{start: now - 7200000, stop: now - 3600000, title: 'a'}]);
+    epgFocusT = 0;
+    epgMoveCursor(1);
+    const right = epgFocusT;
+    epgData.set(id, [{start: now + 7200000, stop: now + 9000000, title: 'b'}]);
+    epgFocusT = 0;
+    epgMoveCursor(-1);
+    const left = epgFocusT;
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {ok: right > now && left > 0 && left < now, right, left, now};
+  });
+  check(
+      'Right after the last program and Left before the first keep direction',
+      pastDir.skip || pastDir.ok, JSON.stringify(pastDir));
   // Back from a different app: the timeline and the cursor go to the time now
   const backNow = await page.evaluate(() => {
     const keepT = epgFocusT;
@@ -3400,6 +3429,24 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       await page.evaluate(
           () => !livePlayer.active && videoPlayer.parentNode === videoArea &&
               stdFocusIdx === 2));
+  // A render of the same list keeps the row. A different group starts at
+  // row 0 and at the top.
+  const stdKey = await page.evaluate(() => {
+    renderChannelList();
+    const same = stdFocusIdx, g = currentGroup;
+    currentGroup = groupsList.find(x => !isPinnedGroup(x)) || 'favorites';
+    renderChannelList();
+    const other = stdFocusIdx, top = channelListDiv.scrollTop;
+    currentGroup = g;
+    renderChannelList();
+    stdFocusIdx = 2;
+    updateStdChannelFocus();
+    return {same, other, top};
+  });
+  check(
+      'standard view: a new group starts at row 0, a new render keeps the row',
+      stdKey.same === 2 && stdKey.other === 0 && stdKey.top === 0,
+      JSON.stringify(stdKey));
   await key('ArrowLeft', 37);
   check(
       'standard view: Left moves to groups column',
