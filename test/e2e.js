@@ -281,6 +281,19 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
                        corner.getBoundingClientRect().left)
     };
   });
+  // Each row has the full name. Before, the code cut a name after 20
+  // characters, also when the column had space for it.
+  check(
+      'guide name column: each row has the full channel name (CSS cuts it)',
+      await page.evaluate(() => {
+        const ch = currentFilteredChannels[0];
+        const was = ch.name;
+        ch.name = 'US: A LONG CHANNEL NAME WITH 40 CHARACTERS';
+        const el = buildEPGRow(0);
+        const name = el.querySelector('.epg-ch-name').textContent;
+        ch.name = was;
+        return name === 'US: A LONG CHANNEL NAME WITH 40 CHARACTERS';
+      }));
   check(
       'guide name column: EPG_CH_W wide (375 px at 137%), Prev to its right',
       chCol.w === 375 && chCol.label === 375 && chCol.corner === 375 &&
