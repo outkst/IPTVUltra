@@ -411,7 +411,7 @@ function toggleVodFav(item) {
   saveJson('iptv_vod_favorites', vodFavs);
 }
 function vodFavItems() {
-  return Object.values(vodFavBucket())
+  return vodVisible(Object.values(vodFavBucket()), vodMode)
       .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -942,7 +942,8 @@ function focusVodSearch() {
 // ── home rows ────────────────────────────────────────────────
 function vodHomeRows() {
   const rows = [];
-  const cw = continueWatchingItems(vodMode);
+  // Hidden adult categories also hide their titles in Continue Watching
+  const cw = vodVisible(continueWatchingItems(vodMode), vodMode);
   if (cw.length)
     rows.push({
       key: 'cw',
@@ -1371,7 +1372,13 @@ function closeVodDetails() {
     if (vodNav.list === 'favs') {
       vodNav.baseItems = vodFavItems();
       vodNav.items = vodDerivedItems();
+    } else if (vodNav.list === 'all' && !settings.showAdult) {
+      // Settings can hide the adult categories while the details or the
+      // player show
+      vodNav.baseItems = vodVisible(vodNav.baseItems, vodMode);
+      vodNav.items = vodDerivedItems();
     }
+    vodNav.focus = Math.max(0, Math.min(vodNav.focus, vodNav.items.length - 1));
     renderVodGrid();
     updateVodGridFocus();
   }

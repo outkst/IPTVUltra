@@ -169,7 +169,11 @@ function epgMoveCursor(dir) {
   const p = progs[j];
   // A program outside the guide window has no block: keep the cursor
   if (_epgWinStart && (p.stop <= _epgWinStart || p.start >= _epgWinEnd)) return;
-  epgFocusT = p.start + Math.min(60000, Math.max(1, (p.stop - p.start) / 2));
+  // A program can start before the window. The cursor stays in the window,
+  // else the next key only moves it to the edge of the window.
+  epgFocusT = Math.max(
+      _epgWinStart || 0,
+      p.start + Math.min(60000, Math.max(1, (p.stop - p.start) / 2)));
   if (dir < 0 && ch && channelHasCatchup(ch) && j <= 2)
     epgMaybeFetchHistory(ch);
   epgEnsureTimeVisible(p.start, p.stop);

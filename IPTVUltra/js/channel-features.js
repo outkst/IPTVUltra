@@ -1237,6 +1237,11 @@ async function loadEPG(url) {
   let bytesRead = 0;
   let cut = '';          // why the parse stopped before the end of the file
   let elementCount = 0;  // all <programme> elements, for the yields
+  // The last kept program of each channel with no stop attribute. If a later
+  // program of the channel starts before the window, the waiting program
+  // stops before the window too, and the parse removes it at once. Thus, past
+  // programs do not count toward EPG_M3U_MAX_PROGS.
+  const noStopWait = new Map();
   const now = Date.now();
   const windowStart = now - 120000;
   const windowEnd = now + 6 * 3600000;  // 6h
@@ -1305,6 +1310,16 @@ async function loadEPG(url) {
               pStart = epgShiftTime(pStart);
               if (pStop !== null) pStop = epgShiftTime(pStop);
             }
+            const w = pStart !== null ? noStopWait.get(chM[1]) : null;
+            if (w && pStart > w.start) {
+              const arr = newData.get(chM[1]);
+              if (pStart < windowStart && arr && arr[arr.length - 1] === w) {
+                arr.pop();
+                programmeCount--;
+                if (!arr.length) newData.delete(chM[1]);
+              }
+              noStopWait.delete(chM[1]);
+            }
             if (pStart !== null && pStart <= windowEnd &&
                 (pStop === null || pStop >= windowStart)) {
               const cid = chM[1];
@@ -1313,11 +1328,13 @@ async function loadEPG(url) {
                 newData.set(k, []);
                 newIdMap.set(k.toLowerCase(), k);
               }
-              newData.get(cid).push({
+              const prog = {
                 start: pStart,
                 stop: pStop || 0,
                 title: tiM ? copyStr(unescapeXml(tiM[1].trim())) : ''
-              });
+              };
+              newData.get(cid).push(prog);
+              if (pStop === null) noStopWait.set(copyStr(cid), prog);
               programmeCount++;
               if (programmeCount >= EPG_M3U_MAX_PROGS) {
                 cut = `${EPG_M3U_MAX_PROGS.toLocaleString()} programs limit`;

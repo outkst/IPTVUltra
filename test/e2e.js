@@ -1406,6 +1406,39 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
   check(
       'Right on a cursor before the guide window goes to the window start',
       outWin.skip || outWin.ok, JSON.stringify(outWin));
+  // A program that starts before the window: the cursor stays in the window,
+  // and the next Right goes to the next program
+  const edgeProg = await page.evaluate(() => {
+    const ch = currentFilteredChannels[epgFocusedRowIdx];
+    const id = ch && resolveEpgId(ch.tvgId);
+    if (!id || !_epgWinStart || xmltvProgsOf(ch.tvgId)) return {skip: true};
+    const keep = epgData.get(id), keepT = epgFocusT, keepX = _epgX;
+    const s = _epgWinStart;
+    epgData.set(id, [
+      {start: s - 1800000, stop: s + 1800000, title: 'a'},
+      {start: s + 1800000, stop: s + 3600000, title: 'b'}
+    ]);
+    epgFocusT = s + 2400000;
+    epgMoveCursor(-1);
+    const t = epgFocusT, p1 = epgFocusedProg();
+    epgMoveCursor(1);
+    const p2 = epgFocusedProg();
+    if (keep)
+      epgData.set(id, keep);
+    else
+      epgData.delete(id);
+    epgFocusT = keepT;
+    _epgX = keepX;
+    epgApplyPan();
+    updateEPGBlockFocus();
+    return {
+      ok: t >= s && !!p1 && p1.title === 'a' && !!p2 && p2.title === 'b',
+      inWin: t >= s, p1: p1 && p1.title, p2: p2 && p2.title
+    };
+  });
+  check(
+      'Left to a program from before the window, then Right goes to the next',
+      edgeProg.skip || edgeProg.ok, JSON.stringify(edgeProg));
   // St. John's changes to DST at 05:30 UTC: the cache must not keep the
   // offset of 05:00 for 05:45
   const halfHourTz = await page.evaluate(() => {
@@ -5695,6 +5728,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     const grp = currentGroup;
     // Clean up
     const ps = getPlaylistState(_activePlaylistKey);
+    const last = ps.lastGroup;
+    ps.lastGroup = 'all';
     ps.savedSearches = ps.savedSearches.slice(0, before);
     for (const x of saved) {
       x.c.name = x.name;
@@ -5707,7 +5742,7 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
     refreshCurrentView();
     return {keys, order, header, mark, block: /ss-match/.test(html), ed1, ed2,
             after, grp, closed: !ssOpen, left: groupsList.indexOf('ss:e2e'),
-            tick: tick.join()};
+            tick: tick.join(), last};
   });
   check(
       'saved search: below All, any term, word start, now, then 60 min, then name',
@@ -5720,7 +5755,8 @@ const stats = async () => (await fetch(BASE + '/__stats')).json();
       'saved search editor: prefill, add a term, save opens the new search',
       ss.ed1.open && ss.ed1.terms === 'Pirates' && ss.ed2 === 'Pirates,Panthers' &&
           ss.after[1] === 'Pirates:Pirates|Panthers' && /^ss:/.test(ss.grp) &&
-          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1,
+          ss.grp !== 'ss:e2e' && ss.closed && ss.left === -1 &&
+          ss.last === ss.grp,
       JSON.stringify(ss));
   // The window of each saved search (hours), and no folder icons
   const ssh = await page.evaluate(() => {
